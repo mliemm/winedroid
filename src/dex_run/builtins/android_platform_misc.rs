@@ -83,6 +83,16 @@ impl DexProgram {
             )));
         }
 
+        // cite: frameworks-base Environment.java#getDataDirectory, DIR_ANDROID_DATA, DIR_ANDROID_DATA_PATH, getDirectoryPath
+        if method.class_descriptor == "Landroid/os/Environment;"
+            && method.name == "getDataDirectory"
+            && method.proto.descriptor_is("()Ljava/io/File;")
+        {
+            return Some(DexExecutionResult::Value(DexValue::Reference(
+                std::rc::Rc::from("Ljava/io/File;:/data"),
+            )));
+        }
+
         if method.class_descriptor == "Landroid/os/StrictMode;"
             && method.name == "setVmPolicy"
             && method

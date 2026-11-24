@@ -2809,6 +2809,44 @@ fn libcore_linked_blocking_queue_constructor_creates_an_empty_queue() {
 }
 
 #[test]
+fn libcore_linked_blocking_queue_capacity_constructor_rejects_non_positive_capacity() {
+    // cite: libcore LinkedBlockingQueue.java#LinkedBlockingQueue
+    let program = DexProgram::new(Vec::new());
+    let constructor = builtin_method(
+        "Ljava/util/concurrent/LinkedBlockingQueue;",
+        "<init>",
+        "V",
+        &["I"],
+    );
+    let size = builtin_method("Ljava/util/Collection;", "size", "I", &[]);
+    let queue = program.allocate_object("Ljava/util/concurrent/LinkedBlockingQueue;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![queue.clone(), DexValue::Int(16)]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&size, Some(&test_invocation(vec![queue.clone()]))),
+        Some(DexExecutionResult::Int(0))
+    );
+    assert!(program.value_matches_type(&queue, "Ljava/util/concurrent/BlockingQueue;"));
+    assert!(program.value_matches_type(&queue, "Ljava/util/Queue;"));
+
+    for capacity in [0, -1] {
+        let rejected =
+            program.allocate_object("Ljava/util/concurrent/LinkedBlockingQueue;".to_owned());
+        let exception = thrown_exception(program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![rejected, DexValue::Int(capacity)])),
+        ));
+        assert!(program.value_matches_type(&exception, "Ljava/lang/IllegalArgumentException;"));
+    }
+}
+
+#[test]
 fn libcore_synchronous_queue_constructor_creates_an_empty_blocking_queue() {
     // cite: libcore SynchronousQueue.java#SynchronousQueue
     let program = DexProgram::new(Vec::new());

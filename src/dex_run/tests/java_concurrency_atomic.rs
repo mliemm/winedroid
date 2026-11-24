@@ -2164,6 +2164,60 @@ fn libcore_count_down_latch_constructor_stores_count_and_rejects_negative() {
         .contains_key(&map_identity_key(&rejected)));
 }
 
+#[test]
+fn libcore_count_down_latch_count_down_decrements_to_zero_and_stops() {
+    // cite: libcore CountDownLatch.java#countDown, tryReleaseShared
+    let program = DexProgram::new(Vec::new());
+    let constructor = DexMethodId {
+        class_descriptor: "Ljava/util/concurrent/CountDownLatch;".to_owned(),
+        name: "<init>".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VI".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec!["I".to_owned()],
+        },
+    };
+    let count_down = DexMethodId {
+        class_descriptor: "Ljava/util/concurrent/CountDownLatch;".to_owned(),
+        name: "countDown".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "V".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let latch = program.allocate_object("Ljava/util/concurrent/CountDownLatch;".to_owned());
+    let unconstructed = program.allocate_object("Ljava/util/concurrent/CountDownLatch;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![latch.clone(), DexValue::Int(2)]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    for expected in [1, 0, 0] {
+        assert_eq!(
+            program
+                .invoke_builtin_method(&count_down, Some(&test_invocation(vec![latch.clone()]))),
+            Some(DexExecutionResult::Void)
+        );
+        assert_eq!(
+            program
+                .runtime
+                .borrow()
+                .atomic_integer_values
+                .get(&map_identity_key(&latch))
+                .copied(),
+            Some(expected)
+        );
+    }
+    assert_eq!(
+        program.invoke_builtin_method(&count_down, Some(&test_invocation(vec![unconstructed]))),
+        None
+    );
+}
+
 const THREAD_POOL_EXECUTOR: &str = "Ljava/util/concurrent/ThreadPoolExecutor;";
 
 fn thread_pool_executor_constructor() -> DexMethodId {
@@ -2535,4 +2589,113 @@ fn libcore_executors_pools_derive_keep_alive_for_allow_core_thread_time_out() {
         Some(DexExecutionResult::Void)
     );
     assert_eq!(call("Ljava/util/concurrent/ExecutorService;.single"), None);
+}
+
+#[test]
+fn libcore_scheduled_thread_pool_executor_constructor_stores_default_pool_state() {
+    // cite: libcore ScheduledThreadPoolExecutor.java#ScheduledThreadPoolExecutor, DEFAULT_KEEPALIVE_MILLIS
+    let program = DexProgram::new(Vec::new());
+    let constructor = builtin_method(
+        "Ljava/util/concurrent/ScheduledThreadPoolExecutor;",
+        "<init>",
+        "V",
+        &["I", "Ljava/util/concurrent/ThreadFactory;"],
+    );
+    let factory = thread_pool_executor_dependency("Ljava/util/concurrent/ThreadFactory;:factory");
+    let executor =
+        program.allocate_object("Ljava/util/concurrent/ScheduledThreadPoolExecutor;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![
+                executor.clone(),
+                DexValue::Int(2),
+                factory.clone()
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    let field = |name, type_descriptor| {
+        program.read_stored_instance_field(
+            &executor,
+            &thread_pool_executor_field(name, type_descriptor),
+        )
+    };
+    assert_eq!(field("corePoolSize", "I"), Some(DexValue::Int(2)));
+    assert_eq!(field("maximumPoolSize", "I"), Some(DexValue::Int(i32::MAX)));
+    assert_eq!(field("keepAliveTime", "J"), Some(DexValue::Long(10_000_000)));
+    assert_eq!(
+        field("threadFactory", "Ljava/util/concurrent/ThreadFactory;"),
+        Some(factory)
+    );
+    let queue = field("workQueue", "Ljava/util/concurrent/BlockingQueue;")
+        .expect("work queue should be stored");
+    assert_eq!(
+        value_class_descriptor(&queue),
+        Some("Ljava/util/concurrent/ScheduledThreadPoolExecutor$DelayedWorkQueue;")
+    );
+    assert!(program.is_thread_pool_executor(&executor));
+    assert!(program.value_matches_type(&executor, "Ljava/util/concurrent/ScheduledExecutorService;"));
+    assert!(program.value_matches_type(&executor, "Ljava/util/concurrent/Executor;"));
+}
+
+#[test]
+fn libcore_scheduled_thread_pool_executor_constructor_checks_core_size_before_factory() {
+    // cite: libcore ThreadPoolExecutor.java#ThreadPoolExecutor
+    let program = DexProgram::new(Vec::new());
+    let constructor = builtin_method(
+        "Ljava/util/concurrent/ScheduledThreadPoolExecutor;",
+        "<init>",
+        "V",
+        &["I", "Ljava/util/concurrent/ThreadFactory;"],
+    );
+    let factory = thread_pool_executor_dependency("Ljava/util/concurrent/ThreadFactory;:factory");
+    let construct = |core: i32, factory: DexValue| {
+        let executor = program
+            .allocate_object("Ljava/util/concurrent/ScheduledThreadPoolExecutor;".to_owned());
+        thrown_exception(program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![executor, DexValue::Int(core), factory])),
+        ))
+    };
+
+    assert!(program.value_matches_type(
+        &construct(-1, factory),
+        "Ljava/lang/IllegalArgumentException;"
+    ));
+    assert!(program.value_matches_type(
+        &construct(1, DexValue::Null),
+        "Ljava/lang/NullPointerException;"
+    ));
+    assert!(program.value_matches_type(
+        &construct(-1, DexValue::Null),
+        "Ljava/lang/IllegalArgumentException;"
+    ));
+}
+
+#[test]
+fn libcore_abstract_executor_service_constructor_is_a_no_op_on_an_abstract_class() {
+    // cite: libcore AbstractExecutorService.java#AbstractExecutorService
+    let program = DexProgram::new(Vec::new());
+    let constructor = builtin_method(
+        "Ljava/util/concurrent/AbstractExecutorService;",
+        "<init>",
+        "V",
+        &[],
+    );
+    let receiver = program.allocate_object("Ljava/util/concurrent/AbstractExecutorService;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(&constructor, Some(&test_invocation(vec![receiver.clone()]))),
+        Some(DexExecutionResult::Void)
+    );
+    assert!(program.value_matches_type(&receiver, "Ljava/util/concurrent/ExecutorService;"));
+    assert!(is_bootstrap_class_descriptor(
+        "Ljava/util/concurrent/AbstractExecutorService;"
+    ));
+    assert_eq!(
+        bootstrap_new_instance_kind("Ljava/util/concurrent/AbstractExecutorService;"),
+        Some(BootstrapNewInstanceKind::Abstract)
+    );
 }

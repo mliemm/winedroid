@@ -1968,3 +1968,140 @@ impl Drop for GuestIoFixture {
         fs::remove_dir_all(&self.root).ok();
     }
 }
+
+#[test]
+fn libcore_file_path_constructor_throws_null_pointer_exception_for_a_null_pathname() {
+    // cite: libcore File.java#File
+    let program = DexProgram::new(Vec::new());
+    let constructor = builtin_method("Ljava/io/File;", "<init>", "V", &["Ljava/lang/String;"]);
+    let path_field = DexFieldId {
+        class_descriptor: "Ljava/io/File;".to_owned(),
+        type_descriptor: "Ljava/lang/String;".to_owned(),
+        name: "path".to_owned(),
+    };
+
+    for pathname in [DexValue::Null, DexValue::Int(0)] {
+        let file = program.allocate_object("Ljava/io/File;".to_owned());
+        let exception = thrown_exception(program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![file.clone(), pathname])),
+        ));
+        assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
+        assert_eq!(thrown_detail_message(&program, &exception), None);
+        assert_eq!(program.read_stored_instance_field(&file, &path_field), None);
+    }
+
+    let file = program.allocate_object("Ljava/io/File;".to_owned());
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![
+                file.clone(),
+                DexValue::String(std::rc::Rc::from("a//b/")),
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&file, &path_field),
+        Some(DexValue::String(std::rc::Rc::from("a/b")))
+    );
+}
+
+#[test]
+fn libcore_file_equals_compares_paths_of_file_arguments_only() {
+    // cite: libcore File.java#equals, compareTo
+    // cite: libcore UnixFileSystem.java#compare
+    let program = DexProgram::new(Vec::new());
+    let equals = builtin_method("Ljava/io/File;", "equals", "Z", &["Ljava/lang/Object;"]);
+    let path_field = DexFieldId {
+        class_descriptor: "Ljava/io/File;".to_owned(),
+        type_descriptor: "Ljava/lang/String;".to_owned(),
+        name: "path".to_owned(),
+    };
+    let object_file = program.allocate_object("Ljava/io/File;".to_owned());
+    program.write_stored_instance_field(
+        &object_file,
+        &path_field,
+        DexValue::String(std::rc::Rc::from("/a/b")),
+    );
+    let run = |receiver: &DexValue, other: DexValue| {
+        program.invoke_builtin_method(
+            &equals,
+            Some(&test_invocation(vec![receiver.clone(), other])),
+        )
+    };
+
+    assert_eq!(run(&file_value("/a/b"), file_value("/a/b")), Some(DexExecutionResult::Int(1)));
+    assert_eq!(run(&object_file, file_value("/a/b")), Some(DexExecutionResult::Int(1)));
+    assert_eq!(run(&file_value("/a/b"), object_file.clone()), Some(DexExecutionResult::Int(1)));
+    assert_eq!(run(&file_value("/a/b"), file_value("/a/c")), Some(DexExecutionResult::Int(0)));
+    assert_eq!(run(&file_value("/a/b"), file_value("/A/b")), Some(DexExecutionResult::Int(0)));
+    for other in [
+        DexValue::Null,
+        DexValue::Int(0),
+        DexValue::String(std::rc::Rc::from("/a/b")),
+    ] {
+        assert_eq!(run(&file_value("/a/b"), other), Some(DexExecutionResult::Int(0)));
+    }
+}
+
+#[test]
+fn libcore_file_get_free_space_reports_statvfs_free_bytes_or_zero() {
+    // cite: libcore File.java#getFreeSpace, isInvalid
+    // cite: libcore UnixFileSystem_md.c#getSpace0
+    let fixture = GuestIoFixture::new("free_space");
+    let program = fixture.program();
+    let get_free_space = builtin_method("Ljava/io/File;", "getFreeSpace", "J", &[]);
+    let free_space = |path: &str| {
+        program.invoke_builtin_method(
+            &get_free_space,
+            Some(&test_invocation(vec![file_value(path)])),
+        )
+    };
+    let stat_fs = object_value(1, "Landroid/os/StatFs;");
+    let stat_fs_constructor =
+        builtin_method("Landroid/os/StatFs;", "<init>", "V", &["Ljava/lang/String;"]);
+    let stat_fs_block_size = builtin_method("Landroid/os/StatFs;", "getBlockSizeLong", "J", &[]);
+    let stat_fs_total_bytes = builtin_method("Landroid/os/StatFs;", "getTotalBytes", "J", &[]);
+    assert_eq!(
+        program.invoke_builtin_method(
+            &stat_fs_constructor,
+            Some(&test_invocation(vec![
+                stat_fs.clone(),
+                DexValue::String(std::rc::Rc::from("/data/user/0/com.example/files")),
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    let stat_fs_long = |method: &DexMethodId| {
+        let Some(DexExecutionResult::Value(DexValue::Long(value))) =
+            program.invoke_builtin_method(method, Some(&test_invocation(vec![stat_fs.clone()])))
+        else {
+            panic!("StatFs getter should return a long value");
+        };
+        value
+    };
+    let block_size = stat_fs_long(&stat_fs_block_size);
+    let total_bytes = stat_fs_long(&stat_fs_total_bytes);
+
+    let Some(DexExecutionResult::Value(DexValue::Long(value))) =
+        free_space("/data/user/0/com.example/files")
+    else {
+        panic!("getFreeSpace should return a long value");
+    };
+    assert!(value > 0 && value <= total_bytes);
+    assert_eq!(value % block_size, 0);
+    assert_eq!(free_space("/etc"), Some(DexExecutionResult::Value(DexValue::Long(0))));
+    assert_eq!(
+        free_space("/data/user/0/com.example/files\0x"),
+        Some(DexExecutionResult::Value(DexValue::Long(0)))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &get_free_space,
+            Some(&test_invocation(vec![DexValue::Null]))
+        ),
+        None
+    );
+}

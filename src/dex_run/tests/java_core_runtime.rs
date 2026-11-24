@@ -4010,3 +4010,59 @@ fn art_load_native_library_present_but_unloadable_is_missing_primitive_not_succe
     );
     std::fs::remove_dir_all(app_dir).ok();
 }
+
+#[test]
+fn libcore_handler_thread_constructor_stores_name_and_default_priority() {
+    // cite: frameworks-base HandlerThread.java#HandlerThread, mPriority
+    let program = DexProgram::new(Vec::new());
+    let constructor = DexMethodId {
+        class_descriptor: "Landroid/os/HandlerThread;".to_owned(),
+        name: "<init>".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VL".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec!["Ljava/lang/String;".to_owned()],
+        },
+    };
+    let name_field = DexFieldId {
+        class_descriptor: "Ljava/lang/Thread;".to_owned(),
+        type_descriptor: "Ljava/lang/String;".to_owned(),
+        name: "name".to_owned(),
+    };
+    let priority_field = DexFieldId {
+        class_descriptor: "Landroid/os/HandlerThread;".to_owned(),
+        type_descriptor: "I".to_owned(),
+        name: "mPriority".to_owned(),
+    };
+    let thread = program.allocate_object("Landroid/os/HandlerThread;".to_owned());
+    let null_name_thread = program.allocate_object("Landroid/os/HandlerThread;".to_owned());
+    let name = DexValue::String(std::rc::Rc::from("worker"));
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![thread.clone(), name.clone()]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&thread, &name_field),
+        Some(name)
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&thread, &priority_field),
+        Some(DexValue::Int(0))
+    );
+    assert!(program.value_matches_type(&thread, "Ljava/lang/Thread;"));
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![null_name_thread.clone(), DexValue::Null]))
+        ),
+        None
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&null_name_thread, &priority_field),
+        None
+    );
+}

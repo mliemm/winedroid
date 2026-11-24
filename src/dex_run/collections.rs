@@ -5922,12 +5922,29 @@ impl DexProgram {
             return Ok(Some(DexExecutionResult::Int(value)));
         }
 
+        // cite: libcore AbstractSet.java#removeAll
         if matches!(
             method.class_descriptor.as_str(),
-            "Ljava/util/Collection;" | "Ljava/util/AbstractCollection;"
+            "Ljava/util/Collection;"
+                | "Ljava/util/AbstractCollection;"
+                | "Ljava/util/AbstractSet;"
         ) && method.name == "removeAll"
             && method.proto.descriptor_is("(Ljava/util/Collection;)Z")
         {
+            if method.class_descriptor == "Ljava/util/AbstractSet;"
+                && matches!(
+                    invocation.arguments.get(1),
+                    Some(DexValue::Null | DexValue::Int(0))
+                )
+            {
+                // cite: libcore Objects.java#requireNonNull
+                return Ok(Some(DexExecutionResult::Throw(
+                    self.allocate_generated_exception(DexGeneratedException {
+                        class_descriptor: "Ljava/lang/NullPointerException;".to_owned(),
+                        detail_message: None,
+                    }),
+                )));
+            }
             let value = self.java_remove_all_collection_values(invocation, depth + 1)?;
             return Ok(Some(DexExecutionResult::Int(value)));
         }

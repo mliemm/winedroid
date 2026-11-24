@@ -931,3 +931,57 @@ fn art_integer_int_value_on_null_receiver_throws_null_pointer_exception() {
         );
     }
 }
+
+#[test]
+fn libcore_long_parse_long_accepts_range_and_throws_number_format_exception_outside_it() {
+    // cite: libcore Long.java#parseLong
+    // cite: libcore NumberFormatException.java#forInputString
+    let program = DexProgram::new(Vec::new());
+    let parse_long = builtin_method("Ljava/lang/Long;", "parseLong", "J", &["Ljava/lang/String;"]);
+    let parse = |input: DexValue| {
+        program.invoke_builtin_method(&parse_long, Some(&test_invocation(vec![input])))
+    };
+    let string = |value: &str| DexValue::String(std::rc::Rc::from(value));
+
+    for (input, expected) in [
+        ("0", 0),
+        ("-0", 0),
+        ("+5", 5),
+        ("9223372036854775807", i64::MAX),
+        ("-9223372036854775808", i64::MIN),
+    ] {
+        assert_eq!(
+            parse(string(input)),
+            Some(DexExecutionResult::Value(DexValue::Long(expected))),
+            "{input}"
+        );
+    }
+
+    for input in [
+        "9223372036854775808",
+        "-9223372036854775809",
+        "",
+        "+",
+        "-",
+        " 1",
+        "1 ",
+        "1a",
+        "1L",
+    ] {
+        let exception = thrown_exception(parse(string(input)));
+        assert!(program.value_matches_type(&exception, "Ljava/lang/NumberFormatException;"));
+        assert!(program.value_matches_type(&exception, "Ljava/lang/IllegalArgumentException;"));
+        assert_eq!(
+            thrown_detail_message(&program, &exception),
+            Some(format!("For input string: \"{input}\"")),
+            "{input}"
+        );
+    }
+
+    let exception = thrown_exception(parse(DexValue::Null));
+    assert!(program.value_matches_type(&exception, "Ljava/lang/NumberFormatException;"));
+    assert_eq!(
+        thrown_detail_message(&program, &exception),
+        Some("Cannot parse null string".to_owned())
+    );
+}

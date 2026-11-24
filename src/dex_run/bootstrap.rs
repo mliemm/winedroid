@@ -66,6 +66,7 @@ pub(super) fn bootstrap_new_instance_kind(
     // cite: libcore AbstractSet.java#AbstractSet
     // cite: libcore AbstractMap.java#AbstractMap
     // cite: libcore AbstractQueue.java#AbstractQueue
+    // cite: libcore AbstractExecutorService.java#AbstractExecutorService
     // cite: frameworks-base CharacterStyle.java#CharacterStyle
     // cite: frameworks-base MetricAffectingSpan.java#MetricAffectingSpan
     // cite: frameworks-base ReplacementSpan.java#ReplacementSpan
@@ -80,6 +81,7 @@ pub(super) fn bootstrap_new_instance_kind(
             | "Ljava/util/AbstractSet;"
             | "Ljava/util/AbstractMap;"
             | "Ljava/util/AbstractQueue;"
+            | "Ljava/util/concurrent/AbstractExecutorService;"
             | "Landroid/text/style/CharacterStyle;"
             | "Landroid/text/style/MetricAffectingSpan;"
             | "Landroid/text/style/ReplacementSpan;"
@@ -172,6 +174,8 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         | "Ljava/lang/Thread;"
         | "Ljava/lang/System;"
         | "Ljava/lang/Math;" => Some("Ljava/lang/Object;"),
+        // cite: frameworks-base HandlerThread.java#HandlerThread
+        "Landroid/os/HandlerThread;" => Some("Ljava/lang/Thread;"),
         // cite: libcore ThreadLocal.java#ThreadLocal
         // cite: libcore Date.java#Date
         // cite: libcore Random.java#Random
@@ -227,6 +231,8 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         "Ljava/lang/NullPointerException;" => Some("Ljava/lang/RuntimeException;"),
         "Ljava/lang/IllegalStateException;" => Some("Ljava/lang/RuntimeException;"),
         "Ljava/lang/IllegalArgumentException;" => Some("Ljava/lang/RuntimeException;"),
+        // cite: libcore NumberFormatException.java#NumberFormatException
+        "Ljava/lang/NumberFormatException;" => Some("Ljava/lang/IllegalArgumentException;"),
         // cite: libcore SecurityException.java#SecurityException
         "Ljava/lang/SecurityException;" => Some("Ljava/lang/RuntimeException;"),
         // cite: libcore IndexOutOfBoundsException.java#IndexOutOfBoundsException
@@ -327,10 +333,22 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         // cite: libcore AbstractSequentialList.java#AbstractSequentialList
         "Ljava/util/AbstractSequentialList;" => Some("Ljava/util/AbstractList;"),
         "Ljava/util/AbstractList;" => Some("Ljava/util/AbstractCollection;"),
+        // cite: libcore ScheduledThreadPoolExecutor.java#DelayedWorkQueue
         "Ljava/util/PriorityQueue;"
         | "Ljava/util/concurrent/ConcurrentLinkedQueue;"
         | "Ljava/util/concurrent/LinkedBlockingQueue;"
+        | "Ljava/util/concurrent/ScheduledThreadPoolExecutor$DelayedWorkQueue;"
         | "Ljava/util/concurrent/SynchronousQueue;" => Some("Ljava/util/AbstractQueue;"),
+        // cite: libcore ScheduledThreadPoolExecutor.java#ScheduledThreadPoolExecutor
+        "Ljava/util/concurrent/ScheduledThreadPoolExecutor;" => {
+            Some("Ljava/util/concurrent/ThreadPoolExecutor;")
+        }
+        // cite: libcore ThreadPoolExecutor.java#ThreadPoolExecutor
+        "Ljava/util/concurrent/ThreadPoolExecutor;" => {
+            Some("Ljava/util/concurrent/AbstractExecutorService;")
+        }
+        // cite: libcore AbstractExecutorService.java#AbstractExecutorService
+        "Ljava/util/concurrent/AbstractExecutorService;" => Some("Ljava/lang/Object;"),
         "Ljava/util/AbstractQueue;" => Some("Ljava/util/AbstractCollection;"),
         "Ljava/util/HashMap;"
         | "Ljava/util/IdentityHashMap;"
@@ -457,6 +475,23 @@ pub(super) fn bootstrap_direct_interface_descriptors(
             &["Ljava/util/concurrent/BlockingQueue;", "Ljava/io/Serializable;"]
         }
         "Ljava/util/AbstractQueue;" => &["Ljava/util/Queue;"],
+        // cite: libcore ScheduledThreadPoolExecutor.java#ScheduledThreadPoolExecutor, DelayedWorkQueue
+        "Ljava/util/concurrent/ScheduledThreadPoolExecutor;" => {
+            &["Ljava/util/concurrent/ScheduledExecutorService;"]
+        }
+        "Ljava/util/concurrent/ScheduledThreadPoolExecutor$DelayedWorkQueue;" => {
+            &["Ljava/util/concurrent/BlockingQueue;"]
+        }
+        // cite: libcore AbstractExecutorService.java#AbstractExecutorService
+        "Ljava/util/concurrent/AbstractExecutorService;" => {
+            &["Ljava/util/concurrent/ExecutorService;"]
+        }
+        // cite: libcore ExecutorService.java#ExecutorService
+        "Ljava/util/concurrent/ExecutorService;" => &["Ljava/util/concurrent/Executor;"],
+        // cite: libcore ScheduledExecutorService.java#ScheduledExecutorService
+        "Ljava/util/concurrent/ScheduledExecutorService;" => {
+            &["Ljava/util/concurrent/ExecutorService;"]
+        }
         "Ljava/util/AbstractCollection;" => &["Ljava/util/Collection;"],
         "Ljava/util/HashSet;"
         | "Ljava/util/LinkedHashSet;"
@@ -515,6 +550,8 @@ pub(super) fn is_bootstrap_interface_descriptor(class_descriptor: &str) -> bool 
             | "Ljava/util/Set;"
             | "Ljava/util/concurrent/Executor;"
             | "Ljava/util/concurrent/ExecutorService;"
+            // cite: libcore ScheduledExecutorService.java#ScheduledExecutorService
+            | "Ljava/util/concurrent/ScheduledExecutorService;"
             | "Ljava/util/concurrent/Future;"
             // cite: frameworks-base OnBackAnimationCallback.java#OnBackAnimationCallback
             | "Landroid/window/OnBackAnimationCallback;"

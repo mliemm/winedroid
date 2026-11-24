@@ -1796,6 +1796,17 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        // cite: frameworks-base HandlerThread.java#HandlerThread, mPriority
+        if method.class_descriptor == "Landroid/os/HandlerThread;"
+            && method.name == "<init>"
+            && method.proto.descriptor_is("(Ljava/lang/String;)V")
+        {
+            let invocation = invocation?;
+            self.initialize_handler_thread(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
         if method.class_descriptor == "Ljava/lang/Thread;"
             && method.name == "start"
             && method.proto.descriptor_is("()V")
@@ -1959,6 +1970,22 @@ impl DexProgram {
 }
 
 impl DexProgram {
+    fn initialize_handler_thread(&self, invocation: &DexInvocation) -> Option<()> {
+        if invocation.arguments.len() != 2 {
+            return None;
+        }
+
+        self.initialize_thread(invocation, "(Ljava/lang/String;)V")?;
+
+        // cite: frameworks-base Process.java#THREAD_PRIORITY_DEFAULT
+        self.write_stored_instance_field(
+            &invocation.arguments[0],
+            &handler_thread_priority_field(),
+            DexValue::Int(0),
+        )
+        .then_some(())
+    }
+
     fn initialize_thread(&self, invocation: &DexInvocation, descriptor: &str) -> Option<()> {
         match descriptor {
             "()V" if invocation.arguments.len() == 1 => Some(()),
@@ -2895,6 +2922,8 @@ fn is_supported_throwable_class(class_descriptor: &str) -> bool {
             | "Ljava/lang/RuntimeException;"
             | "Ljava/lang/Error;"
             | "Ljava/lang/IllegalArgumentException;"
+            // cite: libcore NumberFormatException.java#NumberFormatException
+            | "Ljava/lang/NumberFormatException;"
             | "Ljava/lang/IllegalStateException;"
             // cite: frameworks-base SQLiteException.java#SQLiteException
             | "Landroid/database/sqlite/SQLiteException;"
@@ -3491,6 +3520,14 @@ fn thread_context_class_loader_field() -> DexFieldId {
         class_descriptor: "Ljava/lang/Thread;".to_owned(),
         type_descriptor: "Ljava/lang/ClassLoader;".to_owned(),
         name: "contextClassLoader".to_owned(),
+    }
+}
+
+fn handler_thread_priority_field() -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Landroid/os/HandlerThread;".to_owned(),
+        type_descriptor: "I".to_owned(),
+        name: "mPriority".to_owned(),
     }
 }
 

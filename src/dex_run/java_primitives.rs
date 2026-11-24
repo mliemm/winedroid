@@ -61,6 +61,65 @@ pub(in crate::dex_run) fn integer_parse_int(invocation: &DexInvocation, radix: i
     i32::from_str_radix(value, u32::try_from(radix).ok()?).ok()
 }
 
+pub(in crate::dex_run) fn long_parse_long(
+    invocation: &DexInvocation,
+) -> Option<std::result::Result<i64, String>> {
+    if invocation.arguments.len() != 1 {
+        return None;
+    }
+
+    // cite: libcore Long.java#parseLong
+    let value = match &invocation.arguments[0] {
+        DexValue::Null => return Some(Err("Cannot parse null string".to_owned())),
+        DexValue::String(value) => value,
+        _ => return None,
+    };
+    let for_input_string = || -> std::result::Result<i64, String> {
+        Err(format!("For input string: \"{value}\""))
+    };
+    let units: Vec<u16> = value.encode_utf16().collect();
+    let Some(&first) = units.first() else {
+        return Some(for_input_string());
+    };
+
+    let mut negative = false;
+    let mut limit = -i64::MAX;
+    let mut index = 0;
+    if first < u16::from(b'0') {
+        if first == u16::from(b'-') {
+            negative = true;
+            limit = i64::MIN;
+        } else if first != u16::from(b'+') {
+            return Some(for_input_string());
+        }
+        if units.len() == 1 {
+            return Some(for_input_string());
+        }
+        index += 1;
+    }
+
+    let multmin = limit / 10;
+    let mut result = 0i64;
+    for &unit in &units[index..] {
+        // cite: libcore Character.java#digit
+        let digit = match char::from_u32(u32::from(unit)) {
+            Some(character) if character.is_ascii() => character.to_digit(10).map_or(-1, i64::from),
+            Some(character) if character.is_numeric() => return None,
+            _ => -1,
+        };
+        if digit < 0 || result < multmin {
+            return Some(for_input_string());
+        }
+        result *= 10;
+        if result < limit + digit {
+            return Some(for_input_string());
+        }
+        result -= digit;
+    }
+
+    Some(Ok(if negative { result } else { -result }))
+}
+
 pub(in crate::dex_run) fn double_parse_double(invocation: &DexInvocation) -> Option<i64> {
     let DexValue::String(value) = invocation.arguments.first()? else {
         return None;

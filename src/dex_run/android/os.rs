@@ -246,6 +246,22 @@ impl DexProgram {
         Some(*value)
     }
 
+    pub(in crate::dex_run) fn count_down_latch(&self, invocation: &DexInvocation) -> Option<()> {
+        if invocation.arguments.len() != 1 {
+            return None;
+        }
+
+        let object_key = map_identity_key(&invocation.arguments[0]);
+        let mut runtime = self.runtime.borrow_mut();
+        let state = runtime.atomic_integer_values.get_mut(&object_key)?;
+
+        if *state > 0 {
+            *state -= 1;
+        }
+
+        Some(())
+    }
+
     pub(in crate::dex_run) fn initialize_atomic_reference(
         &self,
         invocation: &DexInvocation,
@@ -1282,36 +1298,95 @@ impl DexProgram {
         }
         let keep_alive_nanos = scale_to_nanos(time_unit_reference_name(unit)?, *keep_alive)?;
 
-        self.write_stored_instance_field(receiver, &thread_pool_executor_core_field(), DexValue::Int(*core));
+        self.store_thread_pool_executor_state(
+            receiver,
+            ThreadPoolExecutorState {
+                core: *core,
+                maximum: *maximum,
+                keep_alive_nanos,
+                work_queue,
+                thread_factory,
+                handler,
+            },
+        );
+
+        Some(DexExecutionResult::Void)
+    }
+
+    pub(in crate::dex_run) fn scheduled_thread_pool_executor_init(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        // cite: libcore ScheduledThreadPoolExecutor.java#ScheduledThreadPoolExecutor, DEFAULT_KEEPALIVE_MILLIS, DelayedWorkQueue
+        let [receiver, DexValue::Int(core), thread_factory] = invocation.arguments.as_slice()
+        else {
+            return None;
+        };
+        if !dex_value_is_object_like(receiver) {
+            return None;
+        }
+        if *core < 0 {
+            return Some(DexExecutionResult::Throw(self.allocate_object(
+                "Ljava/lang/IllegalArgumentException;".to_owned(),
+            )));
+        }
+        if *thread_factory == DexValue::Null {
+            return Some(DexExecutionResult::Throw(self.allocate_object(
+                "Ljava/lang/NullPointerException;".to_owned(),
+            )));
+        }
+        let work_queue = self.allocate_object(
+            "Ljava/util/concurrent/ScheduledThreadPoolExecutor$DelayedWorkQueue;".to_owned(),
+        );
+
+        self.store_thread_pool_executor_state(
+            receiver,
+            ThreadPoolExecutorState {
+                core: *core,
+                maximum: i32::MAX,
+                keep_alive_nanos: scale_to_nanos("MILLISECONDS", 10)?,
+                work_queue: &work_queue,
+                thread_factory,
+                handler: None,
+            },
+        );
+
+        Some(DexExecutionResult::Void)
+    }
+
+    fn store_thread_pool_executor_state(
+        &self,
+        receiver: &DexValue,
+        state: ThreadPoolExecutorState,
+    ) {
+        self.write_stored_instance_field(receiver, &thread_pool_executor_core_field(), DexValue::Int(state.core));
         self.write_stored_instance_field(
             receiver,
             &thread_pool_executor_maximum_field(),
-            DexValue::Int(*maximum),
+            DexValue::Int(state.maximum),
         );
         self.write_stored_instance_field(
             receiver,
             &thread_pool_executor_keep_alive_field(),
-            DexValue::Long(keep_alive_nanos),
+            DexValue::Long(state.keep_alive_nanos),
         );
         self.write_stored_instance_field(
             receiver,
             &thread_pool_executor_work_queue_field(),
-            work_queue.clone(),
+            state.work_queue.clone(),
         );
         self.write_stored_instance_field(
             receiver,
             &thread_pool_executor_thread_factory_field(),
-            thread_factory.clone(),
+            state.thread_factory.clone(),
         );
-        if let Some(handler) = handler {
+        if let Some(handler) = state.handler {
             self.write_stored_instance_field(
                 receiver,
                 &thread_pool_executor_handler_field(),
                 handler.clone(),
             );
         }
-
-        Some(DexExecutionResult::Void)
     }
 
     pub(in crate::dex_run) fn thread_pool_executor_allow_core_thread_time_out(
@@ -2058,4 +2133,13 @@ pub(in crate::dex_run) fn fixed_thread_pool_reference(
     Some(DexValue::Reference(std::rc::Rc::from(format!(
         "Ljava/util/concurrent/ExecutorService;.fixed/{thread_count}"
     ))))
+}
+
+struct ThreadPoolExecutorState<'a> {
+    core: i32,
+    maximum: i32,
+    keep_alive_nanos: i64,
+    work_queue: &'a DexValue,
+    thread_factory: &'a DexValue,
+    handler: Option<&'a DexValue>,
 }

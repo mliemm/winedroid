@@ -1693,3 +1693,17 @@ fn frameworks_base_log_get_stack_trace_string_rejects_a_non_throwable() {
     assert_eq!(stack_trace_string(&program, object), None);
     assert_eq!(stack_trace_string(&program, DexValue::Int(7)), None);
 }
+
+#[test]
+fn frameworks_base_environment_get_data_directory_returns_the_default_data_root() {
+    // cite: frameworks-base Environment.java#getDataDirectory, DIR_ANDROID_DATA_PATH
+    let program = DexProgram::new(Vec::new());
+    let method = builtin_method("Landroid/os/Environment;", "getDataDirectory", "Ljava/io/File;", &[]);
+
+    assert_eq!(
+        program.invoke_builtin_method(&method, None),
+        Some(DexExecutionResult::Value(DexValue::Reference(
+            std::rc::Rc::from("Ljava/io/File;:/data")
+        )))
+    );
+}

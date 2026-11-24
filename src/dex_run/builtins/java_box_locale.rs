@@ -284,6 +284,23 @@ impl DexProgram {
             )));
         }
 
+        if method.matches_builtin_signature(
+            "Ljava/lang/Long;",
+            "parseLong",
+            "(Ljava/lang/String;)J",
+        ) {
+            let invocation = invocation?;
+            return Some(match long_parse_long(invocation)? {
+                Ok(value) => DexExecutionResult::Value(DexValue::Long(value)),
+                Err(message) => DexExecutionResult::Throw(self.allocate_generated_exception(
+                    DexGeneratedException {
+                        class_descriptor: "Ljava/lang/NumberFormatException;".to_owned(),
+                        detail_message: Some(message),
+                    },
+                )),
+            });
+        }
+
         if method.matches_builtin_signature("Ljava/lang/Float;", "valueOf", "(F)Ljava/lang/Float;")
         {
             let invocation = invocation?;

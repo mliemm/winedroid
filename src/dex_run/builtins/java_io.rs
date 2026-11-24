@@ -15,7 +15,7 @@ impl DexProgram {
                 .descriptor_is("(Ljava/io/File;Ljava/lang/String;)V")
         {
             let invocation = invocation?;
-            if file_child_is_null(invocation) {
+            if file_trailing_path_is_null(invocation) {
                 return Some(self.null_pointer_exception_result());
             }
             self.initialize_file_from_parent_and_child(invocation)?;
@@ -30,7 +30,7 @@ impl DexProgram {
                 .descriptor_is("(Ljava/lang/String;Ljava/lang/String;)V")
         {
             let invocation = invocation?;
-            if file_child_is_null(invocation) {
+            if file_trailing_path_is_null(invocation) {
                 return Some(self.null_pointer_exception_result());
             }
             self.initialize_file_from_parent_string_and_child(invocation)?;
@@ -122,6 +122,9 @@ impl DexProgram {
             && method.proto.descriptor_is("(Ljava/lang/String;)V")
         {
             let invocation = invocation?;
+            if file_trailing_path_is_null(invocation) {
+                return Some(self.null_pointer_exception_result());
+            }
             self.initialize_file_from_path(invocation)?;
 
             return Some(DexExecutionResult::Void);
@@ -228,6 +231,18 @@ impl DexProgram {
         {
             let invocation = invocation?;
             let value = self.file_exists(invocation)?;
+
+            return Some(DexExecutionResult::Int(value));
+        }
+
+        // cite: libcore File.java#equals, compareTo
+        // cite: libcore UnixFileSystem.java#compare
+        if method.class_descriptor == "Ljava/io/File;"
+            && method.name == "equals"
+            && method.proto.descriptor_is("(Ljava/lang/Object;)Z")
+        {
+            let invocation = invocation?;
+            let value = self.file_equals(invocation)?;
 
             return Some(DexExecutionResult::Int(value));
         }
@@ -366,6 +381,16 @@ impl DexProgram {
         {
             let invocation = invocation?;
             let value = self.file_last_modified(invocation)?;
+
+            return Some(DexExecutionResult::Value(DexValue::Long(value)));
+        }
+
+        if method.class_descriptor == "Ljava/io/File;"
+            && method.name == "getFreeSpace"
+            && method.proto.descriptor_is("()J")
+        {
+            let invocation = invocation?;
+            let value = self.file_free_space(invocation)?;
 
             return Some(DexExecutionResult::Value(DexValue::Long(value)));
         }
@@ -1137,6 +1162,42 @@ impl DexProgram {
         Some(i32::from(name.starts_with('.')))
     }
 
+    fn file_equals(&self, invocation: &DexInvocation) -> Option<i32> {
+        if invocation.arguments.len() != 2 {
+            return None;
+        }
+
+        let path = file_path_from_value(self, &invocation.arguments[0])?;
+        let other = &invocation.arguments[1];
+        if !self.value_matches_type(other, "Ljava/io/File;") {
+            return Some(0);
+        }
+        let other_path = file_path_from_value(self, other)?;
+
+        Some(i32::from(path == other_path))
+    }
+
+    // cite: libcore File.java#getFreeSpace, isInvalid
+    // cite: libcore UnixFileSystem.java#getSpace
+    // cite: libcore UnixFileSystem_md.c#getSpace0
+    fn file_free_space(&self, invocation: &DexInvocation) -> Option<i64> {
+        if invocation.arguments.len() != 1 {
+            return None;
+        }
+
+        let path = file_path_from_value(self, &invocation.arguments[0])?;
+        if path.contains('\0') {
+            return Some(0);
+        }
+        let free_bytes = self
+            .resolved_guest_path(&path, ExternalStorageAccess::Read)
+            .and_then(|resolved| resolved.volume_stats().ok())
+            .map(|stats| (stats.free_blocks as i64).wrapping_mul(stats.block_size as i64))
+            .unwrap_or(0);
+
+        Some(free_bytes)
+    }
+
     fn file_exists(&self, invocation: &DexInvocation) -> Option<i32> {
         if invocation.arguments.len() != 1 {
             return None;
@@ -1768,9 +1829,9 @@ impl DexProgram {
     }
 }
 
-fn file_child_is_null(invocation: &DexInvocation) -> bool {
+fn file_trailing_path_is_null(invocation: &DexInvocation) -> bool {
     matches!(
-        invocation.arguments.get(2),
+        invocation.arguments.last(),
         Some(DexValue::Null | DexValue::Int(0))
     )
 }

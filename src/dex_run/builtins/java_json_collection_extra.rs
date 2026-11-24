@@ -375,6 +375,25 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        if method.class_descriptor == "Ljava/util/concurrent/LinkedBlockingQueue;"
+            && method.name == "<init>"
+            && method.proto.descriptor_is("(I)V")
+        {
+            // cite: libcore LinkedBlockingQueue.java#LinkedBlockingQueue
+            let invocation = invocation?;
+            let DexValue::Int(capacity) = invocation.arguments.get(1)? else {
+                return None;
+            };
+            if *capacity <= 0 {
+                return Some(DexExecutionResult::Throw(
+                    self.allocate_object("Ljava/lang/IllegalArgumentException;".to_owned()),
+                ));
+            }
+            self.initialize_empty_list(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
         if method.class_descriptor == "Ljava/util/concurrent/SynchronousQueue;"
             && method.name == "<init>"
             && method.proto.descriptor_is("()V")

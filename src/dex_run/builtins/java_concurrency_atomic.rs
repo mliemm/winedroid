@@ -30,6 +30,17 @@ impl DexProgram {
             return self.thread_pool_executor_init(invocation);
         }
 
+        // cite: libcore ScheduledThreadPoolExecutor.java#ScheduledThreadPoolExecutor, DEFAULT_KEEPALIVE_MILLIS, DelayedWorkQueue
+        if method.matches_builtin_signature(
+            "Ljava/util/concurrent/ScheduledThreadPoolExecutor;",
+            "<init>",
+            "(ILjava/util/concurrent/ThreadFactory;)V",
+        ) {
+            let invocation = invocation?;
+
+            return self.scheduled_thread_pool_executor_init(invocation);
+        }
+
         if method.matches_builtin_signature(
             "Ljava/util/concurrent/ThreadPoolExecutor;",
             "allowCoreThreadTimeOut",
@@ -210,6 +221,15 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        // cite: libcore AbstractExecutorService.java#AbstractExecutorService
+        if method.matches_builtin_signature(
+            "Ljava/util/concurrent/AbstractExecutorService;",
+            "<init>",
+            "()V",
+        ) {
+            return Some(DexExecutionResult::Void);
+        }
+
         if method.class_descriptor == "Ljava/util/concurrent/locks/ReentrantLock;"
             && method.name == "<init>"
             && matches!(method.proto.descriptor().as_str(), "()V" | "(Z)V")
@@ -352,6 +372,18 @@ impl DexProgram {
                 ));
             }
             self.initialize_atomic_integer(invocation, *count)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.matches_builtin_signature(
+            "Ljava/util/concurrent/CountDownLatch;",
+            "countDown",
+            "()V",
+        ) {
+            // cite: libcore CountDownLatch.java#countDown, tryReleaseShared
+            let invocation = invocation?;
+            self.count_down_latch(invocation)?;
 
             return Some(DexExecutionResult::Void);
         }

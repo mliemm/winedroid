@@ -1341,6 +1341,80 @@ fn builtin_collection_remove_all_removes_matching_values() {
 }
 
 #[test]
+fn libcore_abstract_set_remove_all_removes_matching_returns_false_for_none_and_throws_for_null() {
+    let program = DexProgram::new(Vec::new());
+    let add = DexMethodId {
+        class_descriptor: "Ljava/util/Set;".to_owned(),
+        name: "add".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "ZL".to_owned(),
+            return_type: "Z".to_owned(),
+            parameters: vec!["Ljava/lang/Object;".to_owned()],
+        },
+    };
+    let remove_all = DexMethodId {
+        class_descriptor: "Ljava/util/AbstractSet;".to_owned(),
+        name: "removeAll".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "ZL".to_owned(),
+            return_type: "Z".to_owned(),
+            parameters: vec!["Ljava/util/Collection;".to_owned()],
+        },
+    };
+    let set = program.allocate_object("Ljava/util/HashSet;".to_owned());
+    let matching = program.allocate_object("Ljava/util/HashSet;".to_owned());
+    let other = program.allocate_object("Ljava/util/HashSet;".to_owned());
+    let empty = program.allocate_object("Ljava/util/HashSet;".to_owned());
+    let first = DexValue::String(std::rc::Rc::from("first"));
+    let second = DexValue::String(std::rc::Rc::from("second"));
+    let third = DexValue::String(std::rc::Rc::from("third"));
+
+    for (receiver, value) in [
+        (&set, &first),
+        (&set, &second),
+        (&matching, &first),
+        (&other, &third),
+    ] {
+        program
+            .invoke_java_collection_equality_method(
+                &add,
+                &test_invocation(vec![receiver.clone(), value.clone()]),
+                0,
+            )
+            .expect("Set.add should run");
+    }
+    let remove_all_result = |argument: DexValue| {
+        program
+            .invoke_java_collection_equality_method(
+                &remove_all,
+                &test_invocation(vec![set.clone(), argument]),
+                0,
+            )
+            .expect("AbstractSet.removeAll should run")
+    };
+
+    assert_eq!(remove_all_result(other), Some(DexExecutionResult::Int(0)));
+    assert_eq!(remove_all_result(empty), Some(DexExecutionResult::Int(0)));
+    assert_eq!(remove_all_result(matching.clone()), Some(DexExecutionResult::Int(1)));
+    assert_eq!(remove_all_result(matching), Some(DexExecutionResult::Int(0)));
+    assert_eq!(
+        program
+            .runtime
+            .borrow()
+            .list_entries
+            .get(&map_identity_key(&set)),
+        Some(&vec![second])
+    );
+    let Some(DexExecutionResult::Throw(exception)) = remove_all_result(DexValue::Null) else {
+        panic!("AbstractSet.removeAll(null) should throw");
+    };
+    assert_eq!(
+        value_class_descriptor(&exception),
+        Some("Ljava/lang/NullPointerException;")
+    );
+}
+
+#[test]
 fn builtin_set_add_stores_value_for_later_size() {
     let program = DexProgram::new(Vec::new());
     let add = DexMethodId {

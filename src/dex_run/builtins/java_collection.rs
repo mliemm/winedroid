@@ -179,8 +179,11 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(value));
         }
 
-        if method.class_descriptor == "Ljava/util/Collection;"
-            && method.name == "removeAll"
+        // cite: libcore AbstractSet.java#removeAll
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/util/Collection;" | "Ljava/util/AbstractSet;"
+        ) && method.name == "removeAll"
             && method.proto.descriptor_is("(Ljava/util/Collection;)Z")
         {
             let invocation = invocation?;
