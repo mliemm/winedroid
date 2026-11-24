@@ -1073,7 +1073,7 @@ fn builtin_string_last_index_of_char_defaults_from_index_to_the_end_of_string() 
 }
 
 #[test]
-fn builtin_string_contains_matches_a_char_sequence_substring() {
+fn builtin_string_contains_matches_libcore_string_contains_and_throws_npe_on_null() {
     // cite: libcore String.java#contains
     let program = DexProgram::new(Vec::new());
     let method = DexMethodId {
@@ -1106,6 +1106,29 @@ fn builtin_string_contains_matches_a_char_sequence_substring() {
         ),
         Some(DexExecutionResult::Int(0))
     );
+
+    let contains = |receiver: DexValue, needle: DexValue| {
+        program.invoke_builtin_method(&method, Some(&test_invocation(vec![receiver, needle])))
+    };
+    let text = || DexValue::String(std::rc::Rc::from("notes.txt"));
+
+    for result in [
+        contains(DexValue::Null, text()),
+        contains(text(), DexValue::Null),
+    ] {
+        let Some(DexExecutionResult::Throw(exception)) = result else {
+            panic!("null receiver or needle must throw");
+        };
+        assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
+    }
+
+    let builder = program.allocate_object("Ljava/lang/StringBuilder;".to_owned());
+    program
+        .runtime
+        .borrow_mut()
+        .string_builder_values
+        .insert(map_identity_key(&builder), "es.t".to_owned());
+    assert_eq!(contains(text(), builder), Some(DexExecutionResult::Int(1)));
 }
 
 #[test]

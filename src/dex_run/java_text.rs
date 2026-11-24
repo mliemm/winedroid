@@ -2270,16 +2270,28 @@ impl DexProgram {
         Some(i32::from(left == right))
     }
 
-    // cite: libcore String.java#contains
-    pub(super) fn string_contains(&self, invocation: &DexInvocation) -> Option<i32> {
+    // cite: libcore String.java#contains, indexOf
+    // cite: art entrypoint_utils-inl.h#FindMethodToCall
+    pub(super) fn string_contains(&self, invocation: &DexInvocation) -> Option<DexExecutionResult> {
         if invocation.arguments.len() != 2 {
             return None;
         }
 
-        let value = self.string_text(&invocation.arguments[0])?;
-        let needle = self.string_text(&invocation.arguments[1])?;
+        if matches!(invocation.arguments[0], DexValue::Null | DexValue::Int(0)) {
+            return Some(self.null_pointer_exception_result());
+        }
 
-        Some(i32::from(value.contains(&needle)))
+        let value = self.string_text(&invocation.arguments[0])?;
+
+        if matches!(invocation.arguments[1], DexValue::Null) {
+            return Some(self.null_pointer_exception_result());
+        }
+
+        let needle = self
+            .char_sequence_full_text(&invocation.arguments[1])
+            .or_else(|| self.object_value_to_string(&invocation.arguments[1]))?;
+
+        Some(DexExecutionResult::Int(i32::from(value.contains(&needle))))
     }
 
     pub(super) fn string_equals_ignore_case(&self, invocation: &DexInvocation) -> Option<i32> {

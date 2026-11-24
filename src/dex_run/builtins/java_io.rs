@@ -957,7 +957,7 @@ impl DexProgram {
         .then_some(())
     }
 
-    fn null_pointer_exception_result(&self) -> DexExecutionResult {
+    pub(in crate::dex_run) fn null_pointer_exception_result(&self) -> DexExecutionResult {
         DexExecutionResult::Throw(self.allocate_generated_exception(DexGeneratedException {
             class_descriptor: "Ljava/lang/NullPointerException;".to_owned(),
             detail_message: None,

@@ -188,9 +188,8 @@ impl DexProgram {
             && method.proto.descriptor_is("(Ljava/lang/CharSequence;)Z")
         {
             let invocation = invocation?;
-            let value = self.string_contains(invocation)?;
 
-            return Some(DexExecutionResult::Int(value));
+            return self.string_contains(invocation);
         }
 
         if method.class_descriptor == "Ljava/lang/String;"

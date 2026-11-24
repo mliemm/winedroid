@@ -1759,15 +1759,18 @@ impl DexProgram {
         .then_some(())
     }
 
+    // cite: libcore ThreadLocal.java#get, setInitialValue
     pub(in crate::dex_run) fn read_thread_local_value(
         &self,
         invocation: &DexInvocation,
-    ) -> Option<DexValue> {
+    ) -> Option<DexExecutionResult> {
         if invocation.arguments.len() != 1 {
             return None;
         }
 
-        match &invocation.arguments[0] {
+        let receiver = &invocation.arguments[0];
+
+        match receiver {
             DexValue::Object(_) | DexValue::Reference(_) => {}
             DexValue::Uninitialized
             | DexValue::Null
@@ -1777,10 +1780,47 @@ impl DexProgram {
             | DexValue::String(_) => return None,
         }
 
-        Some(
-            self.read_stored_instance_field(&invocation.arguments[0], &thread_local_value_field())
-                .unwrap_or(DexValue::Null),
-        )
+        if let Some(stored) = self.read_stored_instance_field(receiver, &thread_local_value_field())
+        {
+            return Some(DexExecutionResult::Value(stored));
+        }
+
+        let initial = match self.thread_local_initial_value(receiver)? {
+            DexExecutionResult::Value(value) => value,
+            DexExecutionResult::Int(value) => DexValue::Int(value),
+            DexExecutionResult::Void => DexValue::Null,
+            throw @ DexExecutionResult::Throw(_) => return Some(throw),
+            DexExecutionResult::Parked(execution) => {
+                self.discard_parked_execution(&execution);
+                return None;
+            }
+        };
+
+        self.write_stored_instance_field(receiver, &thread_local_value_field(), initial.clone())
+            .then_some(DexExecutionResult::Value(initial))
+    }
+
+    // cite: libcore ThreadLocal.java#initialValue
+    fn thread_local_initial_value(&self, receiver: &DexValue) -> Option<DexExecutionResult> {
+        let class_descriptor = value_class_descriptor(receiver)?;
+        let method = DexMethodId {
+            class_descriptor: class_descriptor.to_owned(),
+            name: "initialValue".to_owned(),
+            proto: crate::dex::DexProto {
+                shorty: "L".to_owned(),
+                return_type: "Ljava/lang/Object;".to_owned(),
+                parameters: Vec::new(),
+            },
+        };
+        let Some(resolved) = self
+            .resolve_exact_method_in_class_hierarchy(class_descriptor, &method)
+            .ok()?
+        else {
+            return Some(DexExecutionResult::Value(DexValue::Null));
+        };
+
+        self.execute_method(None, &resolved, Some(&[receiver.clone()]), 0)
+            .ok()
     }
 
     pub(in crate::dex_run) fn write_thread_local_value(

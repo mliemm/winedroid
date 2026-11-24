@@ -18,9 +18,8 @@ impl DexProgram {
             && method.proto.descriptor_is("()Ljava/lang/Object;")
         {
             let invocation = invocation?;
-            let value = self.read_thread_local_value(invocation)?;
 
-            return Some(DexExecutionResult::Value(value));
+            return self.read_thread_local_value(invocation);
         }
 
         if method.class_descriptor == "Ljava/lang/ThreadLocal;"

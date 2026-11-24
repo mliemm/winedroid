@@ -3578,3 +3578,134 @@ fn math_abs_long_mirrors_libcore() {
         Some(DexExecutionResult::Value(DexValue::Long(i64::MIN)))
     );
 }
+
+fn object_wait_contract_program() -> DexProgram {
+    let dex_file = crate::dex::parse_dex_file(
+        "object_wait_contract.dex",
+        include_bytes!("fixtures/object_wait_contract.dex").to_vec(),
+    )
+    .expect("Object.wait contract DEX should parse");
+    DexProgram::new(vec![dex_file])
+}
+
+fn execute_object_wait_contract_method(
+    program: &DexProgram,
+    name: &str,
+) -> crate::Result<DexExecutionResult> {
+    let method = DexMethodId {
+        class_descriptor: "Lwinedroid/tests/ObjectWaitContract;".to_owned(),
+        name: name.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "I".to_owned(),
+            return_type: "I".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let resolved = program
+        .resolve_exact_method(&method)
+        .expect("Object.wait contract method should resolve")
+        .expect("Object.wait contract method should exist");
+
+    program.execute_method(None, &resolved, None, 0)
+}
+
+// cite: libcore Object.java#wait, notifyAll
+// cite: libcore Thread.java#start
+#[test]
+fn libcore_object_wait_returns_after_started_thread_sets_the_awaited_condition() {
+    let program = object_wait_contract_program();
+    program
+        .runtime
+        .borrow_mut()
+        .post_main_thread_task(MainThreadTask::LaunchActivity {
+            class_descriptor: "Lcom/example/Main;".to_owned(),
+        });
+
+    assert_eq!(
+        execute_object_wait_contract_method(&program, "waitLoopTerminatesAfterStartedThreadRan")
+            .expect("wait loop should complete"),
+        DexExecutionResult::Int(1)
+    );
+
+    let runtime = program.runtime.borrow();
+    assert!(runtime
+        .main_thread_tasks
+        .iter()
+        .all(|task| matches!(task, MainThreadTask::LaunchActivity { .. })));
+    assert_eq!(runtime.main_thread_tasks.len(), 1);
+}
+
+// cite: art monitor.cc#Wait
+#[test]
+fn art_object_wait_without_notifier_blocks_forever_and_is_an_explicit_error() {
+    let program = object_wait_contract_program();
+
+    let error =
+        execute_object_wait_contract_method(&program, "waitWithoutRunnableThreadBlocksForever")
+            .expect_err("untimed wait with no runnable thread must not return");
+
+    assert!(error
+        .to_string()
+        .contains("Object.wait would block forever"));
+}
+
+// cite: art monitor.cc#Wait
+// cite: libcore Object.java#wait
+#[test]
+fn libcore_object_timed_wait_without_runnable_thread_advances_the_clock_by_the_timeout() {
+    let program = object_wait_contract_program();
+
+    assert_eq!(
+        execute_object_wait_contract_method(&program, "timedWaitReturnsWithoutRunnableThread")
+            .expect("timed wait should return"),
+        DexExecutionResult::Int(1)
+    );
+    assert_eq!(program.runtime.borrow().main_thread_uptime_millis, 50);
+}
+
+// cite: libcore Object.java#wait
+// cite: art monitor.cc#Wait
+#[test]
+fn libcore_object_wait_rejects_negative_timeout_and_out_of_range_nanos() {
+    let program = object_wait_contract_program();
+
+    for method in [
+        "negativeTimeoutThrowsIllegalArgument",
+        "outOfRangeNanosThrowsIllegalArgument",
+    ] {
+        assert_eq!(
+            execute_object_wait_contract_method(&program, method).expect("wait should throw"),
+            DexExecutionResult::Int(1),
+            "{method}"
+        );
+    }
+}
+
+// cite: libcore Object.java#notify
+#[test]
+fn builtin_object_notify_validates_receiver_like_notify_all() {
+    let program = DexProgram::new(Vec::new());
+    let notify = DexMethodId {
+        class_descriptor: "Ljava/lang/Object;".to_owned(),
+        name: "notify".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "V".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &notify,
+            Some(&test_invocation(vec![DexValue::Reference(
+                std::rc::Rc::from("lock")
+            )]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&notify, Some(&test_invocation(vec![DexValue::Null]))),
+        None
+    );
+}

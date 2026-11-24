@@ -2740,6 +2740,95 @@ impl DexProgram {
         }
     }
 
+    // cite: libcore Thread.java#start
+    fn is_inherited_thread_start(
+        &self,
+        method: &DexMethodId,
+        invocation: &DexInvocation,
+    ) -> Result<bool> {
+        let Some(receiver) = invocation.arguments.first() else {
+            return Ok(false);
+        };
+        if !self.value_matches_type(receiver, "Ljava/lang/Thread;") {
+            return Ok(false);
+        }
+
+        Ok(self
+            .resolve_exact_method_in_class_hierarchy(&method.class_descriptor, method)?
+            .is_none())
+    }
+
+    // cite: libcore Object.java#wait
+    // cite: art monitor.cc#Wait
+    fn object_wait(&self, invocation: &DexInvocation, depth: usize) -> Result<Option<DexValue>> {
+        let (timeout_millis, nanos) = object_wait_timeout(invocation)?;
+
+        if timeout_millis < 0 {
+            return Ok(Some(self.allocate_generated_exception(
+                DexGeneratedException {
+                    class_descriptor: "Ljava/lang/IllegalArgumentException;".to_owned(),
+                    detail_message: Some("timeoutMillis value is negative".to_owned()),
+                },
+            )));
+        }
+        if !(0..=999_999).contains(&nanos) {
+            return Ok(Some(self.allocate_generated_exception(
+                DexGeneratedException {
+                    class_descriptor: "Ljava/lang/IllegalArgumentException;".to_owned(),
+                    detail_message: Some("nanosecond timeout value out of range".to_owned()),
+                },
+            )));
+        }
+        let timeout_millis = if nanos > 0 {
+            timeout_millis.saturating_add(1)
+        } else {
+            timeout_millis
+        };
+
+        if self.run_pending_guest_threads(depth)? > 0 {
+            return Ok(None);
+        }
+
+        if timeout_millis > 0 {
+            let mut runtime = self.runtime.borrow_mut();
+            runtime.main_thread_uptime_millis = runtime
+                .main_thread_uptime_millis
+                .saturating_add(timeout_millis);
+            runtime.resume_expired_parked_threads();
+            return Ok(None);
+        }
+
+        Err(WinedroidError::new(format!(
+            "Object.wait would block forever: no runnable guest thread\nreceiver: {}\ncurrent thread: {}",
+            invocation.arguments[0],
+            self.runtime.borrow().current_guest_thread
+        )))
+    }
+
+    // cite: libcore Thread.java#start, run
+    fn run_pending_guest_threads(&self, depth: usize) -> Result<usize> {
+        let mut ran = 0;
+
+        loop {
+            let threads = self.runtime.borrow_mut().take_start_thread_tasks();
+            if threads.is_empty() {
+                break;
+            }
+            for thread in threads {
+                self.run_started_thread(&thread, depth)?;
+                ran += 1;
+            }
+        }
+
+        let resumes = std::mem::take(&mut self.runtime.borrow_mut().thread_resumes);
+        for resume in resumes {
+            self.resume_parked_thread(resume.thread, resume.execution, depth)?;
+            ran += 1;
+        }
+
+        Ok(ran)
+    }
+
     fn dispatch_runnable(&self, runnable: &DexValue, context: &str, depth: usize) -> Result<()> {
         // cite: libcore FutureTask.java#run
         if value_class_descriptor(runnable) == Some("Ljava/util/concurrent/FutureTask;") {
@@ -17347,6 +17436,28 @@ fn background_pool_thread_reference() -> DexValue {
 
 // cite: frameworks-base Activity.java#runOnUiThread
 const MAIN_THREAD_HANDLER_KEY: &str = "Landroid/app/Activity;.runOnUiThread";
+
+fn object_wait_timeout(invocation: &DexInvocation) -> Result<(i64, i32)> {
+    let arguments = &invocation.arguments;
+    let invalid = || {
+        WinedroidError::new(format!(
+            "Object.wait received an invalid argument list\narguments: {arguments:?}"
+        ))
+    };
+
+    if arguments.is_empty() || !dex_value_is_object_like(&arguments[0]) {
+        return Err(invalid());
+    }
+
+    match arguments.as_slice() {
+        [_] => Ok((0, 0)),
+        [_, DexValue::Long(low), DexValue::Long(high)] if low == high => Ok((*low, 0)),
+        [_, DexValue::Long(low), DexValue::Long(high), DexValue::Int(nanos)] if low == high => {
+            Ok((*low, *nanos))
+        }
+        _ => Err(invalid()),
+    }
+}
 
 fn future_task_get_cause_field() -> DexFieldId {
     // cite: libcore Throwable.java#Throwable

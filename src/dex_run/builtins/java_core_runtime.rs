@@ -42,7 +42,7 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Ljava/lang/Object;"
-            && method.name == "notifyAll"
+            && matches!(method.name.as_str(), "notify" | "notifyAll")
             && method.proto.descriptor_is("()V")
         {
             let invocation = invocation?;

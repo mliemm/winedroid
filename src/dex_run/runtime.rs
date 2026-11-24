@@ -838,6 +838,21 @@ impl DexRuntimeState {
         self.main_thread_tasks.push(task);
     }
 
+    pub(super) fn take_start_thread_tasks(&mut self) -> Vec<DexValue> {
+        let (starts, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.main_thread_tasks)
+            .into_iter()
+            .partition(|task| matches!(task, MainThreadTask::StartThread { .. }));
+        self.main_thread_tasks = rest;
+
+        starts
+            .into_iter()
+            .filter_map(|task| match task {
+                MainThreadTask::StartThread { thread } => Some(thread),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub(super) fn post_handler_runnable(
         &mut self,
         handler_key: String,

@@ -127,12 +127,22 @@ impl DexRunInvocationHandler<'_> {
             return Ok(DexInvocationResult::Void);
         }
 
-        if method.class_descriptor == "Ljava/lang/Thread;"
-            && method.name == "start"
+        if method.name == "start"
             && proto_descriptor == "()V"
+            && (method.class_descriptor == "Ljava/lang/Thread;"
+                || self
+                    .program
+                    .is_inherited_thread_start(&method, &invocation)?)
         {
             self.start_thread(&invocation)?;
             return Ok(DexInvocationResult::Void);
+        }
+
+        if method.name == "wait" && matches!(proto_descriptor, "()V" | "(J)V" | "(JI)V") {
+            return Ok(match self.program.object_wait(&invocation, self.depth)? {
+                Some(exception) => DexInvocationResult::Throw(exception),
+                None => DexInvocationResult::Void,
+            });
         }
 
         if method.class_descriptor == "Landroid/util/Xml;"

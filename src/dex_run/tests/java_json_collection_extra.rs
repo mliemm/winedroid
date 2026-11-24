@@ -449,3 +449,56 @@ fn builtin_json_array_parses_string_and_reads_back_elements() {
         Some(DexExecutionResult::Int(1))
     );
 }
+
+fn thread_local_contract_result(method: &str) -> DexExecutionResult {
+    let dex_file = crate::dex::parse_dex_file(
+        "thread_local_contract.dex",
+        include_bytes!("fixtures/thread_local_contract.dex").to_vec(),
+    )
+    .expect("ThreadLocal contract DEX should parse");
+    let program = DexProgram::new(vec![dex_file]);
+    let method = DexMethodId {
+        class_descriptor: "Lwinedroid/tests/ThreadLocalContract;".to_owned(),
+        name: method.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "I".to_owned(),
+            return_type: "I".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let resolved = program
+        .resolve_exact_method(&method)
+        .expect("ThreadLocal contract method should resolve")
+        .expect("ThreadLocal contract method should exist");
+
+    program
+        .execute_method(None, &resolved, None, 0)
+        .expect("ThreadLocal contract method should execute")
+}
+
+// cite: libcore ThreadLocal.java#get, setInitialValue, initialValue, remove
+#[test]
+fn libcore_thread_local_get_runs_guest_initial_value_once_until_remove() {
+    assert_eq!(
+        thread_local_contract_result("initialValueRunsOncePerGetUntilRemove"),
+        DexExecutionResult::Int(2)
+    );
+}
+
+// cite: libcore ThreadLocal.java#get, setInitialValue
+#[test]
+fn libcore_thread_local_get_propagates_initial_value_exception_and_stores_nothing() {
+    assert_eq!(
+        thread_local_contract_result("throwingInitialValuePropagatesAndStoresNothing"),
+        DexExecutionResult::Int(2)
+    );
+}
+
+// cite: libcore ThreadLocal.java#initialValue, set
+#[test]
+fn libcore_thread_local_default_initial_value_is_null() {
+    assert_eq!(
+        thread_local_contract_result("defaultInitialValueIsNull"),
+        DexExecutionResult::Int(1)
+    );
+}
