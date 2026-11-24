@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use super::dl_api::DlHandle;
-use super::fixture_elf::{FixtureElf, R_AARCH64_ABS64, R_AARCH64_GLOB_DAT, R_AARCH64_JUMP_SLOT};
+use super::fixture_elf::{FixtureElf, R_AARCH64_ABS64, R_AARCH64_GLOB_DAT, R_AARCH64_JUMP_SLOT, R_AARCH64_TLSDESC};
 use super::loader::Loader;
 use super::loader_test_support::{dlopen_without_constructors, fixture_dir, loader_for, take_recorded, unresolved_import_address};
 use super::tls_modules;
@@ -224,4 +224,61 @@ fn bionic_text_patcher_patches_whole_segments_when_pt_gnu_eh_frame_is_an_empty_p
     assert_eq!(unsafe { *pool }, 0xD53BD060, "no FDE ranges, so the whole executable segment is rewritten");
     assert_eq!(unsafe { *pool.add(1) }, 0xD503201F);
     fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bionic_call_constructors_pass_argc_argv_and_envp_to_every_init_array_function() {
+    for variant in VARIANTS {
+        let (argc, first_byte, envp_terminated) = within_deadline(move || {
+            let loader = loader_for(vec![fixture_dir(variant)]);
+            let handle = loader.dlopen(Some("libfx_order_child.so"), 2, None).unwrap();
+            let read = |name: &str| unsafe { *(symbol(&loader, handle, name) as *const i32) };
+            (read("fx_ctor_argc"), read("fx_ctor_argv0"), read("fx_ctor_envp_terminated"))
+        });
+
+        assert_eq!(argc, 1, "{variant} argc");
+        assert_eq!(first_byte, i32::from(b'/'), "{variant} argv[0] is the program path");
+        assert_eq!(envp_terminated, 1, "{variant} envp is a non null empty array");
+    }
+}
+
+#[test]
+fn bionic_dtprel64_relocation_stores_the_symbol_value_plus_the_addend() {
+    const DTPREL64: u32 = 1029;
+    for variant in VARIANTS {
+        let original = fs::read(fixture_dir(variant).join("libfx_reloc.so")).unwrap();
+        let elf = FixtureElf::parse(&original);
+        let target = elf.relocations.iter().find(|relocation| relocation.kind == R_AARCH64_TLSDESC && relocation.symbol.as_deref() == Some("fx_tls_zero")).unwrap();
+        let symbol_value = elf.export_addresses["fx_tls_zero"];
+        assert_ne!(symbol_value, 0, "{variant} the TLS symbol value is nonzero so a dropped symbol is visible");
+        for addend in [0u64, ADDEND] {
+            let mut data = original.clone();
+            let info = u64::from_le_bytes(data[target.file_offset + 8..target.file_offset + 16].try_into().unwrap());
+            data[target.file_offset + 8..target.file_offset + 16].copy_from_slice(&((info & !0xFFFF_FFFF) | u64::from(DTPREL64)).to_le_bytes());
+            data[target.file_offset + 16..target.file_offset + 24].copy_from_slice(&addend.to_le_bytes());
+            let dir = scratch_dir(&format!("dtprel-{variant}-{addend}"));
+            fs::write(dir.join("libfx_reloc.so"), &data).unwrap();
+            let loader = loader_for(vec![dir.clone()]);
+            let handle = dlopen_without_constructors(&loader, "libfx_reloc.so").unwrap();
+            let bias = loader.module_info(handle).unwrap().load_bias;
+
+            assert_eq!(slot(bias, target.vaddr), symbol_value + addend, "{variant} addend {addend}");
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+}
+
+#[test]
+fn bionic_relr_and_aps2_packed_relative_relocations_add_the_load_bias() {
+    for variant in VARIANTS {
+        for library in ["libfx_reloc.so", "libfx_aps2.so", "libfx_relr.so"] {
+            let loader = loader_for(vec![fixture_dir(variant)]);
+            let handle = dlopen_without_constructors(&loader, library).unwrap();
+            let info = loader.module_info(handle).unwrap();
+            let pointer = unsafe { *(symbol(&loader, handle, "fx_local_pointer") as *const usize) };
+
+            assert!(pointer >= info.region && pointer < info.region + info.region_len, "{variant} {library}: {pointer:#x} is outside the image");
+            assert_eq!(unsafe { *(pointer as *const i32) }, 11, "{variant} {library}");
+        }
+    }
 }

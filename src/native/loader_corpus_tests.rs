@@ -5,7 +5,7 @@ use std::time::Instant;
 use super::dl_api::DlHandle;
 use super::elf_image::is_arm64_elf;
 use super::loader::Loader;
-use super::loader_test_support::{corpus_dir, dlopen_without_constructors, TestProvider};
+use super::loader_test_support::{corpus_dir, dlopen_without_constructors, host_protection_of, TestProvider};
 use super::reloc_stream::{decode_aps2, decode_rela};
 use super::symbol_table::gnu_hash;
 
@@ -206,4 +206,19 @@ fn bionic_process_relocation_general_resolves_weak_undefined_imports_to_zero_wit
 
     assert!(imports.iter().any(|(_, name)| name == "__sF"), "non weak imports are reported");
     assert!(!imports.iter().any(|(_, name)| name == "__cxa_thread_atexit_impl"), "weak import must not be reported");
+}
+
+#[test]
+fn bionic_phdr_table_protect_gnu_relro_makes_whole_host_pages_of_a_corpus_library_read_only() {
+    let Some(_) = corpus_libraries() else { return };
+    let data = fs::read(corpus_dir().join("libBlinkCard.so")).unwrap();
+    let probe = Loader::load_image("libBlinkCard.so", &data).unwrap();
+    let range = probe.mapped.layout().relro_pages(probe.elf.relro().expect("libBlinkCard has PT_GNU_RELRO")).expect("RELRO covers a whole host page");
+    let loader = new_loader();
+    let handle = dlopen_without_constructors(&loader, "libBlinkCard.so").unwrap();
+    let info = loader.module_info(handle).unwrap();
+
+    for page in (range.start..range.start + range.len).step_by(16384) {
+        assert_eq!(host_protection_of(info.region + page as usize), libc::PROT_READ, "RELRO page at image offset {page:#x}");
+    }
 }

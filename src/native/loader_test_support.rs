@@ -126,3 +126,17 @@ pub fn loader_for(dirs: Vec<PathBuf>) -> Arc<Loader> {
     CURRENT.with(|current| *current.borrow_mut() = Some(loader.clone()));
     loader
 }
+
+extern "C" {
+    fn mach_vm_region(task: u32, address: *mut u64, size: *mut u64, flavor: i32, info: *mut i32, count: *mut u32, object_name: *mut u32) -> i32;
+}
+
+pub fn host_protection_of(address: usize) -> i32 {
+    const VM_REGION_BASIC_INFO_64: i32 = 9;
+    let mut at = address as u64;
+    let (mut size, mut info, mut count, mut object) = (0u64, [0i32; 9], 9u32, 0u32);
+    let status = unsafe { mach_vm_region(libc::mach_task_self(), &mut at, &mut size, VM_REGION_BASIC_INFO_64, info.as_mut_ptr(), &mut count, &mut object) };
+    assert_eq!(status, 0, "mach_vm_region({address:#x})");
+    assert!(at as usize <= address, "{address:#x} is not mapped");
+    info[0]
+}

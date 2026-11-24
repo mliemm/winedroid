@@ -86,7 +86,7 @@ impl ImageLayout {
         // cite: bionic linker_phdr.cpp#phdr_table_protect_gnu_relro
         let start = round_up(self.region_offset(relro.vaddr), self.host_page);
         let end = (self.region_offset(relro.vaddr) + relro.memsz) / self.host_page * self.host_page;
-        (end > start).then_some(PageRange { start, len: end - start, prot: libc::PROT_READ })
+        (end > start).then(|| PageRange { start, len: end - start, prot: libc::PROT_READ })
     }
 }
 

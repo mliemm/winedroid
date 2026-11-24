@@ -95,7 +95,7 @@ pub fn existing_block_address(module_id: u32) -> Option<usize> {
         .try_with(|blocks| {
             let mut blocks = blocks.borrow_mut();
             blocks.drop_stale();
-            blocks.entries.get(module_id as usize - 1).and_then(|block| block.as_ref().map(|block| block.pointer as usize))
+            blocks.entries.get(module_id.checked_sub(1)? as usize).and_then(|block| block.as_ref().map(|block| block.pointer as usize))
         })
         .ok()
         .flatten()
