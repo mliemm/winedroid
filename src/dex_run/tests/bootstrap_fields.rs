@@ -91,6 +91,24 @@ fn bootstraps_priority_queue_collection_hierarchy() {
     assert!(is_bootstrap_interface_descriptor("Ljava/util/Queue;"));
 }
 
+// cite: libcore LinkedBlockingQueue.java#LinkedBlockingQueue
+#[test]
+fn bootstraps_linked_blocking_queue_hierarchy() {
+    assert_eq!(
+        bootstrap_superclass_descriptor("Ljava/util/concurrent/LinkedBlockingQueue;"),
+        Some("Ljava/util/AbstractQueue;")
+    );
+    assert_eq!(
+        bootstrap_direct_interface_descriptors("Ljava/util/concurrent/LinkedBlockingQueue;"),
+        &["Ljava/util/concurrent/BlockingQueue;", "Ljava/io/Serializable;"]
+    );
+    assert_eq!(
+        bootstrap_direct_interface_descriptors("Ljava/util/concurrent/BlockingQueue;"),
+        &["Ljava/util/Queue;"]
+    );
+    assert!(is_bootstrap_interface_descriptor("Ljava/util/concurrent/BlockingQueue;"));
+}
+
 // cite: frameworks-base Resources.java#NotFoundException
 #[test]
 fn bootstrap_resources_not_found_exception_extends_runtime_exception() {

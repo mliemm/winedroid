@@ -52,6 +52,22 @@ impl DexProgram {
             .then_some(self.default_private_storage)
     }
 
+    pub(in crate::dex_run) fn create_app_context(&self, application: &DexValue) -> DexValue {
+        // cite: frameworks-base ContextImpl.java#createAppContext, setOuterContext, mOuterContext
+        let context = self.allocate_object("Landroid/app/ContextImpl;".to_owned());
+        self.runtime
+            .borrow_mut()
+            .context_storage_kinds
+            .insert(map_identity_key(&context), self.default_private_storage);
+        self.write_stored_instance_field(
+            &context,
+            &context_impl_outer_context_field(),
+            application.clone(),
+        );
+
+        context
+    }
+
     pub(in crate::dex_run) fn create_private_storage_context(
         &self,
         source: &DexValue,
@@ -85,5 +101,13 @@ fn context_wrapper_base_field() -> DexFieldId {
         class_descriptor: "Landroid/content/ContextWrapper;".to_owned(),
         type_descriptor: "Landroid/content/Context;".to_owned(),
         name: "mBase".to_owned(),
+    }
+}
+
+fn context_impl_outer_context_field() -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Landroid/app/ContextImpl;".to_owned(),
+        type_descriptor: "Landroid/content/Context;".to_owned(),
+        name: "mOuterContext".to_owned(),
     }
 }

@@ -540,6 +540,26 @@ fn builtin_system_current_time_millis_returns_boot_wall_clock_plus_uptime() {
 }
 
 #[test]
+fn libcore_system_get_security_manager_returns_null() {
+    // cite: libcore System.java#getSecurityManager
+    let program = DexProgram::new(Vec::new());
+    let method = DexMethodId {
+        class_descriptor: "Ljava/lang/System;".to_owned(),
+        name: "getSecurityManager".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "L".to_owned(),
+            return_type: "Ljava/lang/SecurityManager;".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+
+    assert_eq!(
+        program.invoke_builtin_method(&method, None),
+        Some(DexExecutionResult::Value(DexValue::Null))
+    );
+}
+
+#[test]
 fn builtin_system_nano_time_returns_monotonic_runtime_time() {
     let program = DexProgram::new(Vec::new());
     program.runtime.borrow_mut().main_thread_uptime_millis = 123;
@@ -2736,6 +2756,80 @@ fn builtin_looper_get_thread_returns_main_thread_reference() {
         Some(DexExecutionResult::Value(DexValue::Reference(
             std::rc::Rc::from("Ljava/lang/Thread;:main")
         )))
+    );
+}
+
+fn thread_get_thread_group_method() -> DexMethodId {
+    DexMethodId {
+        class_descriptor: "Ljava/lang/Thread;".to_owned(),
+        name: "getThreadGroup".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "L".to_owned(),
+            return_type: "Ljava/lang/ThreadGroup;".to_owned(),
+            parameters: Vec::new(),
+        },
+    }
+}
+
+fn main_thread_group() -> Option<DexExecutionResult> {
+    Some(DexExecutionResult::Value(DexValue::Reference(
+        std::rc::Rc::from("Ljava/lang/ThreadGroup;:main"),
+    )))
+}
+
+#[test]
+fn libcore_thread_get_thread_group_returns_main_group_for_main_and_new_threads() {
+    // cite: libcore Thread.java#getThreadGroup
+    let program = DexProgram::new(Vec::new());
+    let method = thread_get_thread_group_method();
+    let main = DexValue::Reference(std::rc::Rc::from("Ljava/lang/Thread;:main"));
+    let worker = program.allocate_object("Ljava/lang/Thread;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(&method, Some(&test_invocation(vec![main]))),
+        main_thread_group()
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&method, Some(&test_invocation(vec![worker]))),
+        main_thread_group()
+    );
+}
+
+#[test]
+fn libcore_thread_get_thread_group_returns_null_after_the_run_completed() {
+    // cite: libcore Thread.java#getThreadGroup, getState
+    let program = DexProgram::new(Vec::new());
+    let method = thread_get_thread_group_method();
+    let main = DexValue::Reference(std::rc::Rc::from("Ljava/lang/Thread;:main"));
+    let worker = program.allocate_object("Ljava/lang/Thread;".to_owned());
+
+    program
+        .finish_started_thread(&worker, DexExecutionResult::Void, "Ljava/lang/Thread;")
+        .unwrap();
+
+    assert_eq!(
+        program.invoke_builtin_method(&method, Some(&test_invocation(vec![worker]))),
+        Some(DexExecutionResult::Value(DexValue::Null))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&method, Some(&test_invocation(vec![main]))),
+        main_thread_group()
+    );
+}
+
+#[test]
+fn libcore_thread_get_thread_group_rejects_a_non_object_receiver() {
+    // cite: libcore Thread.java#getThreadGroup
+    let program = DexProgram::new(Vec::new());
+    let method = thread_get_thread_group_method();
+
+    assert_eq!(
+        program.invoke_builtin_method(&method, Some(&test_invocation(vec![DexValue::Null]))),
+        None
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&method, Some(&test_invocation(vec![DexValue::Int(1)]))),
+        None
     );
 }
 

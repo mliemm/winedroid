@@ -1568,3 +1568,128 @@ fn mime_type_map_has_mime_type_extension_and_reverse_lookup_round_trip() {
         )))
     );
 }
+
+fn log_get_stack_trace_string_method() -> DexMethodId {
+    DexMethodId {
+        class_descriptor: "Landroid/util/Log;".to_owned(),
+        name: "getStackTraceString".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "LL".to_owned(),
+            return_type: "Ljava/lang/String;".to_owned(),
+            parameters: vec!["Ljava/lang/Throwable;".to_owned()],
+        },
+    }
+}
+
+fn throwable_field(name: &str, type_descriptor: &str) -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Ljava/lang/Throwable;".to_owned(),
+        type_descriptor: type_descriptor.to_owned(),
+        name: name.to_owned(),
+    }
+}
+
+fn throwable_with(
+    program: &DexProgram,
+    class_descriptor: &str,
+    message: &str,
+    cause: Option<DexValue>,
+) -> DexValue {
+    let throwable = program.allocate_object(class_descriptor.to_owned());
+    program.write_stored_instance_field(
+        &throwable,
+        &throwable_field("detailMessage", "Ljava/lang/String;"),
+        DexValue::String(std::rc::Rc::from(message)),
+    );
+    if let Some(cause) = cause {
+        program.write_stored_instance_field(
+            &throwable,
+            &throwable_field("cause", "Ljava/lang/Throwable;"),
+            cause,
+        );
+    }
+
+    throwable
+}
+
+fn stack_trace_string(program: &DexProgram, throwable: DexValue) -> Option<DexExecutionResult> {
+    program.invoke_builtin_method(
+        &log_get_stack_trace_string_method(),
+        Some(&test_invocation(vec![throwable])),
+    )
+}
+
+fn string_result(text: &str) -> Option<DexExecutionResult> {
+    Some(DexExecutionResult::Value(DexValue::String(
+        std::rc::Rc::from(text),
+    )))
+}
+
+#[test]
+fn frameworks_base_log_get_stack_trace_string_returns_empty_for_null() {
+    // cite: frameworks-base Log.java#getStackTraceString
+    let program = DexProgram::new(Vec::new());
+
+    assert_eq!(stack_trace_string(&program, DexValue::Null), string_result(""));
+}
+
+#[test]
+fn frameworks_base_log_get_stack_trace_string_prints_header_and_cause() {
+    // cite: frameworks-base Log.java#getStackTraceString
+    // cite: libcore Throwable.java#printStackTrace, printEnclosedStackTrace
+    let program = DexProgram::new(Vec::new());
+    let cause = throwable_with(&program, "Ljava/lang/IllegalStateException;", "b", None);
+    let outer = throwable_with(&program, "Ljava/lang/RuntimeException;", "a", Some(cause));
+
+    assert_eq!(
+        stack_trace_string(&program, outer),
+        string_result(
+            "java.lang.RuntimeException: a\nCaused by: java.lang.IllegalStateException: b\n"
+        )
+    );
+}
+
+#[test]
+fn frameworks_base_log_get_stack_trace_string_returns_empty_for_unknown_host_in_cause_chain() {
+    // cite: frameworks-base Log.java#getStackTraceString
+    let program = DexProgram::new(Vec::new());
+    let host = throwable_with(&program, "Ljava/net/UnknownHostException;", "h", None);
+    let outer = throwable_with(&program, "Ljava/lang/RuntimeException;", "a", Some(host));
+
+    assert_eq!(stack_trace_string(&program, outer), string_result(""));
+}
+
+#[test]
+fn libcore_throwable_print_stack_trace_marks_a_cause_cycle_as_circular() {
+    // cite: libcore Throwable.java#printEnclosedStackTrace
+    let program = DexProgram::new(Vec::new());
+    let first = throwable_with(&program, "Ljava/lang/RuntimeException;", "a", None);
+    let second = throwable_with(
+        &program,
+        "Ljava/lang/IllegalStateException;",
+        "b",
+        Some(first.clone()),
+    );
+    program.write_stored_instance_field(
+        &first,
+        &throwable_field("cause", "Ljava/lang/Throwable;"),
+        second,
+    );
+
+    assert_eq!(
+        stack_trace_string(&program, first),
+        string_result(
+            "java.lang.RuntimeException: a\nCaused by: java.lang.IllegalStateException: b\nCaused by: [CIRCULAR REFERENCE: java.lang.RuntimeException: a]\n"
+        )
+    );
+}
+
+#[test]
+fn frameworks_base_log_get_stack_trace_string_rejects_a_non_throwable() {
+    // cite: frameworks-base Log.java#getStackTraceString
+    let program = DexProgram::new(Vec::new());
+    let object = program.allocate_object("Ljava/util/ArrayList;".to_owned());
+
+    assert_eq!(stack_trace_string(&program, object), None);
+    assert_eq!(stack_trace_string(&program, DexValue::Int(7)), None);
+}

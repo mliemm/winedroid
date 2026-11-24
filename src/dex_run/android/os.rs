@@ -1219,22 +1219,138 @@ impl DexProgram {
     }
 
     pub(in crate::dex_run) fn executor_execute(&self, invocation: &DexInvocation) -> Option<()> {
-        let DexValue::Reference(executor) = invocation.arguments.first()? else {
-            return None;
-        };
+        let executor = invocation.arguments.first()?;
 
         // cite: frameworks-base HandlerExecutor.java#execute
         // cite: libcore ThreadPoolExecutor.java#execute
-        let known_executor = executor.as_ref() == "Ljava/util/concurrent/Executor;.main"
-            || executor.as_ref() == "Ljava/util/concurrent/ExecutorService;.single"
-            || executor.as_ref() == "Ljava/util/concurrent/ExecutorService;.cached"
-            || executor.as_ref() == "Ljava/util/concurrent/ScheduledExecutorService;.single"
-            || executor.starts_with("Ljava/util/concurrent/ExecutorService;.fixed/");
+        let known_executor = match executor {
+            DexValue::Reference(executor) => {
+                executor.as_ref() == "Ljava/util/concurrent/Executor;.main"
+                    || executor.as_ref() == "Ljava/util/concurrent/ExecutorService;.single"
+                    || executor.as_ref() == "Ljava/util/concurrent/ExecutorService;.cached"
+                    || executor.as_ref() == "Ljava/util/concurrent/ScheduledExecutorService;.single"
+                    || executor.starts_with("Ljava/util/concurrent/ExecutorService;.fixed/")
+            }
+            DexValue::Object(_) => self.is_thread_pool_executor(executor),
+            _ => false,
+        };
         if !known_executor {
             return None;
         }
 
         self.post_handler_runnable(invocation)
+    }
+
+    pub(in crate::dex_run) fn is_thread_pool_executor(&self, value: &DexValue) -> bool {
+        matches!(value, DexValue::Object(_))
+            && self.value_matches_type(value, "Ljava/util/concurrent/ThreadPoolExecutor;")
+    }
+
+    pub(in crate::dex_run) fn thread_pool_executor_init(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        // cite: libcore ThreadPoolExecutor.java#ThreadPoolExecutor, defaultHandler, keepAliveTime
+        let [receiver, DexValue::Int(core), DexValue::Int(maximum), DexValue::Long(keep_alive), DexValue::Long(keep_alive_high), unit, work_queue, thread_factory] =
+            invocation.arguments.as_slice()
+        else {
+            return None;
+        };
+        if keep_alive != keep_alive_high || !dex_value_is_object_like(receiver) {
+            return None;
+        }
+        if *core < 0 || *maximum <= 0 || maximum < core || *keep_alive < 0 {
+            return Some(DexExecutionResult::Throw(self.allocate_object(
+                "Ljava/lang/IllegalArgumentException;".to_owned(),
+            )));
+        }
+        if *work_queue == DexValue::Null
+            || *thread_factory == DexValue::Null
+            || *unit == DexValue::Null
+        {
+            return Some(DexExecutionResult::Throw(self.allocate_object(
+                "Ljava/lang/NullPointerException;".to_owned(),
+            )));
+        }
+        let keep_alive_nanos = scale_to_nanos(time_unit_reference_name(unit)?, *keep_alive)?;
+
+        self.write_stored_instance_field(receiver, &thread_pool_executor_core_field(), DexValue::Int(*core));
+        self.write_stored_instance_field(
+            receiver,
+            &thread_pool_executor_maximum_field(),
+            DexValue::Int(*maximum),
+        );
+        self.write_stored_instance_field(
+            receiver,
+            &thread_pool_executor_keep_alive_field(),
+            DexValue::Long(keep_alive_nanos),
+        );
+        self.write_stored_instance_field(
+            receiver,
+            &thread_pool_executor_work_queue_field(),
+            work_queue.clone(),
+        );
+        self.write_stored_instance_field(
+            receiver,
+            &thread_pool_executor_thread_factory_field(),
+            thread_factory.clone(),
+        );
+
+        Some(DexExecutionResult::Void)
+    }
+
+    pub(in crate::dex_run) fn thread_pool_executor_allow_core_thread_time_out(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        // cite: libcore ThreadPoolExecutor.java#allowCoreThreadTimeOut, interruptIdleWorkers, keepAliveTime
+        let [receiver, DexValue::Int(flag)] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        if !dex_value_is_object_like(receiver) {
+            return None;
+        }
+        let value = i32::from(*flag != 0);
+        let keep_alive_nanos = self.thread_pool_executor_keep_alive_nanos(receiver)?;
+        if value != 0 && keep_alive_nanos <= 0 {
+            return Some(DexExecutionResult::Throw(self.allocate_generated_exception(
+                DexGeneratedException {
+                    class_descriptor: "Ljava/lang/IllegalArgumentException;".to_owned(),
+                    detail_message: Some("Core threads must have nonzero keep alive times".to_owned()),
+                },
+            )));
+        }
+        let field = thread_pool_executor_allow_core_thread_time_out_field();
+        let current = match self.read_stored_instance_field(receiver, &field) {
+            Some(DexValue::Int(current)) => current,
+            _ => 0,
+        };
+        if value != current {
+            self.write_stored_instance_field(receiver, &field, DexValue::Int(value));
+        }
+
+        Some(DexExecutionResult::Void)
+    }
+
+    fn thread_pool_executor_keep_alive_nanos(&self, receiver: &DexValue) -> Option<i64> {
+        if let Some(DexValue::Long(nanos)) =
+            self.read_stored_instance_field(receiver, &thread_pool_executor_keep_alive_field())
+        {
+            return Some(nanos);
+        }
+        let DexValue::Reference(reference) = receiver else {
+            return None;
+        };
+
+        // cite: libcore Executors.java#newFixedThreadPool, newCachedThreadPool
+        if reference.starts_with("Ljava/util/concurrent/ExecutorService;.fixed/") {
+            return Some(0);
+        }
+        if reference.as_ref() == "Ljava/util/concurrent/ExecutorService;.cached" {
+            return scale_to_nanos("SECONDS", 60);
+        }
+
+        None
     }
 
     // cite: libcore FutureTask.java#FutureTask
@@ -1785,6 +1901,60 @@ pub(in crate::dex_run) fn atomic_long_field_updater_parts(
     let (target_descriptor, field_name) = payload.rsplit_once(':')?;
 
     Some((target_descriptor.to_owned(), field_name.to_owned()))
+}
+
+fn thread_pool_executor_core_field() -> DexFieldId {
+    // cite: libcore ThreadPoolExecutor.java#corePoolSize
+    DexFieldId {
+        class_descriptor: "Ljava/util/concurrent/ThreadPoolExecutor;".to_owned(),
+        type_descriptor: "I".to_owned(),
+        name: "corePoolSize".to_owned(),
+    }
+}
+
+fn thread_pool_executor_maximum_field() -> DexFieldId {
+    // cite: libcore ThreadPoolExecutor.java#maximumPoolSize
+    DexFieldId {
+        class_descriptor: "Ljava/util/concurrent/ThreadPoolExecutor;".to_owned(),
+        type_descriptor: "I".to_owned(),
+        name: "maximumPoolSize".to_owned(),
+    }
+}
+
+fn thread_pool_executor_keep_alive_field() -> DexFieldId {
+    // cite: libcore ThreadPoolExecutor.java#keepAliveTime
+    DexFieldId {
+        class_descriptor: "Ljava/util/concurrent/ThreadPoolExecutor;".to_owned(),
+        type_descriptor: "J".to_owned(),
+        name: "keepAliveTime".to_owned(),
+    }
+}
+
+fn thread_pool_executor_work_queue_field() -> DexFieldId {
+    // cite: libcore ThreadPoolExecutor.java#workQueue
+    DexFieldId {
+        class_descriptor: "Ljava/util/concurrent/ThreadPoolExecutor;".to_owned(),
+        type_descriptor: "Ljava/util/concurrent/BlockingQueue;".to_owned(),
+        name: "workQueue".to_owned(),
+    }
+}
+
+fn thread_pool_executor_thread_factory_field() -> DexFieldId {
+    // cite: libcore ThreadPoolExecutor.java#threadFactory
+    DexFieldId {
+        class_descriptor: "Ljava/util/concurrent/ThreadPoolExecutor;".to_owned(),
+        type_descriptor: "Ljava/util/concurrent/ThreadFactory;".to_owned(),
+        name: "threadFactory".to_owned(),
+    }
+}
+
+fn thread_pool_executor_allow_core_thread_time_out_field() -> DexFieldId {
+    // cite: libcore ThreadPoolExecutor.java#allowCoreThreadTimeOut
+    DexFieldId {
+        class_descriptor: "Ljava/util/concurrent/ThreadPoolExecutor;".to_owned(),
+        type_descriptor: "Z".to_owned(),
+        name: "allowCoreThreadTimeOut".to_owned(),
+    }
 }
 
 pub(in crate::dex_run) fn future_task_callable_field() -> DexFieldId {

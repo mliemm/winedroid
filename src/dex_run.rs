@@ -17,7 +17,7 @@ use crate::dex::{
 #[cfg(all(feature = "jit", not(target_family = "wasm")))]
 use crate::dex_interpreter::DexFrame;
 use crate::dex_interpreter::{
-    self, DexArrayLength, DexArrayRead, DexArrayWrite, DexCheckCastResult, DexClassAccess,
+    self, DexArrayLength, DexArrayRead, DexArrayWrite, DexCheckCastResult, DexClassAccess, DexNewInstanceResult,
     DexExecutionResult, DexFieldAccess, DexFieldWrite, DexFilledNewArray, DexGeneratedException,
     DexInstanceOf, DexInvocation, DexInvocationFrame, DexInvocationHandler, DexInvocationRegisters,
     DexInvocationResult, DexInvokeKind, DexNewArray, DexNewInstance, DexObjectRef,
@@ -2339,7 +2339,62 @@ impl DexProgram {
             &[application.clone()],
             depth + 1,
         )?;
+        self.attach_application_base_context(&class_descriptor, &application, depth + 1)?;
         self.execute_optional_void_method(&class_descriptor, "onCreate", &[application], depth + 1)
+    }
+
+    // cite: frameworks-base Instrumentation.java#newApplication
+    // cite: frameworks-base Application.java#attach
+    fn attach_application_base_context(
+        &self,
+        class_descriptor: &str,
+        application: &DexValue,
+        depth: usize,
+    ) -> Result<()> {
+        let app_context = self.create_app_context(application);
+        let method = DexMethodId {
+            class_descriptor: class_descriptor.to_owned(),
+            name: "attachBaseContext".to_owned(),
+            proto: crate::dex::DexProto {
+                shorty: "VL".to_owned(),
+                return_type: "V".to_owned(),
+                parameters: vec!["Landroid/content/Context;".to_owned()],
+            },
+        };
+        let arguments = [application.clone(), app_context];
+
+        if let Some(resolved) =
+            self.resolve_exact_method_in_class_hierarchy(class_descriptor, &method)?
+        {
+            let result = self.execute_method(None, &resolved, Some(&arguments), depth)?;
+
+            return require_void_application_result(
+                self,
+                class_descriptor,
+                &resolved.method,
+                result,
+            );
+        }
+
+        let invocation = DexInvocation {
+            kind: DexInvokeKind::Virtual,
+            range: false,
+            method_index: 0,
+            argument_registers: Default::default(),
+            arguments: arguments.into_iter().collect(),
+        };
+        match self.invoke_builtin_method_from_class_hierarchy(
+            class_descriptor,
+            &method,
+            &invocation,
+        )? {
+            Some(result) => {
+                require_void_application_result(self, class_descriptor, &method, result)
+            }
+            None => Err(WinedroidError::new(format!(
+                "Application.attachBaseContext has no implementation\nclass: {class_descriptor}"
+            ))),
+        }
     }
 
     fn execute_optional_void_method(
@@ -2363,20 +2418,7 @@ impl DexProgram {
         };
         let result = self.execute_method(None, &resolved, Some(arguments), depth)?;
 
-        match &result {
-            DexExecutionResult::Void => return Ok(()),
-            DexExecutionResult::Parked(execution) => {
-                self.discard_parked_execution(execution);
-            }
-            DexExecutionResult::Int(_)
-            | DexExecutionResult::Value(_)
-            | DexExecutionResult::Throw(_) => {}
-        }
-
-        Err(WinedroidError::new(format!(
-            "Application method returned a value\nclass: {class_descriptor}\nmethod: {}\nresult: {result}",
-            resolved.method.display_signature()
-        )))
+        require_void_application_result(self, class_descriptor, &resolved.method, result)
     }
 
     fn dispatch_pending_main_loop(&self, width: u32, height: u32, depth: usize) -> Result<usize> {
@@ -2716,7 +2758,10 @@ impl DexProgram {
         class_descriptor: &str,
     ) -> Result<()> {
         match result {
-            DexExecutionResult::Void => Ok(()),
+            DexExecutionResult::Void => {
+                self.thread_mark_terminated(thread);
+                Ok(())
+            }
             DexExecutionResult::Parked(execution) => {
                 let cleanup_execution = execution.clone();
                 if self
@@ -3185,7 +3230,10 @@ impl DexProgram {
             ))),
             DexInvocationResult::Void
             | DexInvocationResult::Value(_)
-            | DexInvocationResult::RawValue(_) => Ok(()),
+            | DexInvocationResult::RawValue(_) => {
+                self.thread_mark_terminated(&thread);
+                Ok(())
+            }
             DexInvocationResult::Parked(_) => unreachable!(),
         }
     }
@@ -4828,8 +4876,10 @@ extern "C" fn jit_rt_new_instance(
             type_index,
             destination_register: dst as u16,
         }) {
-        Ok(value) => jit_store_or_bail(env, dst, value, pc),
-        Err(_) => {
+        Ok(dex_interpreter::DexNewInstanceResult::Allocated(value)) => {
+            jit_store_or_bail(env, dst, value, pc)
+        }
+        Ok(dex_interpreter::DexNewInstanceResult::Throw(_)) | Err(_) => {
             env.resume_pc = Some(pc);
             1
         }
@@ -10503,12 +10553,21 @@ impl DexInvocationHandler for DexRunInvocationHandler<'_> {
         ))))
     }
 
-    fn allocate_object(&mut self, instance: DexNewInstance) -> Result<DexValue> {
+    fn allocate_object(&mut self, instance: DexNewInstance) -> Result<DexNewInstanceResult> {
         let descriptor = self
             .program
             .type_descriptor_value(self.current_dex_file_index, instance.type_index)?;
+        if !self.program.class_resolvable_for_new_instance(&descriptor) {
+            // cite: art class_linker.cc#DoResolveType, ThrowNoClassDefFoundError
+            return Ok(DexNewInstanceResult::Throw(DexGeneratedException {
+                class_descriptor: "Ljava/lang/NoClassDefFoundError;".to_owned(),
+                detail_message: Some(format!("Failed resolution of: {descriptor}")),
+            }));
+        }
 
-        Ok(self.program.allocate_object(descriptor))
+        Ok(DexNewInstanceResult::Allocated(
+            self.program.allocate_object(descriptor),
+        ))
     }
 
     fn allocate_array(&mut self, array: DexNewArray) -> Result<DexValue> {
@@ -17151,19 +17210,36 @@ fn time_unit_convert(invocation: &DexInvocation) -> Option<i64> {
     Some(saturating_i128_to_i64(converted))
 }
 
+fn require_void_application_result(
+    program: &DexProgram,
+    class_descriptor: &str,
+    method: &DexMethodId,
+    result: DexExecutionResult,
+) -> Result<()> {
+    match &result {
+        DexExecutionResult::Void => return Ok(()),
+        DexExecutionResult::Parked(execution) => {
+            program.discard_parked_execution(execution);
+        }
+        DexExecutionResult::Int(_) | DexExecutionResult::Value(_) | DexExecutionResult::Throw(_) => {
+        }
+    }
+
+    Err(WinedroidError::new(format!(
+        "Application method returned a value\nclass: {class_descriptor}\nmethod: {}\nresult: {result}",
+        method.display_signature()
+    )))
+}
+
 fn time_unit_to_nanos(invocation: &DexInvocation) -> Option<i64> {
     let (unit, value) = time_unit_argument(invocation)?;
 
-    match unit {
-        "NANOSECONDS" => Some(value),
-        "MICROSECONDS" => Some(value.saturating_mul(1_000)),
-        "MILLISECONDS" => Some(value.saturating_mul(1_000_000)),
-        "SECONDS" => Some(value.saturating_mul(1_000_000_000)),
-        "MINUTES" => Some(value.saturating_mul(60_000_000_000)),
-        "HOURS" => Some(value.saturating_mul(3_600_000_000_000)),
-        "DAYS" => Some(value.saturating_mul(86_400_000_000_000)),
-        _ => None,
-    }
+    scale_to_nanos(unit, value)
+}
+
+pub(in crate::dex_run) fn scale_to_nanos(unit: &str, value: i64) -> Option<i64> {
+    // cite: libcore TimeUnit.java#toNanos
+    Some(value.saturating_mul(time_unit_nanos(unit)?))
 }
 
 fn time_unit_nanos(unit: &str) -> Option<i64> {
@@ -17211,7 +17287,7 @@ fn time_unit_argument(invocation: &DexInvocation) -> Option<(&str, i64)> {
     Some((unit, value))
 }
 
-fn time_unit_reference_name(value: &DexValue) -> Option<&str> {
+pub(in crate::dex_run) fn time_unit_reference_name(value: &DexValue) -> Option<&str> {
     let DexValue::Reference(reference) = value else {
         return None;
     };

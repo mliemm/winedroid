@@ -193,6 +193,98 @@ fn context_impl_get_files_dir_returns_android_guest_path() {
     fs::remove_dir_all(app_dir).ok();
 }
 
+fn context_method(class_descriptor: &str, name: &str, shorty: &str, return_type: &str) -> DexMethodId {
+    DexMethodId {
+        class_descriptor: class_descriptor.to_owned(),
+        name: name.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: shorty.to_owned(),
+            return_type: return_type.to_owned(),
+            parameters: if shorty.len() > 1 {
+                vec!["Landroid/content/Context;".to_owned()]
+            } else {
+                Vec::new()
+            },
+        },
+    }
+}
+
+#[test]
+fn frameworks_base_application_attach_base_context_makes_get_files_dir_resolve() {
+    // cite: frameworks-base Instrumentation.java#newApplication
+    // cite: frameworks-base ContextWrapper.java#attachBaseContext
+    // cite: frameworks-base ContextImpl.java#getFilesDir
+    let app_dir = test_app_data_dir("context_attach_base_context");
+    let data_dir = app_dir.join("apps/com.example/data");
+    let shared_dir = app_dir.join("storage");
+    fs::create_dir_all(&data_dir).expect("data dir should be created");
+    fs::create_dir_all(&shared_dir).expect("shared dir should be created");
+    let mut program =
+        DexProgram::with_guest_filesystem(Vec::new(), "com.example", data_dir.clone(), shared_dir)
+            .expect("program should load guest filesystem");
+    program.application_class_descriptor = Some("Landroid/app/Application;".to_owned());
+    let get_base_context = context_method(
+        "Landroid/content/ContextWrapper;",
+        "getBaseContext",
+        "L",
+        "Landroid/content/Context;",
+    );
+    let get_files_dir = context_method("Landroid/content/Context;", "getFilesDir", "L", "Ljava/io/File;");
+
+    program
+        .ensure_application_initialized(0)
+        .expect("application should initialize");
+    let application = program
+        .runtime
+        .borrow()
+        .application_instance
+        .clone()
+        .expect("application should be recorded");
+    let invocation = test_invocation(vec![application]);
+    let Some(DexExecutionResult::Value(base)) =
+        program.invoke_builtin_method(&get_base_context, Some(&invocation))
+    else {
+        panic!("getBaseContext should return the attached context");
+    };
+
+    assert_eq!(value_class_descriptor(&base), Some("Landroid/app/ContextImpl;"));
+    assert_eq!(
+        program.invoke_builtin_method(&get_files_dir, Some(&invocation)),
+        Some(DexExecutionResult::Value(DexValue::Reference(
+            std::rc::Rc::from("Ljava/io/File;:/data/user/0/com.example/files")
+        )))
+    );
+    assert!(app_dir.join("apps/com.example/data/files").is_dir());
+
+    fs::remove_dir_all(app_dir).ok();
+}
+
+#[test]
+fn frameworks_base_context_wrapper_attach_base_context_rejects_a_second_base() {
+    // cite: frameworks-base ContextWrapper.java#attachBaseContext
+    let program = DexProgram::new(Vec::new());
+    let attach = context_method(
+        "Landroid/content/ContextWrapper;",
+        "attachBaseContext",
+        "VL",
+        "V",
+    );
+    let wrapper = program.allocate_object("Landroid/content/ContextWrapper;".to_owned());
+    let base = program.allocate_object("Landroid/app/ContextImpl;".to_owned());
+    let attach_invocation = test_invocation(vec![wrapper, base]);
+
+    assert_eq!(
+        program.invoke_builtin_method(&attach, Some(&attach_invocation)),
+        Some(DexExecutionResult::Void)
+    );
+    let Some(DexExecutionResult::Throw(exception)) =
+        program.invoke_builtin_method(&attach, Some(&attach_invocation))
+    else {
+        panic!("second attachBaseContext should throw");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/lang/IllegalStateException;"));
+}
+
 #[test]
 fn package_manager_check_permission_matches_package_name_and_grant_state() {
     // cite: frameworks-base ApplicationPackageManager.java#checkPermission

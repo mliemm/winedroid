@@ -215,6 +215,14 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(DexValue::Long(value)));
         }
 
+        if method.class_descriptor == "Ljava/lang/System;"
+            && method.name == "getSecurityManager"
+            && method.proto.descriptor_is("()Ljava/lang/SecurityManager;")
+        {
+            // cite: libcore System.java#getSecurityManager
+            return Some(DexExecutionResult::Value(DexValue::Null));
+        }
+
         if method.class_descriptor == "Ljava/time/Instant;"
             && method.name == "now"
             && method.proto.descriptor_is("()Ljava/time/Instant;")
@@ -1814,6 +1822,20 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(DexValue::Long(1)));
         }
 
+        if method.class_descriptor == "Ljava/lang/Thread;"
+            && method.name == "getThreadGroup"
+            && method.proto.descriptor_is("()Ljava/lang/ThreadGroup;")
+        {
+            // cite: libcore Thread.java#getThreadGroup, group
+            let invocation = invocation?;
+            thread_reference(invocation)?;
+            if self.thread_is_terminated(&invocation.arguments[0]) {
+                return Some(DexExecutionResult::Value(DexValue::Null));
+            }
+
+            return Some(DexExecutionResult::Value(thread_main_group()));
+        }
+
         if method.class_descriptor == "Landroid/os/Handler;"
             && method.name == "<init>"
             && method.proto.descriptor_is("(Landroid/os/Looper;)V")
@@ -1944,6 +1966,21 @@ impl DexProgram {
             DexValue::Int(1),
         )
         .then_some(())
+    }
+
+    pub(in crate::dex_run) fn thread_mark_terminated(&self, thread: &DexValue) {
+        // cite: libcore Thread.java#getState
+        if dex_value_is_object_like(thread) {
+            self.write_stored_instance_field(thread, &thread_terminated_field(), DexValue::Int(1));
+        }
+    }
+
+    fn thread_is_terminated(&self, thread: &DexValue) -> bool {
+        // cite: libcore Thread.java#getState
+        matches!(
+            self.read_stored_instance_field(thread, &thread_terminated_field()),
+            Some(DexValue::Int(value)) if value != 0
+        )
     }
 
     pub(in crate::dex_run) fn thread_target(&self, thread: &DexValue) -> Option<DexValue> {
@@ -2643,40 +2680,109 @@ impl DexProgram {
             return None;
         }
 
-        // cite: libcore Throwable.java#printStackTrace, toString
-        let mut current = invocation.arguments[0].clone();
-        let mut printed = 0;
-        while dex_value_is_object_like(&current) {
-            let class_descriptor = match &current {
-                DexValue::Object(object) => object.class_descriptor.clone(),
-                DexValue::Reference(reference) => {
-                    std::rc::Rc::from(reference_descriptor(reference)?.to_owned())
-                }
-                _ => return None,
-            };
-            let class_name = descriptor_to_java_name(&class_descriptor)?;
-            let header = match self
-                .read_stored_instance_field(&current, &throwable_detail_message_field())
-            {
+        let text = self.throwable_stack_trace_text(&invocation.arguments[0])?;
+        eprint!("{text}");
+
+        Some(())
+    }
+
+    pub(in crate::dex_run) fn throwable_stack_trace_text(&self, throwable: &DexValue) -> Option<String> {
+        // cite: libcore Throwable.java#printStackTrace
+        let mut dej_vu = std::collections::HashSet::new();
+        dej_vu.insert(map_identity_key(throwable));
+        let mut text = format!("{}\n", self.throwable_header(throwable)?);
+        self.append_throwable_children(&mut text, throwable, "", &mut dej_vu)?;
+
+        Some(text)
+    }
+
+    fn append_enclosed_stack_trace(
+        &self,
+        text: &mut String,
+        throwable: &DexValue,
+        caption: &str,
+        prefix: &str,
+        dej_vu: &mut std::collections::HashSet<String>,
+    ) -> Option<()> {
+        // cite: libcore Throwable.java#printEnclosedStackTrace
+        let header = self.throwable_header(throwable)?;
+        if !dej_vu.insert(map_identity_key(throwable)) {
+            text.push_str(&format!("{prefix}{caption}[CIRCULAR REFERENCE: {header}]\n"));
+            return Some(());
+        }
+        text.push_str(&format!("{prefix}{caption}{header}\n"));
+
+        self.append_throwable_children(text, throwable, prefix, dej_vu)
+    }
+
+    fn append_throwable_children(
+        &self,
+        text: &mut String,
+        throwable: &DexValue,
+        prefix: &str,
+        dej_vu: &mut std::collections::HashSet<String>,
+    ) -> Option<()> {
+        // cite: libcore Throwable.java#printStackTrace, printEnclosedStackTrace, getSuppressed, getCause
+        let suppressed = match self.read_stored_instance_field(throwable, &throwable_suppressed_field())
+        {
+            Some(array) => self
+                .runtime
+                .borrow()
+                .array_entries
+                .get(&map_identity_key(&array))
+                .cloned()
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
+        let suppressed_prefix = format!("{prefix}\t");
+        for entry in &suppressed {
+            self.append_enclosed_stack_trace(text, entry, "Suppressed: ", &suppressed_prefix, dej_vu)?;
+        }
+        let cause = self
+            .read_stored_instance_field(throwable, &throwable_cause_field())
+            .unwrap_or(DexValue::Null);
+        if dex_value_is_object_like(&cause) {
+            self.append_enclosed_stack_trace(text, &cause, "Caused by: ", prefix, dej_vu)?;
+        }
+
+        Some(())
+    }
+
+    fn throwable_header(&self, throwable: &DexValue) -> Option<String> {
+        // cite: libcore Throwable.java#toString, getLocalizedMessage
+        let class_descriptor = match throwable {
+            DexValue::Object(object) => object.class_descriptor.to_string(),
+            DexValue::Reference(reference) => reference_descriptor(reference)?.to_owned(),
+            _ => return None,
+        };
+        let class_name = descriptor_to_java_name(&class_descriptor)?;
+
+        Some(
+            match self.read_stored_instance_field(throwable, &throwable_detail_message_field()) {
                 Some(DexValue::String(message)) => format!("{class_name}: {message}"),
                 _ => class_name,
-            };
-            if printed == 0 {
-                eprintln!("{header}");
-            } else {
-                eprintln!("Caused by: {header}");
-            }
+            },
+        )
+    }
 
-            printed += 1;
-            if printed > 8 {
-                break;
+    pub(in crate::dex_run) fn throwable_cause_chain_contains(
+        &self,
+        throwable: &DexValue,
+        class_descriptor: &str,
+    ) -> bool {
+        // cite: libcore Throwable.java#getCause
+        let mut current = throwable.clone();
+        let mut visited = std::collections::HashSet::new();
+        while dex_value_is_object_like(&current) && visited.insert(map_identity_key(&current)) {
+            if self.value_matches_type(&current, class_descriptor) {
+                return true;
             }
             current = self
                 .read_stored_instance_field(&current, &throwable_cause_field())
                 .unwrap_or(DexValue::Null);
         }
 
-        Some(())
+        false
     }
 
     fn throwable_init_cause(&self, invocation: &DexInvocation) -> Option<DexValue> {
@@ -2777,6 +2883,10 @@ fn is_supported_throwable_class(class_descriptor: &str) -> bool {
             | "Ljava/util/NoSuchElementException;"
             | "Ljava/util/ConcurrentModificationException;"
             | "Ljava/util/concurrent/CancellationException;"
+            // cite: libcore UnknownHostException.java#UnknownHostException
+            | "Ljava/net/UnknownHostException;"
+            // cite: libcore NoClassDefFoundError.java#NoClassDefFoundError
+            | "Ljava/lang/NoClassDefFoundError;"
     )
 }
 
@@ -3295,6 +3405,11 @@ fn thread_reference(invocation: &DexInvocation) -> Option<()> {
         .then_some(())
 }
 
+fn thread_main_group() -> DexValue {
+    // cite: libcore ThreadGroup.java#mainThreadGroup
+    DexValue::Reference(std::rc::Rc::from("Ljava/lang/ThreadGroup;:main"))
+}
+
 fn thread_uncaught_exception_handler() -> DexValue {
     DexValue::Reference(std::rc::Rc::from(
         "Ljava/lang/Thread$UncaughtExceptionHandler;:bootstrap",
@@ -3327,6 +3442,14 @@ fn thread_started_field() -> DexFieldId {
         class_descriptor: "Ljava/lang/Thread;".to_owned(),
         type_descriptor: "Z".to_owned(),
         name: "started".to_owned(),
+    }
+}
+
+fn thread_terminated_field() -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Ljava/lang/Thread;".to_owned(),
+        type_descriptor: "Z".to_owned(),
+        name: "terminated".to_owned(),
     }
 }
 

@@ -374,6 +374,15 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Landroid/content/ContextWrapper;"
+            && method.name == "attachBaseContext"
+            && method.proto.descriptor_is("(Landroid/content/Context;)V")
+        {
+            let invocation = invocation?;
+
+            return self.context_wrapper_attach_base_context(invocation);
+        }
+
+        if method.class_descriptor == "Landroid/content/ContextWrapper;"
             && method.name == "getBaseContext"
             && method.proto.descriptor_is("()Landroid/content/Context;")
         {

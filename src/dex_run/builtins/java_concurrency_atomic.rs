@@ -17,6 +17,26 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(value));
         }
 
+        if method.matches_builtin_signature(
+            "Ljava/util/concurrent/ThreadPoolExecutor;",
+            "<init>",
+            "(IIJLjava/util/concurrent/TimeUnit;Ljava/util/concurrent/BlockingQueue;Ljava/util/concurrent/ThreadFactory;)V",
+        ) {
+            let invocation = invocation?;
+
+            return self.thread_pool_executor_init(invocation);
+        }
+
+        if method.matches_builtin_signature(
+            "Ljava/util/concurrent/ThreadPoolExecutor;",
+            "allowCoreThreadTimeOut",
+            "(Z)V",
+        ) {
+            let invocation = invocation?;
+
+            return self.thread_pool_executor_allow_core_thread_time_out(invocation);
+        }
+
         if method.class_descriptor == "Ljava/util/concurrent/FutureTask;"
             && method.name == "<init>"
             && method
@@ -116,10 +136,19 @@ impl DexProgram {
             "Ljava/util/concurrent/Executor;"
                 | "Ljava/util/concurrent/ExecutorService;"
                 | "Ljava/util/concurrent/ScheduledExecutorService;"
+                | "Ljava/util/concurrent/ThreadPoolExecutor;"
         ) && method.name == "execute"
             && method.proto.descriptor_is("(Ljava/lang/Runnable;)V")
         {
             let invocation = invocation?;
+            if self.is_thread_pool_executor(invocation.arguments.first()?)
+                && invocation.arguments.get(1) == Some(&DexValue::Null)
+            {
+                // cite: libcore ThreadPoolExecutor.java#execute
+                return Some(DexExecutionResult::Throw(self.allocate_object(
+                    "Ljava/lang/NullPointerException;".to_owned(),
+                )));
+            }
             self.executor_execute(invocation)?;
 
             return Some(DexExecutionResult::Void);

@@ -2909,6 +2909,34 @@ impl DexProgram {
         Some(())
     }
 
+    pub(in crate::dex_run) fn context_wrapper_attach_base_context(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        // cite: frameworks-base ContextWrapper.java#attachBaseContext, mBase
+        let [receiver, base] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        if !dex_value_is_object_like(receiver) {
+            return None;
+        }
+        let field = context_wrapper_base_field();
+        if self
+            .read_stored_instance_field(receiver, &field)
+            .is_some_and(|current| current != DexValue::Null)
+        {
+            return Some(DexExecutionResult::Throw(self.allocate_generated_exception(
+                DexGeneratedException {
+                    class_descriptor: "Ljava/lang/IllegalStateException;".to_owned(),
+                    detail_message: Some("Base context already set".to_owned()),
+                },
+            )));
+        }
+        self.write_stored_instance_field(receiver, &field, base.clone());
+
+        Some(DexExecutionResult::Void)
+    }
+
     pub(in crate::dex_run) fn context_wrapper_base_context(
         &self,
         invocation: &DexInvocation,

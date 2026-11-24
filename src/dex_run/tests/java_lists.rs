@@ -2689,3 +2689,41 @@ fn libcore_concurrent_linked_queue_constructor_creates_an_empty_queue() {
     assert!(program.value_matches_type(&queue, "Ljava/util/Queue;"));
     assert!(program.value_matches_type(&queue, "Ljava/util/AbstractCollection;"));
 }
+
+#[test]
+fn libcore_linked_blocking_queue_constructor_creates_an_empty_queue() {
+    // cite: libcore LinkedBlockingQueue.java#LinkedBlockingQueue
+    let program = DexProgram::new(Vec::new());
+    let constructor = DexMethodId {
+        class_descriptor: "Ljava/util/concurrent/LinkedBlockingQueue;".to_owned(),
+        name: "<init>".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "V".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let size = DexMethodId {
+        class_descriptor: "Ljava/util/Collection;".to_owned(),
+        name: "size".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "I".to_owned(),
+            return_type: "I".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let queue = program.allocate_object("Ljava/util/concurrent/LinkedBlockingQueue;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(&constructor, Some(&test_invocation(vec![queue.clone()]))),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&size, Some(&test_invocation(vec![queue.clone()]))),
+        Some(DexExecutionResult::Int(0))
+    );
+    assert!(program.value_matches_type(&queue, "Ljava/util/Queue;"));
+    assert!(program.value_matches_type(&queue, "Ljava/util/AbstractCollection;"));
+    assert!(program.value_matches_type(&queue, "Ljava/util/concurrent/BlockingQueue;"));
+    assert!(program.value_matches_type(&queue, "Ljava/io/Serializable;"));
+}

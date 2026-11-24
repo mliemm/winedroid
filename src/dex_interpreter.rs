@@ -315,6 +315,12 @@ pub struct DexGeneratedException {
     pub detail_message: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum DexNewInstanceResult {
+    Allocated(DexValue),
+    Throw(DexGeneratedException),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DexCheckCastResult {
     Success,
@@ -552,7 +558,7 @@ pub trait DexInvocationHandler {
         )))
     }
 
-    fn allocate_object(&mut self, instance: DexNewInstance) -> Result<DexValue> {
+    fn allocate_object(&mut self, instance: DexNewInstance) -> Result<DexNewInstanceResult> {
         Err(WinedroidError::new(format!(
             "DEX object allocation not implemented\ntype index: {}\ndestination register: v{}\nnext missing primitive: object allocation",
             instance.type_index, instance.destination_register
@@ -1582,10 +1588,29 @@ fn continue_code(
                 let method_metric_start = crate::method_metrics::start_timing();
                 let instance = read_new_instance(code, pc, instruction)?;
                 let destination_register = instance.destination_register;
-                let value = invocation_handler.allocate_object(instance)?;
+                // cite: art interpreter_switch_impl-inl.h#NEW_INSTANCE
+                let allocated = invocation_handler.allocate_object(instance)?;
                 crate::method_metrics::record_object_alloc_elapsed(method_metric_start);
-                frame.set_register(destination_register, value)?;
-                pc += 2;
+                match allocated {
+                    DexNewInstanceResult::Allocated(value) => {
+                        frame.set_register(destination_register, value)?;
+                        pc += 2;
+                    }
+                    DexNewInstanceResult::Throw(exception) => {
+                        let finished = dispatch_generated_exception(
+                            code,
+                            pc,
+                            exception,
+                            &mut pending_result,
+                            &mut pending_exception,
+                            &mut pc,
+                            invocation_handler,
+                        )?;
+                        if let Some(finished) = finished {
+                            return Ok(finished);
+                        }
+                    }
+                }
             }
             0x23 => {
                 let method_metric_start = crate::method_metrics::start_timing();
@@ -5990,11 +6015,11 @@ mod tests {
             Ok(DexValue::Reference(std::rc::Rc::from(value)))
         }
 
-        fn allocate_object(&mut self, instance: DexNewInstance) -> Result<DexValue> {
+        fn allocate_object(&mut self, instance: DexNewInstance) -> Result<DexNewInstanceResult> {
             let value = format!("type#{}", instance.type_index);
             let id = u64::from(instance.type_index);
             self.new_instance = Some(instance);
-            Ok(test_object(id, &value))
+            Ok(DexNewInstanceResult::Allocated(test_object(id, &value)))
         }
 
         fn allocate_array(&mut self, array: DexNewArray) -> Result<DexValue> {

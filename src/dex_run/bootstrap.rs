@@ -165,8 +165,10 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         // cite: libcore Thread.java#Thread
         // cite: libcore System.java#System
         // cite: libcore Math.java#Math
+        // cite: libcore ThreadGroup.java#ThreadGroup
         "Ljava/lang/Class;"
         | "Ljava/lang/ClassLoader;"
+        | "Ljava/lang/ThreadGroup;"
         | "Ljava/lang/Thread;"
         | "Ljava/lang/System;"
         | "Ljava/lang/Math;" => Some("Ljava/lang/Object;"),
@@ -200,6 +202,11 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         "Ljava/io/Writer;" => Some("Ljava/lang/Object;"),
         "Ljava/lang/Throwable;" => Some("Ljava/lang/Object;"),
         "Ljava/lang/Exception;" => Some("Ljava/lang/Throwable;"),
+        "Ljava/lang/Error;" => Some("Ljava/lang/Throwable;"),
+        // cite: libcore LinkageError.java#LinkageError
+        "Ljava/lang/LinkageError;" => Some("Ljava/lang/Error;"),
+        // cite: libcore NoClassDefFoundError.java#NoClassDefFoundError
+        "Ljava/lang/NoClassDefFoundError;" => Some("Ljava/lang/LinkageError;"),
         // cite: libcore ReflectiveOperationException.java#ReflectiveOperationException
         "Ljava/lang/ReflectiveOperationException;" => Some("Ljava/lang/Exception;"),
         // cite: libcore InstantiationException.java#InstantiationException
@@ -235,6 +242,8 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         // cite: libcore ExecutionException.java#ExecutionException
         "Ljava/util/concurrent/ExecutionException;" => Some("Ljava/lang/Exception;"),
         "Ljava/io/IOException;" => Some("Ljava/lang/Exception;"),
+        // cite: libcore UnknownHostException.java#UnknownHostException
+        "Ljava/net/UnknownHostException;" => Some("Ljava/io/IOException;"),
         "Ljava/lang/reflect/Constructor;" => Some("Ljava/lang/reflect/Executable;"),
         "Ljava/lang/reflect/Method;" => Some("Ljava/lang/reflect/Executable;"),
         "Ljava/lang/reflect/Executable;" => Some("Ljava/lang/reflect/AccessibleObject;"),
@@ -297,9 +306,9 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
             Some("Ljava/util/AbstractList;")
         }
         "Ljava/util/AbstractList;" => Some("Ljava/util/AbstractCollection;"),
-        "Ljava/util/PriorityQueue;" | "Ljava/util/concurrent/ConcurrentLinkedQueue;" => {
-            Some("Ljava/util/AbstractQueue;")
-        }
+        "Ljava/util/PriorityQueue;"
+        | "Ljava/util/concurrent/ConcurrentLinkedQueue;"
+        | "Ljava/util/concurrent/LinkedBlockingQueue;" => Some("Ljava/util/AbstractQueue;"),
         "Ljava/util/AbstractQueue;" => Some("Ljava/util/AbstractCollection;"),
         "Ljava/util/HashMap;"
         | "Ljava/util/IdentityHashMap;"
@@ -384,6 +393,8 @@ pub(super) fn bootstrap_direct_interface_descriptors(
         | "Ljava/util/concurrent/atomic/AtomicLongArray;" => &["Ljava/io/Serializable;"],
         "Ljava/util/Collection;" => &["Ljava/lang/Iterable;"],
         "Ljava/util/List;" | "Ljava/util/Queue;" | "Ljava/util/Set;" => &["Ljava/util/Collection;"],
+        // cite: libcore BlockingQueue.java#BlockingQueue
+        "Ljava/util/concurrent/BlockingQueue;" => &["Ljava/util/Queue;"],
         "Ljava/util/ArrayList;" | "Ljava/util/Arrays$ArrayList;" => &[
             "Ljava/util/List;",
             "Ljava/util/RandomAccess;",
@@ -393,6 +404,10 @@ pub(super) fn bootstrap_direct_interface_descriptors(
         "Ljava/util/AbstractList;" => &["Ljava/util/List;"],
         "Ljava/util/PriorityQueue;" | "Ljava/util/concurrent/ConcurrentLinkedQueue;" => {
             &["Ljava/io/Serializable;"]
+        }
+        // cite: libcore LinkedBlockingQueue.java#LinkedBlockingQueue
+        "Ljava/util/concurrent/LinkedBlockingQueue;" => {
+            &["Ljava/util/concurrent/BlockingQueue;", "Ljava/io/Serializable;"]
         }
         "Ljava/util/AbstractQueue;" => &["Ljava/util/Queue;"],
         "Ljava/util/AbstractCollection;" => &["Ljava/util/Collection;"],
@@ -445,6 +460,8 @@ pub(super) fn is_bootstrap_interface_descriptor(class_descriptor: &str) -> bool 
             | "Ljava/util/Map;"
             | "Ljava/util/Map$Entry;"
             | "Ljava/util/Queue;"
+            // cite: libcore BlockingQueue.java#BlockingQueue
+            | "Ljava/util/concurrent/BlockingQueue;"
             | "Ljava/util/RandomAccess;"
             | "Ljava/util/Set;"
             | "Ljava/util/concurrent/Executor;"

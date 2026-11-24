@@ -30,6 +30,20 @@ impl DexProgram {
             return Some(DexExecutionResult::Int(0));
         }
 
+        if method.class_descriptor == "Landroid/util/Log;"
+            && method.name == "getStackTraceString"
+            && method
+                .proto
+                .descriptor_is("(Ljava/lang/Throwable;)Ljava/lang/String;")
+        {
+            let invocation = invocation?;
+            let text = self.log_stack_trace_string(invocation)?;
+
+            return Some(DexExecutionResult::Value(DexValue::String(
+                std::rc::Rc::from(text),
+            )));
+        }
+
         if method.class_descriptor == "Landroid/os/Trace;"
             && method.name == "beginSection"
             && method.proto.descriptor_is("(Ljava/lang/String;)V")
@@ -3325,5 +3339,27 @@ fn android_color_space_get(invocation: &DexInvocation) -> Option<DexValue> {
             ))))
         }
         _ => None,
+    }
+}
+
+impl DexProgram {
+    fn log_stack_trace_string(&self, invocation: &DexInvocation) -> Option<String> {
+        // cite: frameworks-base Log.java#getStackTraceString
+        let [throwable] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        if matches!(throwable, DexValue::Null | DexValue::Int(0)) {
+            return Some(String::new());
+        }
+        if !dex_value_is_object_like(throwable)
+            || !self.value_matches_type(throwable, "Ljava/lang/Throwable;")
+        {
+            return None;
+        }
+        if self.throwable_cause_chain_contains(throwable, "Ljava/net/UnknownHostException;") {
+            return Some(String::new());
+        }
+
+        self.throwable_stack_trace_text(throwable)
     }
 }

@@ -138,6 +138,19 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Ljava/io/File;"
+            && method.name == "getParent"
+            && method.proto.descriptor_is("()Ljava/lang/String;")
+        {
+            let invocation = invocation?;
+            let value = match self.file_parent(invocation)? {
+                Some(parent) => DexValue::String(std::rc::Rc::from(parent)),
+                None => DexValue::Null,
+            };
+
+            return Some(DexExecutionResult::Value(value));
+        }
+
+        if method.class_descriptor == "Ljava/io/File;"
             && method.name == "getName"
             && method.proto.descriptor_is("()Ljava/lang/String;")
         {
@@ -985,14 +998,21 @@ impl DexProgram {
         .then_some(())
     }
 
-    fn file_get_parent_file(&self, invocation: &DexInvocation) -> Option<DexValue> {
+    fn file_parent(&self, invocation: &DexInvocation) -> Option<Option<String>> {
         if invocation.arguments.len() != 1 {
             return None;
         }
 
         let path = file_path_from_value(self, &invocation.arguments[0])?;
-        // cite: libcore File.java#getParent, getParentFile
-        let parent = file_parent_path(&path)?;
+        // cite: libcore File.java#getParent
+        Some(file_parent_path(&path).map(ToOwned::to_owned))
+    }
+
+    fn file_get_parent_file(&self, invocation: &DexInvocation) -> Option<DexValue> {
+        // cite: libcore File.java#getParentFile
+        let Some(parent) = self.file_parent(invocation)? else {
+            return Some(DexValue::Null);
+        };
 
         Some(DexValue::Reference(std::rc::Rc::from(format!(
             "Ljava/io/File;:{parent}"

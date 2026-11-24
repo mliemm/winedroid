@@ -188,12 +188,14 @@ impl DexInvocationHandler for NullAssertExecutionHandler {
         Ok(DexInvocationResult::Void)
     }
 
-    fn allocate_object(&mut self, instance: DexNewInstance) -> Result<DexValue> {
+    fn allocate_object(&mut self, instance: DexNewInstance) -> Result<DexNewInstanceResult> {
         self.allocated = Some(instance);
-        Ok(DexValue::Object(DexObjectRef {
-            id: 0x42,
-            class_descriptor: std::rc::Rc::from("Ljava/lang/NullPointerException;"),
-        }))
+        Ok(DexNewInstanceResult::Allocated(DexValue::Object(
+            DexObjectRef {
+                id: 0x42,
+                class_descriptor: std::rc::Rc::from("Ljava/lang/NullPointerException;"),
+            },
+        )))
     }
 }
 
@@ -3197,6 +3199,85 @@ fn art_uncaught_check_cast_failure_returns_guest_exception() {
     };
 
     assert!(program.value_matches_type(&exception, "Ljava/lang/ClassCastException;"));
+}
+
+fn run_new_instance_of_type(
+    class_descriptor: &str,
+    other_descriptor: &str,
+    type_index: u16,
+) -> (DexProgram, DexExecutionResult) {
+    let dex_file = crate::dex::parse_dex_file(
+        "classes.dex",
+        minimal_external_interface_implementation_dex(class_descriptor, other_descriptor),
+    )
+    .expect("DEX should parse");
+    let program = DexProgram::new(vec![dex_file]);
+    let code = DexCodeItem {
+        registers_size: 1,
+        ins_size: 0,
+        outs_size: 0,
+        tries_size: 0,
+        debug_info_offset: 0,
+        instructions: vec![0x0022, type_index, 0x0011],
+        try_blocks: Vec::new(),
+    };
+    let result = {
+        let mut handler = DexRunInvocationHandler {
+            program: &program,
+            current_dex_file_index: 0,
+            current_class_descriptor: None,
+            depth: 0,
+        };
+        crate::dex_interpreter::interpret_code_with_initial_arguments_in_context(
+            &code,
+            None,
+            &mut handler,
+            0,
+        )
+        .expect("new-instance should not become a host error")
+    };
+
+    (program, result)
+}
+
+// cite: art class_linker.cc#DoResolveType, ThrowNoClassDefFoundError
+// cite: art interpreter_switch_impl-inl.h#NEW_INSTANCE
+#[test]
+fn art_new_instance_of_nested_class_without_class_def_throws_no_class_def_found_error() {
+    let (program, result) =
+        run_new_instance_of_type("Lcom/example/Outer;", "Lcom/example/Outer$2;", 1);
+    let DexExecutionResult::Throw(exception) = result else {
+        panic!("new-instance of a missing nested class should throw: {result}");
+    };
+    let detail_message = DexFieldId {
+        class_descriptor: "Ljava/lang/Throwable;".to_owned(),
+        type_descriptor: "Ljava/lang/String;".to_owned(),
+        name: "detailMessage".to_owned(),
+    };
+
+    assert!(program.value_matches_type(&exception, "Ljava/lang/NoClassDefFoundError;"));
+    assert!(program.value_matches_type(&exception, "Ljava/lang/LinkageError;"));
+    assert!(program.value_matches_type(&exception, "Ljava/lang/Error;"));
+    assert!(!program.value_matches_type(&exception, "Ljava/lang/Exception;"));
+    assert_eq!(
+        program.read_stored_instance_field(&exception, &detail_message),
+        Some(DexValue::String(std::rc::Rc::from(
+            "Failed resolution of: Lcom/example/Outer$2;"
+        )))
+    );
+}
+
+// cite: art class_linker.cc#DoResolveType
+#[test]
+fn art_new_instance_allocates_defined_and_framework_classes() {
+    let (_, defined) = run_new_instance_of_type("Lcom/example/Outer;", "Lcom/example/Outer$2;", 0);
+    let (_, framework) = run_new_instance_of_type("Lcom/example/Outer;", "Landroid/os/Handler;", 1);
+    let (_, unknown_outer) =
+        run_new_instance_of_type("Lcom/example/Outer;", "Lcom/example/Other$1;", 1);
+
+    assert!(matches!(defined, DexExecutionResult::Value(DexValue::Object(_))));
+    assert!(matches!(framework, DexExecutionResult::Value(DexValue::Object(_))));
+    assert!(matches!(unknown_outer, DexExecutionResult::Value(DexValue::Object(_))));
 }
 
 // cite: libcore ClassLoader.java#loadClass

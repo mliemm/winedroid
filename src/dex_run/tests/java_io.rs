@@ -66,6 +66,66 @@ fn libcore_file_parent_child_constructor_appends_an_absolute_child() {
     );
 }
 
+fn file_parent_method(name: &str, return_type: &str) -> DexMethodId {
+    DexMethodId {
+        class_descriptor: "Ljava/io/File;".to_owned(),
+        name: name.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "L".to_owned(),
+            return_type: return_type.to_owned(),
+            parameters: Vec::new(),
+        },
+    }
+}
+
+#[test]
+fn libcore_file_get_parent_returns_the_path_before_the_last_separator_or_null() {
+    // cite: libcore File.java#getParent
+    let program = DexProgram::new(Vec::new());
+    let get_parent = file_parent_method("getParent", "Ljava/lang/String;");
+    let cases = [
+        ("/a/b/c", Some("/a/b")),
+        ("/a", Some("/")),
+        ("/", None),
+        ("a/b", Some("a")),
+        ("a", None),
+    ];
+
+    for (path, expected) in cases {
+        let expected = match expected {
+            Some(parent) => DexValue::String(std::rc::Rc::from(parent)),
+            None => DexValue::Null,
+        };
+
+        assert_eq!(
+            program.invoke_builtin_method(
+                &get_parent,
+                Some(&test_invocation(vec![file_value(path)]))
+            ),
+            Some(DexExecutionResult::Value(expected)),
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn libcore_file_get_parent_file_returns_null_when_there_is_no_parent() {
+    // cite: libcore File.java#getParentFile
+    let program = DexProgram::new(Vec::new());
+    let get_parent_file = file_parent_method("getParentFile", "Ljava/io/File;");
+
+    for path in ["/", "a"] {
+        assert_eq!(
+            program.invoke_builtin_method(
+                &get_parent_file,
+                Some(&test_invocation(vec![file_value(path)]))
+            ),
+            Some(DexExecutionResult::Value(DexValue::Null)),
+            "{path}"
+        );
+    }
+}
+
 #[test]
 fn libcore_file_single_string_constructor_normalizes_pathname() {
     // cite: libcore File.java#File

@@ -2163,3 +2163,282 @@ fn libcore_count_down_latch_constructor_stores_count_and_rejects_negative() {
         .atomic_integer_values
         .contains_key(&map_identity_key(&rejected)));
 }
+
+const THREAD_POOL_EXECUTOR: &str = "Ljava/util/concurrent/ThreadPoolExecutor;";
+
+fn thread_pool_executor_constructor() -> DexMethodId {
+    DexMethodId {
+        class_descriptor: THREAD_POOL_EXECUTOR.to_owned(),
+        name: "<init>".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VIIJLLL".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec![
+                "I".to_owned(),
+                "I".to_owned(),
+                "J".to_owned(),
+                "Ljava/util/concurrent/TimeUnit;".to_owned(),
+                "Ljava/util/concurrent/BlockingQueue;".to_owned(),
+                "Ljava/util/concurrent/ThreadFactory;".to_owned(),
+            ],
+        },
+    }
+}
+
+fn thread_pool_executor_arguments(
+    executor: &DexValue,
+    core: i32,
+    maximum: i32,
+    keep_alive: i64,
+    unit: DexValue,
+    queue: DexValue,
+    factory: DexValue,
+) -> DexInvocation {
+    test_invocation(vec![
+        executor.clone(),
+        DexValue::Int(core),
+        DexValue::Int(maximum),
+        DexValue::Long(keep_alive),
+        DexValue::Long(keep_alive),
+        unit,
+        queue,
+        factory,
+    ])
+}
+
+fn seconds_unit() -> DexValue {
+    DexValue::Reference(std::rc::Rc::from("Ljava/util/concurrent/TimeUnit;.SECONDS"))
+}
+
+fn thread_pool_executor_dependency(descriptor: &str) -> DexValue {
+    DexValue::Reference(std::rc::Rc::from(descriptor))
+}
+
+fn construct_thread_pool_executor(
+    program: &DexProgram,
+    core: i32,
+    maximum: i32,
+    keep_alive: i64,
+) -> DexValue {
+    let executor = program.allocate_object(THREAD_POOL_EXECUTOR.to_owned());
+    let invocation = thread_pool_executor_arguments(
+        &executor,
+        core,
+        maximum,
+        keep_alive,
+        seconds_unit(),
+        thread_pool_executor_dependency("Ljava/util/concurrent/LinkedBlockingQueue;:queue"),
+        thread_pool_executor_dependency("Ljava/util/concurrent/ThreadFactory;:factory"),
+    );
+
+    assert_eq!(
+        program.invoke_builtin_method(&thread_pool_executor_constructor(), Some(&invocation)),
+        Some(DexExecutionResult::Void)
+    );
+
+    executor
+}
+
+fn thread_pool_executor_field(name: &str, type_descriptor: &str) -> DexFieldId {
+    DexFieldId {
+        class_descriptor: THREAD_POOL_EXECUTOR.to_owned(),
+        type_descriptor: type_descriptor.to_owned(),
+        name: name.to_owned(),
+    }
+}
+
+fn allow_core_thread_time_out_method() -> DexMethodId {
+    DexMethodId {
+        class_descriptor: THREAD_POOL_EXECUTOR.to_owned(),
+        name: "allowCoreThreadTimeOut".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VZ".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec!["Z".to_owned()],
+        },
+    }
+}
+
+#[test]
+fn libcore_thread_pool_executor_constructor_stores_pool_state_in_nanoseconds() {
+    // cite: libcore ThreadPoolExecutor.java#ThreadPoolExecutor
+    let program = DexProgram::new(Vec::new());
+    let executor = construct_thread_pool_executor(&program, 2, 4, 60);
+
+    assert_eq!(
+        program.read_stored_instance_field(
+            &executor,
+            &thread_pool_executor_field("corePoolSize", "I")
+        ),
+        Some(DexValue::Int(2))
+    );
+    assert_eq!(
+        program.read_stored_instance_field(
+            &executor,
+            &thread_pool_executor_field("maximumPoolSize", "I")
+        ),
+        Some(DexValue::Int(4))
+    );
+    assert_eq!(
+        program.read_stored_instance_field(
+            &executor,
+            &thread_pool_executor_field("keepAliveTime", "J")
+        ),
+        Some(DexValue::Long(60_000_000_000))
+    );
+    assert_eq!(
+        program.read_stored_instance_field(
+            &executor,
+            &thread_pool_executor_field("workQueue", "Ljava/util/concurrent/BlockingQueue;")
+        ),
+        Some(thread_pool_executor_dependency(
+            "Ljava/util/concurrent/LinkedBlockingQueue;:queue"
+        ))
+    );
+}
+
+#[test]
+fn libcore_thread_pool_executor_constructor_rejects_invalid_arguments_in_source_order() {
+    // cite: libcore ThreadPoolExecutor.java#ThreadPoolExecutor
+    let program = DexProgram::new(Vec::new());
+    let queue = thread_pool_executor_dependency("Ljava/util/concurrent/LinkedBlockingQueue;:queue");
+    let factory = thread_pool_executor_dependency("Ljava/util/concurrent/ThreadFactory;:factory");
+    let throws = |core: i32,
+                  maximum: i32,
+                  keep_alive: i64,
+                  unit: DexValue,
+                  queue: DexValue,
+                  factory: DexValue,
+                  expected: &str| {
+        let executor = program.allocate_object(THREAD_POOL_EXECUTOR.to_owned());
+        let invocation = thread_pool_executor_arguments(
+            &executor, core, maximum, keep_alive, unit, queue, factory,
+        );
+        let Some(DexExecutionResult::Throw(exception)) = program
+            .invoke_builtin_method(&thread_pool_executor_constructor(), Some(&invocation))
+        else {
+            panic!("constructor should throw {expected}");
+        };
+
+        assert!(program.value_matches_type(&exception, expected), "{expected}");
+    };
+    let illegal = "Ljava/lang/IllegalArgumentException;";
+    let null_pointer = "Ljava/lang/NullPointerException;";
+
+    throws(-1, 4, 1, seconds_unit(), queue.clone(), factory.clone(), illegal);
+    throws(1, 0, 1, seconds_unit(), queue.clone(), factory.clone(), illegal);
+    throws(5, 4, 1, seconds_unit(), queue.clone(), factory.clone(), illegal);
+    throws(1, 4, -1, seconds_unit(), queue.clone(), factory.clone(), illegal);
+    throws(1, 4, 1, seconds_unit(), DexValue::Null, factory.clone(), null_pointer);
+    throws(1, 4, 1, seconds_unit(), queue.clone(), DexValue::Null, null_pointer);
+    throws(1, 4, 1, DexValue::Null, queue.clone(), factory.clone(), null_pointer);
+    throws(-1, 4, 1, seconds_unit(), DexValue::Null, factory, illegal);
+}
+
+#[test]
+fn libcore_thread_pool_executor_execute_posts_runnable_and_rejects_null() {
+    // cite: libcore ThreadPoolExecutor.java#execute
+    let program = DexProgram::new(Vec::new());
+    let executor = construct_thread_pool_executor(&program, 1, 1, 0);
+    let execute = DexMethodId {
+        class_descriptor: THREAD_POOL_EXECUTOR.to_owned(),
+        name: "execute".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VL".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec!["Ljava/lang/Runnable;".to_owned()],
+        },
+    };
+    let runnable = program.allocate_object("Lcom/example/Task;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &execute,
+            Some(&test_invocation(vec![executor.clone(), runnable]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    let Some(DexExecutionResult::Throw(exception)) = program.invoke_builtin_method(
+        &execute,
+        Some(&test_invocation(vec![executor, DexValue::Null])),
+    ) else {
+        panic!("execute(null) should throw");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
+}
+
+#[test]
+fn libcore_thread_pool_executor_allow_core_thread_time_out_requires_a_nonzero_keep_alive() {
+    // cite: libcore ThreadPoolExecutor.java#allowCoreThreadTimeOut
+    let program = DexProgram::new(Vec::new());
+    let method = allow_core_thread_time_out_method();
+    let flag = thread_pool_executor_field("allowCoreThreadTimeOut", "Z");
+    let permanent = construct_thread_pool_executor(&program, 1, 1, 0);
+    let expiring = construct_thread_pool_executor(&program, 1, 1, 5);
+
+    let Some(DexExecutionResult::Throw(exception)) = program.invoke_builtin_method(
+        &method,
+        Some(&test_invocation(vec![permanent.clone(), DexValue::Int(1)])),
+    ) else {
+        panic!("zero keep alive should reject allowCoreThreadTimeOut(true)");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/lang/IllegalArgumentException;"));
+    assert_eq!(
+        program.read_stored_instance_field(
+            &exception,
+            &DexFieldId {
+                class_descriptor: "Ljava/lang/Throwable;".to_owned(),
+                type_descriptor: "Ljava/lang/String;".to_owned(),
+                name: "detailMessage".to_owned(),
+            }
+        ),
+        Some(DexValue::String(std::rc::Rc::from(
+            "Core threads must have nonzero keep alive times"
+        )))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &method,
+            Some(&test_invocation(vec![permanent.clone(), DexValue::Int(0)]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &method,
+            Some(&test_invocation(vec![expiring.clone(), DexValue::Int(1)]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&expiring, &flag),
+        Some(DexValue::Int(1))
+    );
+    assert_eq!(program.read_stored_instance_field(&permanent, &flag), None);
+}
+
+#[test]
+fn libcore_executors_pools_derive_keep_alive_for_allow_core_thread_time_out() {
+    // cite: libcore Executors.java#newFixedThreadPool, newCachedThreadPool
+    let program = DexProgram::new(Vec::new());
+    let method = allow_core_thread_time_out_method();
+    let call = |reference: &str| {
+        program.invoke_builtin_method(
+            &method,
+            Some(&test_invocation(vec![
+                DexValue::Reference(std::rc::Rc::from(reference)),
+                DexValue::Int(1),
+            ])),
+        )
+    };
+
+    assert!(matches!(
+        call("Ljava/util/concurrent/ExecutorService;.fixed/4"),
+        Some(DexExecutionResult::Throw(_))
+    ));
+    assert_eq!(
+        call("Ljava/util/concurrent/ExecutorService;.cached"),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(call("Ljava/util/concurrent/ExecutorService;.single"), None);
+}
