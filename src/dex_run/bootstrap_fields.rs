@@ -18,6 +18,9 @@ const ACCESS_PRIVATE: u32 = 0x0002;
 const ACCESS_PACKAGE: u32 = 0x0000;
 const ACCESS_PRIVATE_FINAL: u32 = 0x0012;
 const ACCESS_PRIVATE_STATIC_FINAL: u32 = 0x001A;
+const ACCESS_PRIVATE_STATIC: u32 = 0x000A;
+const ACCESS_PACKAGE_FINAL: u32 = 0x0010;
+const ACCESS_PACKAGE_STATIC_FINAL: u32 = 0x0018;
 
 pub(in crate::dex_run) fn bootstrap_declared_fields(
     class_descriptor: &str,
@@ -67,6 +70,289 @@ pub(in crate::dex_run) fn bootstrap_declared_fields(
                 name: "mLoadedApk",
                 type_descriptor: "Landroid/app/LoadedApk;",
                 access_flags: ACCESS_PUBLIC,
+            },
+        ]),
+        // cite: frameworks-base ContextImpl.java#TAG, DEBUG, XATTR_INODE_CACHE, XATTR_INODE_CODE_CACHE, sSharedPrefsCache, mSharedPrefsPaths, mMainThread, mPackageInfo, mClassLoader, mToken, mUser, mContentResolver, mBasePackageName, mOpPackageName, mParams, mAttributionSource, mResourcesManager, mResources, mDisplay, mDeviceId, mForceDisplayOverrideInResources, mIsConfigurationBasedContext, mIsExplicitDeviceId, mFlags, mOuterContext, mThemeResource, mTheme, mPackageManager, mReceiverRestrictedContext, mSplitName, mAutofillClient, mAutofillOptions, mContentCaptureOptions, mSync, CONTEXT_TYPE_NON_UI, CONTEXT_TYPE_DISPLAY_CONTEXT, CONTEXT_TYPE_ACTIVITY, CONTEXT_TYPE_WINDOW_CONTEXT, CONTEXT_TYPE_SYSTEM_OR_SYSTEM_UI, mContextType, mOwnsToken, mDatabasesDir, mPreferencesDir, mFilesDir, mCratesDir, mNoBackupFilesDir, mCacheDir, mCodeCacheDir, mServiceCache, STATE_UNINITIALIZED, STATE_INITIALIZING, STATE_READY, STATE_NOT_FOUND, mServiceInitializationStateArray, mDeviceIdListenerLock, mDeviceIdChangeListeners
+        "Landroid/app/ContextImpl;" => Some(&[
+            BootstrapDeclaredField {
+                name: "TAG",
+                type_descriptor: "Ljava/lang/String;",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "DEBUG",
+                type_descriptor: "Z",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "XATTR_INODE_CACHE",
+                type_descriptor: "Ljava/lang/String;",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "XATTR_INODE_CODE_CACHE",
+                type_descriptor: "Ljava/lang/String;",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "sSharedPrefsCache",
+                type_descriptor: "Landroid/util/ArrayMap;",
+                access_flags: ACCESS_PRIVATE_STATIC,
+            },
+            BootstrapDeclaredField {
+                name: "mSharedPrefsPaths",
+                type_descriptor: "Landroid/util/ArrayMap;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mMainThread",
+                type_descriptor: "Landroid/app/ActivityThread;",
+                access_flags: ACCESS_PACKAGE_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "mPackageInfo",
+                type_descriptor: "Landroid/app/LoadedApk;",
+                access_flags: ACCESS_PACKAGE_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "mClassLoader",
+                type_descriptor: "Ljava/lang/ClassLoader;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mToken",
+                type_descriptor: "Landroid/os/IBinder;",
+                access_flags: ACCESS_PRIVATE_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "mUser",
+                type_descriptor: "Landroid/os/UserHandle;",
+                access_flags: ACCESS_PRIVATE_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "mContentResolver",
+                type_descriptor: "Landroid/app/ContextImpl$ApplicationContentResolver;",
+                access_flags: ACCESS_PRIVATE_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "mBasePackageName",
+                type_descriptor: "Ljava/lang/String;",
+                access_flags: ACCESS_PRIVATE_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "mOpPackageName",
+                type_descriptor: "Ljava/lang/String;",
+                access_flags: ACCESS_PRIVATE_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "mParams",
+                type_descriptor: "Landroid/content/ContextParams;",
+                access_flags: ACCESS_PRIVATE_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "mAttributionSource",
+                type_descriptor: "Landroid/content/AttributionSource;",
+                access_flags: ACCESS_PRIVATE_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "mResourcesManager",
+                type_descriptor: "Landroid/app/ResourcesManager;",
+                access_flags: ACCESS_PRIVATE_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "mResources",
+                type_descriptor: "Landroid/content/res/Resources;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mDisplay",
+                type_descriptor: "Landroid/view/Display;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mDeviceId",
+                type_descriptor: "I",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mForceDisplayOverrideInResources",
+                type_descriptor: "Z",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mIsConfigurationBasedContext",
+                type_descriptor: "Z",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mIsExplicitDeviceId",
+                type_descriptor: "Z",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mFlags",
+                type_descriptor: "I",
+                access_flags: ACCESS_PRIVATE_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "mOuterContext",
+                type_descriptor: "Landroid/content/Context;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mThemeResource",
+                type_descriptor: "I",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mTheme",
+                type_descriptor: "Landroid/content/res/Resources$Theme;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mPackageManager",
+                type_descriptor: "Landroid/content/pm/PackageManager;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mReceiverRestrictedContext",
+                type_descriptor: "Landroid/content/Context;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mSplitName",
+                type_descriptor: "Ljava/lang/String;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mAutofillClient",
+                type_descriptor: "Landroid/view/autofill/AutofillManager$AutofillClient;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mAutofillOptions",
+                type_descriptor: "Landroid/content/AutofillOptions;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mContentCaptureOptions",
+                type_descriptor: "Landroid/content/ContentCaptureOptions;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mSync",
+                type_descriptor: "Ljava/lang/Object;",
+                access_flags: ACCESS_PRIVATE_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "CONTEXT_TYPE_NON_UI",
+                type_descriptor: "I",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "CONTEXT_TYPE_DISPLAY_CONTEXT",
+                type_descriptor: "I",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "CONTEXT_TYPE_ACTIVITY",
+                type_descriptor: "I",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "CONTEXT_TYPE_WINDOW_CONTEXT",
+                type_descriptor: "I",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "CONTEXT_TYPE_SYSTEM_OR_SYSTEM_UI",
+                type_descriptor: "I",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "mContextType",
+                type_descriptor: "I",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mOwnsToken",
+                type_descriptor: "Z",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mDatabasesDir",
+                type_descriptor: "Ljava/io/File;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mPreferencesDir",
+                type_descriptor: "Ljava/io/File;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mFilesDir",
+                type_descriptor: "Ljava/io/File;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mCratesDir",
+                type_descriptor: "Ljava/io/File;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mNoBackupFilesDir",
+                type_descriptor: "Ljava/io/File;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mCacheDir",
+                type_descriptor: "Ljava/io/File;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mCodeCacheDir",
+                type_descriptor: "Ljava/io/File;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mServiceCache",
+                type_descriptor: "[Ljava/lang/Object;",
+                access_flags: ACCESS_PACKAGE_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "STATE_UNINITIALIZED",
+                type_descriptor: "I",
+                access_flags: ACCESS_PACKAGE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "STATE_INITIALIZING",
+                type_descriptor: "I",
+                access_flags: ACCESS_PACKAGE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "STATE_READY",
+                type_descriptor: "I",
+                access_flags: ACCESS_PACKAGE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "STATE_NOT_FOUND",
+                type_descriptor: "I",
+                access_flags: ACCESS_PACKAGE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "mServiceInitializationStateArray",
+                type_descriptor: "[I",
+                access_flags: ACCESS_PACKAGE_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "mDeviceIdListenerLock",
+                type_descriptor: "Ljava/lang/Object;",
+                access_flags: ACCESS_PRIVATE_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "mDeviceIdChangeListeners",
+                type_descriptor: "Ljava/util/ArrayList;",
+                access_flags: ACCESS_PRIVATE,
             },
         ]),
         _ => None,
