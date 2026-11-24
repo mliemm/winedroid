@@ -74,12 +74,18 @@ compile() {
 link() {
     local name="$1" page="$2" work="$3" out="$4"
     shift 4
+    link_as "$name" "$name" "$page" "$work" "$out" "$@"
+}
+
+link_as() {
+    local object="$1" name="$2" page="$3" work="$4" out="$5"
+    shift 5
     local flags=()
     while IFS= read -r flag; do
         flags+=("$flag")
     done < <(link_flags "$page")
     "$LLD" "${flags[@]}" -soname "lib$name.so" -L "$work/stubs" -L "$out" "$@" \
-        -o "$out/lib$name.so" "$work/$name.o"
+        -o "$out/lib$name.so" "$work/$object.o"
 }
 
 build_variant() {
@@ -101,6 +107,9 @@ build_variant() {
     compile fx_reloc "$work"
     link fx_reloc "$page" "$work" "$out" -lc -llog
 
+    link_as fx_reloc fx_aps2 "$page" "$work" "$out" -lc -llog --pack-dyn-relocs=android
+    link_as fx_reloc fx_relr "$page" "$work" "$out" -lc -llog --pack-dyn-relocs=relr
+
     compile fx_dep "$work"
     link fx_dep "$page" "$work" "$out" -lfx_add -ldl
 
@@ -110,5 +119,21 @@ build_variant() {
     rm -rf "$work"
 }
 
+write_manifest() {
+    local manifest="$OUT_ROOT/manifest.txt"
+    {
+        printf 'clang %s\n' "$("$CLANG" --version | head -n 1)"
+        printf 'ld.lld %s\n' "$("$LLD" --version | head -n 1)"
+        local file
+        for file in "$FIXTURES"/src/*.c "$FIXTURES"/include/jni.h; do
+            printf 'source %s %s\n' "${file#"$FIXTURES"/}" "$(cksum <"$file" | cut -d' ' -f1,2)"
+        done
+        for file in "$OUT_ROOT"/16k/*.so "$OUT_ROOT"/4k/*.so; do
+            printf 'binary %s %s\n' "${file#"$OUT_ROOT"/}" "$(cksum <"$file" | cut -d' ' -f1,2)"
+        done
+    } >"$manifest"
+}
+
 build_variant 16384 16k
 build_variant 4096 4k
+write_manifest

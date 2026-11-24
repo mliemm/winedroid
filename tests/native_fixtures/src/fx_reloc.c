@@ -10,7 +10,7 @@ extern int __cxa_atexit(void (*function)(void *), void *argument, void *dso_hand
 
 #define FX_LOG_INFO 4
 
-void *__dso_handle = &__dso_handle;
+__attribute__((visibility("hidden"))) void *__dso_handle = &__dso_handle;
 
 static int local_target = 11;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;

@@ -1,0 +1,19 @@
+clang Apple clang version 21.0.0 (clang-2100.4.1.1)
+ld.lld LLD 23.1.5 (https://github.com/rust-lang/llvm-project.git 0a5579eb649d3634a9c30ac873300cc2944fa070) (compatible with GNU linkers)
+source src/fx_add.c 1480638417 73
+source src/fx_dep.c 982460949 562
+source src/fx_jni.c 1057538324 2138
+source src/fx_reloc.c 1869183806 2514
+source include/jni.h 1821821148 49409
+binary 16k/libfx_add.so 723716078 2296
+binary 16k/libfx_aps2.so 3402982044 7648
+binary 16k/libfx_dep.so 734394195 3648
+binary 16k/libfx_jni.so 2919427678 4944
+binary 16k/libfx_reloc.so 3791239422 7856
+binary 16k/libfx_relr.so 1332105807 7896
+binary 4k/libfx_add.so 3908862174 2296
+binary 4k/libfx_aps2.so 1250459304 7648
+binary 4k/libfx_dep.so 3961699566 3648
+binary 4k/libfx_jni.so 3975334502 4944
+binary 4k/libfx_reloc.so 3575045801 7856
+binary 4k/libfx_relr.so 3903282435 7896

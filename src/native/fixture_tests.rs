@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use super::fixture_elf::{
     FixtureElf, PT_TLS, R_AARCH64_ABS64, R_AARCH64_GLOB_DAT, R_AARCH64_JUMP_SLOT, R_AARCH64_RELATIVE,
-    R_AARCH64_TLSDESC,
+    R_AARCH64_TLSDESC, DT_ANDROID_RELA, DT_ANDROID_RELASZ, DT_RELR, DT_RELRSZ,
 };
 use crate::elf::{parse_elf, ElfClass, ElfEndian, ElfMachine};
 
@@ -118,15 +118,15 @@ fn fixture_source_fx_reloc_has_every_relocation_kind_the_loader_must_apply() {
         let elf = FixtureElf::parse(&read_fixture(variant, "libfx_reloc.so"));
         let label = variant.directory;
 
-        assert_eq!(elf.count(R_AARCH64_RELATIVE), 3, "{label} RELATIVE");
+        assert_eq!(elf.count(R_AARCH64_RELATIVE), 4, "{label} RELATIVE");
         assert_eq!(
             elf.symbols_of(R_AARCH64_ABS64),
-            names(&["memcpy", "strlen", "__dso_handle", "fx_exported_value"]),
+            names(&["memcpy", "strlen", "fx_exported_value"]),
             "{label} ABS64"
         );
         assert_eq!(
             elf.symbols_of(R_AARCH64_GLOB_DAT),
-            names(&["strlen", "__dso_handle", "fx_exported_value", "fx_fini_marker"]),
+            names(&["strlen", "fx_exported_value", "fx_fini_marker"]),
             "{label} GLOB_DAT"
         );
         assert_eq!(
@@ -150,7 +150,7 @@ fn fixture_source_fx_reloc_has_every_relocation_kind_the_loader_must_apply() {
             names(&["fx_tls_counter", "fx_tls_zero"]),
             "{label} TLSDESC"
         );
-        assert_eq!(elf.relocations.len(), 3 + 4 + 4 + 10 + 2, "{label} no other relocation kind");
+        assert_eq!(elf.relocations.len(), 4 + 3 + 3 + 10 + 2, "{label} no other relocation kind");
         assert_eq!(elf.init_array_len, 1, "{label} DT_INIT_ARRAY entries");
         assert_eq!(elf.fini_array_len, 1, "{label} DT_FINI_ARRAY entries");
         assert!(elf.has_segment(PT_TLS), "{label} PT_TLS");
@@ -160,7 +160,6 @@ fn fixture_source_fx_reloc_has_every_relocation_kind_the_loader_must_apply() {
 #[test]
 fn fixture_source_exports_and_imports_match_what_each_source_defines_and_calls() {
     let reloc_exports = names(&[
-        "__dso_handle",
         "fx_atexit_marker",
         "fx_copy_sum",
         "fx_ctor_marker",
@@ -223,6 +222,58 @@ fn fixture_source_exports_and_imports_match_what_each_source_defines_and_calls()
                 assert!(!elf.has_segment(PT_TLS), "{}/{name} must have no PT_TLS", variant.directory);
                 assert_eq!(elf.init_array_len + elf.fini_array_len, 0, "{}/{name}", variant.directory);
             }
+        }
+    }
+}
+
+#[test]
+fn fixture_source_fx_reloc_without_packing_has_neither_aps2_nor_relr_tables() {
+    for variant in &VARIANTS {
+        let elf = FixtureElf::parse(&read_fixture(variant, "libfx_reloc.so"));
+
+        for tag in [DT_ANDROID_RELA, DT_ANDROID_RELASZ, DT_RELR, DT_RELRSZ] {
+            assert_eq!(elf.tag(tag), None, "{} tag {tag:#x}", variant.directory);
+        }
+    }
+}
+
+#[test]
+fn fixture_build_command_pack_dyn_relocs_android_emits_an_aps2_table() {
+    for variant in &VARIANTS {
+        let data = read_fixture(variant, "libfx_aps2.so");
+        let elf = FixtureElf::parse(&data);
+        let start = elf.tag(DT_ANDROID_RELA).expect("DT_ANDROID_RELA");
+        let size = elf.tag(DT_ANDROID_RELASZ).expect("DT_ANDROID_RELASZ");
+        let offset = elf.file_offset(start);
+
+        assert!(size > 4, "{} APS2 payload size {size}", variant.directory);
+        assert_eq!(&data[offset..offset + 4], b"APS2", "{} APS2 magic", variant.directory);
+        assert_eq!(elf.tag(DT_RELR), None, "{}", variant.directory);
+        assert_eq!(elf.count(R_AARCH64_RELATIVE), 0, "{} RELATIVE moved into the packed table", variant.directory);
+    }
+}
+
+#[test]
+fn fixture_build_command_pack_dyn_relocs_relr_emits_a_relr_table() {
+    for variant in &VARIANTS {
+        let elf = FixtureElf::parse(&read_fixture(variant, "libfx_relr.so"));
+
+        assert!(elf.tag(DT_RELR).is_some(), "{} DT_RELR", variant.directory);
+        assert!(elf.tag(DT_RELRSZ).is_some_and(|size| size >= 8 && size % 8 == 0), "{} DT_RELRSZ", variant.directory);
+        assert_eq!(elf.tag(DT_ANDROID_RELA), None, "{}", variant.directory);
+        assert!(elf.count(R_AARCH64_RELATIVE) < 4, "{} RELATIVE moved into the RELR table", variant.directory);
+    }
+}
+
+#[test]
+fn fixture_source_packed_variants_export_what_fx_reloc_exports() {
+    for variant in &VARIANTS {
+        let plain = FixtureElf::parse(&read_fixture(variant, "libfx_reloc.so"));
+        for name in ["libfx_aps2.so", "libfx_relr.so"] {
+            let packed = FixtureElf::parse(&read_fixture(variant, name));
+
+            assert_eq!(packed.exports, plain.exports, "{}/{name} exports", variant.directory);
+            assert_eq!(packed.imports, plain.imports, "{}/{name} imports", variant.directory);
         }
     }
 }

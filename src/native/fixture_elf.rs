@@ -10,6 +10,11 @@ pub const R_AARCH64_JUMP_SLOT: u32 = 1026;
 pub const R_AARCH64_RELATIVE: u32 = 1027;
 pub const R_AARCH64_TLSDESC: u32 = 1031;
 
+pub const DT_RELRSZ: u64 = 35;
+pub const DT_RELR: u64 = 36;
+pub const DT_ANDROID_RELA: u64 = 0x6000_0011;
+pub const DT_ANDROID_RELASZ: u64 = 0x6000_0012;
+
 const DT_NULL: u64 = 0;
 const DT_PLTRELSZ: u64 = 2;
 const DT_RELA: u64 = 7;
@@ -37,6 +42,7 @@ pub struct Relocation {
 
 pub struct FixtureElf {
     pub segments: Vec<Segment>,
+    pub dynamic: Vec<(u64, u64)>,
     pub relocations: Vec<Relocation>,
     pub init_array_len: usize,
     pub fini_array_len: usize,
@@ -166,14 +172,25 @@ impl FixtureElf {
                 .map(|symbol| symbol.name.clone())
                 .collect()
         };
+        let init_array_len = array_len(DT_INIT_ARRAY, DT_INIT_ARRAYSZ);
+        let fini_array_len = array_len(DT_FINI_ARRAY, DT_FINI_ARRAYSZ);
         Self {
             relocations,
-            init_array_len: array_len(DT_INIT_ARRAY, DT_INIT_ARRAYSZ),
-            fini_array_len: array_len(DT_FINI_ARRAY, DT_FINI_ARRAYSZ),
+            dynamic,
+            init_array_len,
+            fini_array_len,
             exports: named(true),
             imports: named(false),
             segments,
         }
+    }
+
+    pub fn file_offset(&self, vaddr: u64) -> usize {
+        vaddr_to_offset(&self.segments, vaddr)
+    }
+
+    pub fn tag(&self, tag: u64) -> Option<u64> {
+        self.dynamic.iter().find(|entry| entry.0 == tag).map(|entry| entry.1)
     }
 
     pub fn has_segment(&self, kind: u32) -> bool {
