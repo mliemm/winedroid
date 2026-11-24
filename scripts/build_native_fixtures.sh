@@ -128,6 +128,9 @@ build_variant() {
     compile fx_jni "$work"
     link fx_jni "$page" "$work" "$out" -lc
 
+    compile fx_relro "$work"
+    link fx_relro "$page" "$work" "$out"
+
     rm -rf "$work"
 }
 

@@ -11,10 +11,12 @@ const REGISTER_MASK: u32 = 0xFFFF_FFE0;
 const SHADOW_STACK_PUSH: u32 = 0xF800_865E;
 const SHADOW_STACK_POP: u32 = 0xF85F_8E5E;
 const NOP: u32 = 0xD503_201F;
-const MOV_X18_REGISTER: u32 = 0xAA00_03F2;
-const MOV_X18_REGISTER_MASK: u32 = 0xFFE0_FFFF;
-const MOVZ_X18: u32 = 0xD280_0012;
-const MOVZ_X18_MASK: u32 = 0xFF80_001F;
+const MOV_X18_REGISTER: u32 = 0x2A00_03F2;
+const MOV_X18_REGISTER_MASK: u32 = 0x7FE0_FFFF;
+const MOV_X18_IMMEDIATE_WIDE: u32 = 0x1280_0012;
+const MOV_X18_IMMEDIATE_WIDE_MASK: u32 = 0x1F80_001F;
+const ORR_X18_IMMEDIATE: u32 = 0x3200_03F2;
+const ORR_X18_IMMEDIATE_MASK: u32 = 0x7F80_03FF;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PatchCounts {
@@ -25,6 +27,12 @@ pub struct PatchCounts {
 
 pub struct TextPatcher;
 
+fn writes_x18(word: u32) -> bool {
+    word & MOV_X18_REGISTER_MASK == MOV_X18_REGISTER
+        || word & MOV_X18_IMMEDIATE_WIDE_MASK == MOV_X18_IMMEDIATE_WIDE
+        || word & ORR_X18_IMMEDIATE_MASK == ORR_X18_IMMEDIATE
+}
+
 pub fn patch_words(code: &mut [u8]) -> Result<PatchCounts> {
     let mut counts = PatchCounts::default();
     for chunk in code.chunks_exact_mut(4) {
@@ -33,12 +41,14 @@ pub fn patch_words(code: &mut [u8]) -> Result<PatchCounts> {
             counts.thread_pointer_reads += 1;
             MRS_TPIDRRO_EL0 | (word & 0x1f)
         } else if word & REGISTER_MASK == MSR_TPIDR_EL0 {
-            return Err(WinedroidError::new("guest code writes tpidr_el0; next missing primitive: msr tpidr_el0"));
+            return Err(WinedroidError::new(
+                "guest code writes tpidr_el0; next missing primitive: msr tpidr_el0",
+            ));
         } else if word == SHADOW_STACK_PUSH || word == SHADOW_STACK_POP {
             counts.shadow_stack_ops += 1;
             NOP
         } else {
-            if word & MOV_X18_REGISTER_MASK == MOV_X18_REGISTER || word & MOVZ_X18_MASK == MOVZ_X18 {
+            if writes_x18(word) {
                 counts.x18_writes += 1;
             }
             continue;
@@ -120,9 +130,12 @@ fn function_ranges(image: &MappedImage, elf: &ElfImage) -> Result<Option<Vec<(u6
     };
     let base = header.vaddr;
     let encodings = image.bytes(base, 4)?;
-    let (version, pointer_encoding, count_encoding, table_encoding) = (encodings[0], encodings[1], encodings[2], encodings[3]);
+    let (version, pointer_encoding, count_encoding, table_encoding) =
+        (encodings[0], encodings[1], encodings[2], encodings[3]);
     if version != 1 || table_encoding != 0x3b {
-        return Err(WinedroidError::new("unsupported eh_frame_hdr layout; next missing primitive: eh_frame_hdr layout"));
+        return Err(WinedroidError::new(
+            "unsupported eh_frame_hdr layout; next missing primitive: eh_frame_hdr layout",
+        ));
     }
     let (_, pointer_length) = read_encoded(image, base + 4, pointer_encoding)?;
     let (count, count_length) = read_encoded(image, base + 4 + pointer_length, count_encoding)?;
@@ -130,8 +143,12 @@ fn function_ranges(image: &MappedImage, elf: &ElfImage) -> Result<Option<Vec<(u6
     let mut ranges = Vec::with_capacity(count as usize);
     for index in 0..count {
         let entry = image.bytes(table + index * 8, 8)?;
-        let fde = base.wrapping_add(i64::from(i32::from_le_bytes(entry[4..8].try_into().expect("4 bytes"))) as u64);
-        let cie_offset = u64::from(u32::from_le_bytes(image.bytes(fde + 4, 4)?.try_into().expect("4 bytes")));
+        let fde = base.wrapping_add(i64::from(i32::from_le_bytes(
+            entry[4..8].try_into().expect("4 bytes"),
+        )) as u64);
+        let cie_offset = u64::from(u32::from_le_bytes(
+            image.bytes(fde + 4, 4)?.try_into().expect("4 bytes"),
+        ));
         let encoding = fde_encoding(image, fde + 4 - cie_offset)?;
         let (begin, begin_length) = read_encoded(image, fde + 8, encoding)?;
         let (range, _) = read_encoded(image, fde + 8 + begin_length, encoding & 0x0f)?;
@@ -147,7 +164,11 @@ impl ImagePatcher for TextPatcher {
         for load in elf.loads().filter(|load| load.flags & PF_X != 0) {
             let segment = (load.vaddr, load.vaddr + load.filesz);
             let spans: Vec<(u64, u64)> = match &functions {
-                Some(ranges) => ranges.iter().map(|(start, end)| ((*start).max(segment.0), (*end).min(segment.1))).filter(|(start, end)| start < end).collect(),
+                Some(ranges) => ranges
+                    .iter()
+                    .map(|(start, end)| ((*start).max(segment.0), (*end).min(segment.1)))
+                    .filter(|(start, end)| start < end)
+                    .collect(),
                 None => vec![segment],
             };
             for (start, end) in spans {
@@ -166,7 +187,10 @@ mod tests {
     use super::*;
 
     fn words(values: &[u32]) -> Vec<u8> {
-        values.iter().flat_map(|value| value.to_le_bytes()).collect()
+        values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect()
     }
 
     #[test]
@@ -175,7 +199,10 @@ mod tests {
         let counts = patch_words(&mut code).unwrap();
 
         assert_eq!(counts.thread_pointer_reads, 3);
-        assert_eq!(code, words(&[0xD53BD068, 0xD53BD060, 0xD503201F, 0xD53BD07E]));
+        assert_eq!(
+            code,
+            words(&[0xD53BD068, 0xD53BD060, 0xD503201F, 0xD53BD07E])
+        );
     }
 
     #[test]
@@ -189,7 +216,9 @@ mod tests {
 
     #[test]
     fn aarch64_msr_tpidr_el0_is_an_explicit_error() {
-        let error = patch_words(&mut words(&[0xD51BD041])).unwrap_err().to_string();
+        let error = patch_words(&mut words(&[0xD51BD041]))
+            .unwrap_err()
+            .to_string();
 
         assert!(error.contains("next missing primitive: msr tpidr_el0"));
     }
@@ -205,6 +234,25 @@ mod tests {
     }
 
     #[test]
+    fn aarch64_wide_immediate_and_logical_immediate_writes_to_x18_are_counted_in_both_widths() {
+        let writes = [
+            0x9280_0012,
+            0xF280_0012,
+            0x5280_0012,
+            0x2A00_03F2,
+            0xB240_03F2,
+            0x3240_03F2,
+        ];
+        let others = [0x9280_0013, 0xB240_03F3, 0xAA12_03E0];
+        let mut code = words(&[writes.as_slice(), others.as_slice()].concat());
+        let before = code.clone();
+        let counts = patch_words(&mut code).unwrap();
+
+        assert_eq!(counts.x18_writes, writes.len());
+        assert_eq!(code, before);
+    }
+
+    #[test]
     fn bionic_eh_frame_hdr_function_ranges_exclude_the_literal_pool_of_the_order_fixture() {
         use crate::native::fixture_elf::FixtureElf;
         use crate::native::loader_test_support::fixture_dir;
@@ -214,14 +262,23 @@ mod tests {
             let data = std::fs::read(&path).unwrap();
             let elf = ElfImage::parse("libfx_order_child.so", &data).unwrap();
             let image = MappedImage::map("libfx_order_child.so", &data, &elf).unwrap();
-            let ranges = function_ranges(&image, &elf).unwrap().expect("fixture has PT_GNU_EH_FRAME");
+            let ranges = function_ranges(&image, &elf)
+                .unwrap()
+                .expect("fixture has PT_GNU_EH_FRAME");
             let exports = FixtureElf::parse(&data).export_addresses;
-            let covered = |name: &str| ranges.iter().any(|(start, end)| exports[name] >= *start && exports[name] < *end);
+            let covered = |name: &str| {
+                ranges
+                    .iter()
+                    .any(|(start, end)| exports[name] >= *start && exports[name] < *end)
+            };
 
             assert!(ranges.iter().all(|(start, end)| start < end), "{variant}");
             assert!(covered("fx_pool_word"), "{variant}");
             assert!(covered("fx_write_x18"), "{variant}");
-            assert!(!covered("fx_pool_words"), "{variant} literal pool must not be inside an FDE");
+            assert!(
+                !covered("fx_pool_words"),
+                "{variant} literal pool must not be inside an FDE"
+            );
         }
     }
 }

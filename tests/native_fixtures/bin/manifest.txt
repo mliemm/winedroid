@@ -6,6 +6,7 @@ source src/fx_jni.c 1057538324 2138
 source src/fx_order_child.c 4143477877 1191
 source src/fx_order_parent.c 2046232195 996
 source src/fx_reloc.c 1869183806 2514
+source src/fx_relro.c 3304644147 217
 source include/jni.h 3787837154 49506
 binary 16k/libfx_add.so 723716078 2296
 binary 16k/libfx_aps2.so 3402982044 7648
@@ -15,6 +16,7 @@ binary 16k/libfx_order_child.so 4144083586 4616
 binary 16k/libfx_order_parent.so 3872958116 4864
 binary 16k/libfx_reloc.so 3791239422 7856
 binary 16k/libfx_relr.so 1332105807 7896
+binary 16k/libfx_relro.so 3577260205 133944
 binary 4k/libfx_add.so 3908862174 2296
 binary 4k/libfx_aps2.so 1250459304 7648
 binary 4k/libfx_dep.so 3961699566 3648
@@ -23,3 +25,4 @@ binary 4k/libfx_order_child.so 2150498198 4616
 binary 4k/libfx_order_parent.so 2182793691 4864
 binary 4k/libfx_reloc.so 3575045801 7856
 binary 4k/libfx_relr.so 3903282435 7896
+binary 4k/libfx_relro.so 296619050 133944

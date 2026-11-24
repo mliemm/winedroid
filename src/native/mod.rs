@@ -64,3 +64,7 @@ mod loader_corpus_tests;
 mod loader_link_tests;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
 mod image_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod loader_protection_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod loader_summary_tests;

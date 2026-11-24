@@ -140,3 +140,23 @@ pub fn host_protection_of(address: usize) -> i32 {
     assert!(at as usize <= address, "{address:#x} is not mapped");
     info[0]
 }
+
+pub fn terminating_signal_of_child(work: impl FnOnce()) -> Option<i32> {
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0, "fork failed");
+    if pid == 0 {
+        work();
+        unsafe { libc::_exit(0) };
+    }
+    let mut status = 0;
+    assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+    libc::WIFSIGNALED(status).then(|| libc::WTERMSIG(status))
+}
+
+pub fn is_mapped(address: usize) -> bool {
+    const VM_REGION_BASIC_INFO_64: i32 = 9;
+    let mut at = address as u64;
+    let (mut size, mut info, mut count, mut object) = (0u64, [0i32; 9], 9u32, 0u32);
+    let status = unsafe { mach_vm_region(libc::mach_task_self(), &mut at, &mut size, VM_REGION_BASIC_INFO_64, info.as_mut_ptr(), &mut count, &mut object) };
+    status == 0 && at as usize <= address
+}

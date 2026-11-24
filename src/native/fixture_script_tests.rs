@@ -7,8 +7,8 @@ use std::sync::OnceLock;
 use super::fixture_header::manifest_path;
 
 const VARIANTS: [(&str, u32); 2] = [("16k", 16384), ("4k", 4096)];
-const LIBRARIES: [&str; 8] = ["fx_add", "fx_aps2", "fx_dep", "fx_jni", "fx_order_child", "fx_order_parent", "fx_reloc", "fx_relr"];
-const SOURCES: [&str; 6] = ["fx_add", "fx_dep", "fx_jni", "fx_order_child", "fx_order_parent", "fx_reloc"];
+const LIBRARIES: [&str; 9] = ["fx_add", "fx_aps2", "fx_dep", "fx_jni", "fx_order_child", "fx_order_parent", "fx_reloc", "fx_relr", "fx_relro"];
+const SOURCES: [&str; 7] = ["fx_add", "fx_dep", "fx_jni", "fx_order_child", "fx_order_parent", "fx_reloc", "fx_relro"];
 const FAKE_CLANG: &str = r#"#!/bin/sh
 printf 'clang %s\n' "$*" >>"$FAKE_LOG"
 case "$1" in

@@ -6,7 +6,7 @@ use super::fixture_elf::{FixtureElf, DT_GNU_HASH, DT_HASH, PF_W, PF_X, PT_GNU_EH
 
 const HOST_PAGE: u64 = 0x4000;
 const VARIANTS: [&str; 2] = ["16k", "4k"];
-const LIBRARIES: [&str; 8] = [
+const LIBRARIES: [&str; 9] = [
     "libfx_add.so",
     "libfx_aps2.so",
     "libfx_dep.so",
@@ -15,6 +15,7 @@ const LIBRARIES: [&str; 8] = [
     "libfx_order_parent.so",
     "libfx_reloc.so",
     "libfx_relr.so",
+    "libfx_relro.so",
 ];
 
 fn fixture_bytes(variant: &str, name: &str) -> Vec<u8> {

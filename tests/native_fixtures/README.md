@@ -7,7 +7,7 @@ from the matching file in `src/`; nothing is hand edited.
 ## Provenance
 
 - Sources: `src/fx_add.c`, `src/fx_reloc.c`, `src/fx_dep.c`, `src/fx_jni.c`,
-  `src/fx_order_child.c`, `src/fx_order_parent.c`.
+  `src/fx_order_child.c`, `src/fx_order_parent.c`, `src/fx_relro.c`.
 - Headers: Bionic from the android-ref checkout (`bionic/libc/include` and the
   kernel uapi directories) plus `include/jni.h`. No Android NDK is installed.
 - `include/jni.h` is written from ART's `JNINativeInterface` table in
@@ -82,3 +82,7 @@ checked in binaries byte for byte.
   `$ORIGIN/dep`, priority 101 and 102 constructors and destructors, and a
   constructor that calls `dlopen`, `dlsym` and `dlclose` while the loader
   holds its lock.
+- `libfx_relro.so`: a 32 KB `.data.rel.ro` table of function pointers (4096
+  RELATIVE relocations) so `PT_GNU_RELRO` covers at least one whole 16 KB host
+  page in both variants, plus a plain writable `fx_relro_plain` in a segment
+  after it.

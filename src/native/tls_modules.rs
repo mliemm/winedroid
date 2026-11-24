@@ -42,14 +42,15 @@ pub fn register(segment: TlsSegment, init_address: usize) -> u32 {
 pub fn unregister(module_id: u32) {
     // cite: bionic linker_tls.cpp#unregister_soinfo_tls
     let mut registry = REGISTRY.lock().expect("tls registry");
-    if let Some(slot) = registry.get_mut(module_id as usize - 1) {
+    if let Some(slot) = module_id.checked_sub(1).and_then(|index| registry.get_mut(index as usize)) {
         *slot = None;
     }
     EPOCH.fetch_add(1, Ordering::SeqCst);
 }
 
 pub fn generation_of(module_id: u32) -> Option<u64> {
-    REGISTRY.lock().expect("tls registry").get(module_id as usize - 1).and_then(|slot| slot.as_ref().map(|module| module.generation))
+    let index = module_id.checked_sub(1)? as usize;
+    REGISTRY.lock().expect("tls registry").get(index).and_then(|slot| slot.as_ref().map(|module| module.generation))
 }
 
 struct Block {
@@ -106,12 +107,9 @@ pub fn block_address(module_id: u32) -> usize {
     if let Some(address) = existing_block_address(module_id) {
         return address;
     }
-    let module = REGISTRY
-        .lock()
-        .expect("tls registry")
-        .get(module_id as usize - 1)
-        .cloned()
-        .flatten()
+    let module = module_id
+        .checked_sub(1)
+        .and_then(|index| REGISTRY.lock().expect("tls registry").get(index as usize).cloned().flatten())
         .unwrap_or_else(|| panic!("TLS module {module_id} is not registered"));
     let alignment = (module.segment.alignment as usize).max(16);
     let mut pointer: *mut libc::c_void = std::ptr::null_mut();
@@ -267,5 +265,14 @@ mod tests {
 
         assert_eq!(existing_block_address(module), None);
         assert_ne!(generation_of(module), Some(generation));
+    }
+
+    #[test]
+    fn bionic_tls_module_id_zero_is_never_registered_and_does_not_underflow() {
+        unregister(0);
+
+        assert_eq!(generation_of(0), None);
+        assert_eq!(existing_block_address(0), None);
+        assert!(std::panic::catch_unwind(|| block_address(0)).is_err());
     }
 }
