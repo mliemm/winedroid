@@ -1,6 +1,11 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
+use super::fixture_elf::{
+    FixtureElf, PT_TLS, R_AARCH64_ABS64, R_AARCH64_GLOB_DAT, R_AARCH64_JUMP_SLOT, R_AARCH64_RELATIVE,
+    R_AARCH64_TLSDESC,
+};
 use crate::elf::{parse_elf, ElfClass, ElfEndian, ElfMachine};
 
 const PT_LOAD: u32 = 1;
@@ -98,6 +103,125 @@ fn fixture_build_command_p_align_is_the_requested_max_page_size() {
                     "{}/{name} PT_LOAD offset and vaddr disagree modulo p_align",
                     variant.directory
                 );
+            }
+        }
+    }
+}
+
+fn names(items: &[&str]) -> BTreeSet<String> {
+    items.iter().map(|item| (*item).to_owned()).collect()
+}
+
+#[test]
+fn fixture_source_fx_reloc_has_every_relocation_kind_the_loader_must_apply() {
+    for variant in &VARIANTS {
+        let elf = FixtureElf::parse(&read_fixture(variant, "libfx_reloc.so"));
+        let label = variant.directory;
+
+        assert_eq!(elf.count(R_AARCH64_RELATIVE), 3, "{label} RELATIVE");
+        assert_eq!(
+            elf.symbols_of(R_AARCH64_ABS64),
+            names(&["memcpy", "strlen", "__dso_handle", "fx_exported_value"]),
+            "{label} ABS64"
+        );
+        assert_eq!(
+            elf.symbols_of(R_AARCH64_GLOB_DAT),
+            names(&["strlen", "__dso_handle", "fx_exported_value", "fx_fini_marker"]),
+            "{label} GLOB_DAT"
+        );
+        assert_eq!(
+            elf.symbols_of(R_AARCH64_JUMP_SLOT),
+            names(&[
+                "memcpy",
+                "strlen",
+                "malloc",
+                "free",
+                "snprintf",
+                "pthread_mutex_lock",
+                "pthread_mutex_unlock",
+                "__cxa_atexit",
+                "__stack_chk_fail",
+                "__android_log_print",
+            ]),
+            "{label} JUMP_SLOT"
+        );
+        assert_eq!(
+            elf.symbols_of(R_AARCH64_TLSDESC),
+            names(&["fx_tls_counter", "fx_tls_zero"]),
+            "{label} TLSDESC"
+        );
+        assert_eq!(elf.relocations.len(), 3 + 4 + 4 + 10 + 2, "{label} no other relocation kind");
+        assert_eq!(elf.init_array_len, 1, "{label} DT_INIT_ARRAY entries");
+        assert_eq!(elf.fini_array_len, 1, "{label} DT_FINI_ARRAY entries");
+        assert!(elf.has_segment(PT_TLS), "{label} PT_TLS");
+    }
+}
+
+#[test]
+fn fixture_source_exports_and_imports_match_what_each_source_defines_and_calls() {
+    let reloc_exports = names(&[
+        "__dso_handle",
+        "fx_atexit_marker",
+        "fx_copy_sum",
+        "fx_ctor_marker",
+        "fx_exported_pointer",
+        "fx_exported_value",
+        "fx_fini_marker",
+        "fx_format",
+        "fx_guarded_sum",
+        "fx_import_table",
+        "fx_local_pointer",
+        "fx_lock_roundtrip",
+        "fx_log",
+        "fx_strlen",
+        "fx_strlen_address",
+        "fx_tls_counter",
+        "fx_tls_next",
+        "fx_tls_zero",
+    ]);
+    let reloc_imports = names(&[
+        "__android_log_print",
+        "__cxa_atexit",
+        "__stack_chk_fail",
+        "free",
+        "malloc",
+        "memcpy",
+        "pthread_mutex_lock",
+        "pthread_mutex_unlock",
+        "snprintf",
+        "strlen",
+    ]);
+    let table = [
+        ("libfx_add.so", names(&["add", "fx_data_value"]), names(&[])),
+        ("libfx_reloc.so", reloc_exports, reloc_imports),
+        (
+            "libfx_dep.so",
+            names(&["fx_dep_add", "fx_dep_dlsym_add"]),
+            names(&["add", "dlclose", "dlopen", "dlsym", "fx_data_value"]),
+        ),
+        (
+            "libfx_jni.so",
+            names(&[
+                "JNI_OnLoad",
+                "Java_fx_Native_arrayLength",
+                "Java_fx_Native_callLength",
+                "Java_fx_Native_callPing",
+                "Java_fx_Native_greeting",
+                "Java_fx_Native_stringLength",
+                "Java_fx_Native_throwState",
+            ]),
+            names(&["__stack_chk_fail", "strlen"]),
+        ),
+    ];
+    for variant in &VARIANTS {
+        for (name, exports, imports) in &table {
+            let elf = FixtureElf::parse(&read_fixture(variant, name));
+
+            assert_eq!(&elf.exports, exports, "{}/{name} exports", variant.directory);
+            assert_eq!(&elf.imports, imports, "{}/{name} imports", variant.directory);
+            if *name != "libfx_reloc.so" {
+                assert!(!elf.has_segment(PT_TLS), "{}/{name} must have no PT_TLS", variant.directory);
+                assert_eq!(elf.init_array_len + elf.fini_array_len, 0, "{}/{name}", variant.directory);
             }
         }
     }

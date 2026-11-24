@@ -4,6 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 REF_ROOT="${ANDROID_REF_ROOT:-$HOME/Dev/android-ref}"
 FIXTURES="$REPO_ROOT/tests/native_fixtures"
+OUT_ROOT="${FIXTURE_OUT_ROOT:-$FIXTURES/bin}"
 BIONIC="$REF_ROOT/bionic/libc"
 CLANG="${CLANG:-clang}"
 TARGET="aarch64-linux-android29"
@@ -83,7 +84,7 @@ link() {
 
 build_variant() {
     local page="$1" label="$2"
-    local out="$FIXTURES/bin/$label"
+    local out="$OUT_ROOT/$label"
     local work
     work="$(mktemp -d)"
     mkdir -p "$out" "$work/stubs"

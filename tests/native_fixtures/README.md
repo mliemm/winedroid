@@ -24,7 +24,8 @@ from the matching file in `src/`; nothing is hand edited.
     ANDROID_REF_ROOT=<android-ref checkout> RUSTUP_TOOLCHAIN=1.100.0 scripts/build_native_fixtures.sh
 
 `ANDROID_REF_ROOT` defaults to `$HOME/Dev/android-ref`; `CLANG` and `LD_LLD`
-override the tool lookup. Rebuilding with the same toolchain reproduces the
+override the tool lookup, and `FIXTURE_OUT_ROOT` redirects the output away from
+`bin/`. Rebuilding with the same toolchain reproduces the
 checked in binaries byte for byte.
 
 ## Variants
