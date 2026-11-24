@@ -249,6 +249,16 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Ljava/util/Collections;"
+            && method.name == "emptySet"
+            && method.proto.descriptor_is("()Ljava/util/Set;")
+        {
+            // cite: libcore Collections.java#emptySet, EMPTY_SET
+            let value = self.collections_empty_set();
+
+            return Some(DexExecutionResult::Value(value));
+        }
+
+        if method.class_descriptor == "Ljava/util/Collections;"
             && method.name == "reverse"
             && method.proto.descriptor_is("(Ljava/util/List;)V")
         {

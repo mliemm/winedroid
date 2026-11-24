@@ -956,6 +956,21 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        if method.class_descriptor == "Ljava/io/PrintStream;"
+            && matches!(method.name.as_str(), "printf" | "format")
+            && matches!(
+                method.proto.descriptor().as_str(),
+                "(Ljava/lang/String;[Ljava/lang/Object;)Ljava/io/PrintStream;"
+                    | "(Ljava/util/Locale;Ljava/lang/String;[Ljava/lang/Object;)Ljava/io/PrintStream;"
+            )
+        {
+            // cite: libcore PrintStream.java#printf, format
+            let invocation = invocation?;
+            let value = self.print_stream_format(invocation)?;
+
+            return Some(DexExecutionResult::Value(value));
+        }
+
         if method.class_descriptor == "Ljava/lang/Runtime;"
             && method.name == "getRuntime"
             && method.proto.descriptor_is("()Ljava/lang/Runtime;")

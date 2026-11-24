@@ -2297,6 +2297,100 @@ fn libcore_thread_pool_executor_constructor_stores_pool_state_in_nanoseconds() {
     );
 }
 
+fn thread_pool_executor_with_handler_constructor() -> DexMethodId {
+    let mut method = thread_pool_executor_constructor();
+    method.proto.shorty = "VIIJLLLL".to_owned();
+    method
+        .proto
+        .parameters
+        .push("Ljava/util/concurrent/RejectedExecutionHandler;".to_owned());
+    method
+}
+
+#[test]
+fn libcore_thread_pool_executor_seven_argument_constructor_stores_and_validates_handler() {
+    // cite: libcore ThreadPoolExecutor.java#ThreadPoolExecutor, handler
+    let program = DexProgram::new(Vec::new());
+    let queue = thread_pool_executor_dependency("Ljava/util/concurrent/LinkedBlockingQueue;:queue");
+    let factory = thread_pool_executor_dependency("Ljava/util/concurrent/ThreadFactory;:factory");
+    let handler = thread_pool_executor_dependency(
+        "Ljava/util/concurrent/ThreadPoolExecutor$AbortPolicy;:handler",
+    );
+    let construct = |core: i32, maximum: i32, handler: DexValue| {
+        let executor = program.allocate_object(THREAD_POOL_EXECUTOR.to_owned());
+        let mut arguments = thread_pool_executor_arguments(
+            &executor,
+            core,
+            maximum,
+            60,
+            seconds_unit(),
+            queue.clone(),
+            factory.clone(),
+        )
+        .arguments
+        .to_vec();
+        arguments.push(handler);
+        let result = program.invoke_builtin_method(
+            &thread_pool_executor_with_handler_constructor(),
+            Some(&test_invocation(arguments)),
+        );
+
+        (executor, result)
+    };
+
+    let (executor, result) = construct(2, 4, handler.clone());
+
+    assert_eq!(result, Some(DexExecutionResult::Void));
+    assert_eq!(
+        program.read_stored_instance_field(
+            &executor,
+            &thread_pool_executor_field("handler", "Ljava/util/concurrent/RejectedExecutionHandler;")
+        ),
+        Some(handler.clone())
+    );
+    assert_eq!(
+        program.read_stored_instance_field(
+            &executor,
+            &thread_pool_executor_field("keepAliveTime", "J")
+        ),
+        Some(DexValue::Long(60_000_000_000))
+    );
+
+    let (_, null_handler) = construct(2, 4, DexValue::Null);
+    let Some(DexExecutionResult::Throw(exception)) = null_handler else {
+        panic!("null handler should throw NullPointerException");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
+
+    let (_, invalid) = construct(-1, 4, DexValue::Null);
+    let Some(DexExecutionResult::Throw(exception)) = invalid else {
+        panic!("invalid core size should throw IllegalArgumentException");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/lang/IllegalArgumentException;"));
+}
+
+#[test]
+fn libcore_thread_pool_executor_abort_policy_constructor_returns_void() {
+    // cite: libcore ThreadPoolExecutor.java#AbortPolicy
+    let program = DexProgram::new(Vec::new());
+    let constructor = DexMethodId {
+        class_descriptor: "Ljava/util/concurrent/ThreadPoolExecutor$AbortPolicy;".to_owned(),
+        name: "<init>".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "V".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let policy =
+        program.allocate_object("Ljava/util/concurrent/ThreadPoolExecutor$AbortPolicy;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(&constructor, Some(&test_invocation(vec![policy]))),
+        Some(DexExecutionResult::Void)
+    );
+}
+
 #[test]
 fn libcore_thread_pool_executor_constructor_rejects_invalid_arguments_in_source_order() {
     // cite: libcore ThreadPoolExecutor.java#ThreadPoolExecutor

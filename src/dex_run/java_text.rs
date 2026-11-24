@@ -2776,7 +2776,21 @@ impl DexProgram {
     }
 
     pub(super) fn string_format(&self, invocation: &DexInvocation) -> Option<String> {
-        let (format, argument_array) = match invocation.arguments.as_slice() {
+        self.format_with_arguments(invocation.arguments.as_slice())
+    }
+
+    pub(super) fn print_stream_format(&self, invocation: &DexInvocation) -> Option<DexValue> {
+        let (receiver, format_arguments) = invocation.arguments.as_slice().split_first()?;
+        if !dex_value_is_object_like(receiver) {
+            return None;
+        }
+        self.format_with_arguments(format_arguments)?;
+
+        Some(receiver.clone())
+    }
+
+    fn format_with_arguments(&self, arguments: &[DexValue]) -> Option<String> {
+        let (format, argument_array) = match arguments {
             [DexValue::String(format), arguments] => (format, arguments),
             [locale, DexValue::String(format), arguments] => {
                 match locale {
@@ -2788,8 +2802,15 @@ impl DexProgram {
             }
             _ => return None,
         };
-        let array_key = map_identity_key(argument_array);
-        let values = self.runtime.borrow().array_entries.get(&array_key)?.clone();
+        let values = match argument_array {
+            DexValue::Null => Vec::new(),
+            _ => self
+                .runtime
+                .borrow()
+                .array_entries
+                .get(&map_identity_key(argument_array))?
+                .clone(),
+        };
 
         format_java_string(format, &values)
     }

@@ -889,6 +889,65 @@ fn builtin_print_stream_println_returns_void() {
 }
 
 #[test]
+fn builtin_print_stream_printf_returns_receiver_per_libcore_print_stream_java() {
+    let program = DexProgram::new(Vec::new());
+    let method = DexMethodId {
+        class_descriptor: "Ljava/io/PrintStream;".to_owned(),
+        name: "printf".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "LLL".to_owned(),
+            return_type: "Ljava/io/PrintStream;".to_owned(),
+            parameters: vec![
+                "Ljava/lang/String;".to_owned(),
+                "[Ljava/lang/Object;".to_owned(),
+            ],
+        },
+    };
+    let receiver = DexValue::Reference(std::rc::Rc::from("Ljava/io/PrintStream;:System.out"));
+    let arguments = program.allocate_filled_array(
+        "[Ljava/lang/Object;".to_owned(),
+        vec![DexValue::Int(7)],
+    );
+    let with_arguments = test_invocation(vec![
+        receiver.clone(),
+        DexValue::String(std::rc::Rc::from("value=%d")),
+        arguments,
+    ]);
+    let null_arguments = test_invocation(vec![
+        receiver.clone(),
+        DexValue::String(std::rc::Rc::from("plain")),
+        DexValue::Null,
+    ]);
+    let missing_argument = test_invocation(vec![
+        receiver.clone(),
+        DexValue::String(std::rc::Rc::from("%s")),
+        DexValue::Null,
+    ]);
+    let null_receiver = test_invocation(vec![
+        DexValue::Null,
+        DexValue::String(std::rc::Rc::from("plain")),
+        DexValue::Null,
+    ]);
+
+    assert_eq!(
+        program.invoke_builtin_method(&method, Some(&with_arguments)),
+        Some(DexExecutionResult::Value(receiver.clone()))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&method, Some(&null_arguments)),
+        Some(DexExecutionResult::Value(receiver))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&method, Some(&missing_argument)),
+        None
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&method, Some(&null_receiver)),
+        None
+    );
+}
+
+#[test]
 fn bootstraps_window_insets_consumed_static_field() {
     let field = DexFieldId {
         class_descriptor: "Landroid/view/WindowInsets;".to_owned(),
@@ -2661,6 +2720,48 @@ fn builtin_system_clock_methods_return_runtime_uptime() {
     assert_eq!(
         program.invoke_builtin_method(&uptime_millis, None),
         Some(DexExecutionResult::Value(DexValue::Long(456)))
+    );
+}
+
+#[test]
+fn builtin_process_get_start_uptime_millis_is_frozen_sample_per_frameworks_base_process_java() {
+    let program = DexProgram::new(Vec::new());
+    let start_uptime = DexMethodId {
+        class_descriptor: "Landroid/os/Process;".to_owned(),
+        name: "getStartUptimeMillis".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "J".to_owned(),
+            return_type: "J".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let uptime_millis = DexMethodId {
+        class_descriptor: "Landroid/os/SystemClock;".to_owned(),
+        name: "uptimeMillis".to_owned(),
+        proto: start_uptime.proto.clone(),
+    };
+
+    assert_eq!(
+        program.invoke_builtin_method(&start_uptime, None),
+        Some(DexExecutionResult::Value(DexValue::Long(0)))
+    );
+
+    program.runtime.borrow_mut().main_thread_uptime_millis = 456;
+
+    assert_eq!(
+        program.invoke_builtin_method(&uptime_millis, None),
+        Some(DexExecutionResult::Value(DexValue::Long(456)))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&start_uptime, None),
+        Some(DexExecutionResult::Value(DexValue::Long(0)))
+    );
+
+    program.runtime.borrow_mut().process_start_uptime_millis = 123;
+
+    assert_eq!(
+        program.invoke_builtin_method(&start_uptime, None),
+        Some(DexExecutionResult::Value(DexValue::Long(123)))
     );
 }
 

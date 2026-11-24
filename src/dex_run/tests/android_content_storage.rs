@@ -1442,6 +1442,51 @@ fn builtin_context_package_manager_reports_no_features() {
 }
 
 #[test]
+fn builtin_shared_preferences_get_string_set_follows_shared_preferences_impl_java() {
+    let program = DexProgram::new(Vec::new());
+    let preferences = context_shared_preferences(&program, bootstrap_context(), "prefs");
+    let get_string_set = DexMethodId {
+        class_descriptor: "Landroid/content/SharedPreferences;".to_owned(),
+        name: "getStringSet".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "LLL".to_owned(),
+            return_type: "Ljava/util/Set;".to_owned(),
+            parameters: vec!["Ljava/lang/String;".to_owned(), "Ljava/util/Set;".to_owned()],
+        },
+    };
+    let default_set = program.allocate_object("Ljava/util/HashSet;".to_owned());
+    let call = |key: &str, default: DexValue| {
+        program.invoke_builtin_method(
+            &get_string_set,
+            Some(&test_invocation(vec![
+                preferences.clone(),
+                DexValue::String(std::rc::Rc::from(key)),
+                default,
+            ])),
+        )
+    };
+
+    assert_eq!(
+        call("tags", DexValue::Null),
+        Some(DexExecutionResult::Value(DexValue::Null))
+    );
+    assert_eq!(
+        call("tags", default_set.clone()),
+        Some(DexExecutionResult::Value(default_set))
+    );
+
+    program.runtime.borrow_mut().shared_preferences_entries.insert(
+        (
+            map_identity_key(&preferences),
+            "tags".to_owned(),
+        ),
+        DexValue::String(std::rc::Rc::from("not a set")),
+    );
+
+    assert_eq!(call("tags", DexValue::Null), None);
+}
+
+#[test]
 fn builtin_empty_shared_preferences_returns_absent_and_defaults() {
     let program = DexProgram::new(Vec::new());
     let preferences = context_shared_preferences(&program, bootstrap_context(), "prefs");

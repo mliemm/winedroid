@@ -1879,6 +1879,42 @@ impl DexProgram {
         Ok(1)
     }
 
+    // cite: libcore CopyOnWriteArrayList.java#addIfAbsent, indexOfRange
+    pub(super) fn java_add_list_value_if_absent(
+        &self,
+        invocation: &DexInvocation,
+        depth: usize,
+    ) -> Result<i32> {
+        if invocation.arguments.len() != 2 {
+            return Err(WinedroidError::new(format!(
+                "CopyOnWriteArrayList.addIfAbsent(Object) expected 2 arguments, got {}",
+                invocation.arguments.len()
+            )));
+        }
+
+        let list_key = map_identity_key(&invocation.arguments[0]);
+        let value = invocation.arguments[1].clone();
+        let mut values = self
+            .runtime
+            .borrow()
+            .list_entries
+            .get(&list_key)
+            .cloned()
+            .unwrap_or_default();
+
+        if self.java_collection_contains_equal(&values, &value, depth + 1)? {
+            return Ok(0);
+        }
+
+        values.push(value);
+        self.runtime
+            .borrow_mut()
+            .list_entries
+            .insert(list_key, values);
+
+        Ok(1)
+    }
+
     pub(super) fn priority_queue_add(&self, invocation: &DexInvocation) -> Option<i32> {
         if invocation.arguments.len() != 2 {
             return None;
@@ -4780,6 +4816,18 @@ impl DexProgram {
         list
     }
 
+    pub(super) fn collections_empty_set(&self) -> DexValue {
+        let set = DexValue::Reference(std::rc::Rc::from("Ljava/util/Set;:collections:emptySet"));
+
+        self.runtime
+            .borrow_mut()
+            .list_entries
+            .entry(map_identity_key(&set))
+            .or_default();
+
+        set
+    }
+
     pub(super) fn arrays_as_list(&self, invocation: &DexInvocation) -> Option<DexValue> {
         if invocation.arguments.len() != 1 {
             return None;
@@ -5734,6 +5782,14 @@ impl DexProgram {
             && method.class_descriptor != "Ljava/util/TreeSet;"
         {
             let value = self.java_add_set_value(invocation, depth + 1)?;
+            return Ok(Some(DexExecutionResult::Int(value)));
+        }
+
+        if method.class_descriptor == "Ljava/util/concurrent/CopyOnWriteArrayList;"
+            && method.name == "addIfAbsent"
+            && method.proto.descriptor_is("(Ljava/lang/Object;)Z")
+        {
+            let value = self.java_add_list_value_if_absent(invocation, depth + 1)?;
             return Ok(Some(DexExecutionResult::Int(value)));
         }
 

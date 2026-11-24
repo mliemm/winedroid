@@ -17,10 +17,13 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(value));
         }
 
-        if method.matches_builtin_signature(
+        if method.matches_any_builtin_signature(
             "Ljava/util/concurrent/ThreadPoolExecutor;",
             "<init>",
-            "(IIJLjava/util/concurrent/TimeUnit;Ljava/util/concurrent/BlockingQueue;Ljava/util/concurrent/ThreadFactory;)V",
+            &[
+                "(IIJLjava/util/concurrent/TimeUnit;Ljava/util/concurrent/BlockingQueue;Ljava/util/concurrent/ThreadFactory;)V",
+                "(IIJLjava/util/concurrent/TimeUnit;Ljava/util/concurrent/BlockingQueue;Ljava/util/concurrent/ThreadFactory;Ljava/util/concurrent/RejectedExecutionHandler;)V",
+            ],
         ) {
             let invocation = invocation?;
 
@@ -211,6 +214,15 @@ impl DexProgram {
             && method.name == "<init>"
             && matches!(method.proto.descriptor().as_str(), "()V" | "(Z)V")
         {
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.matches_builtin_signature(
+            "Ljava/util/concurrent/ThreadPoolExecutor$AbortPolicy;",
+            "<init>",
+            "()V",
+        ) {
+            // cite: libcore ThreadPoolExecutor.java#AbortPolicy
             return Some(DexExecutionResult::Void);
         }
 

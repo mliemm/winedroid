@@ -327,6 +327,29 @@ impl DexProgram {
         shared_preferences_default_string(invocation)
     }
 
+    pub(super) fn shared_preferences_get_string_set(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexValue> {
+        let key =
+            self.shared_preferences_entry_key(&invocation.arguments[0], &invocation.arguments[1])?;
+
+        if let Some(value) = self.runtime.borrow().shared_preferences_entries.get(&key) {
+            return match value {
+                DexValue::Null => shared_preferences_default_string_set(invocation),
+                DexValue::Uninitialized
+                | DexValue::Int(_)
+                | DexValue::Long(_)
+                | DexValue::Float(_)
+                | DexValue::String(_)
+                | DexValue::Object(_)
+                | DexValue::Reference(_) => None,
+            };
+        }
+
+        shared_preferences_default_string_set(invocation)
+    }
+
     pub(super) fn shared_preferences_get_int(&self, invocation: &DexInvocation) -> Option<i32> {
         let key =
             self.shared_preferences_entry_key(&invocation.arguments[0], &invocation.arguments[1])?;
@@ -778,6 +801,24 @@ pub(super) fn shared_preferences_default_string(invocation: &DexInvocation) -> O
         | DexValue::Object(_)
         | DexValue::Reference(_) => None,
         DexValue::Int(_) => None,
+    }
+}
+
+pub(super) fn shared_preferences_default_string_set(
+    invocation: &DexInvocation,
+) -> Option<DexValue> {
+    if invocation.arguments.len() != 3 {
+        return None;
+    }
+
+    match &invocation.arguments[2] {
+        DexValue::Null | DexValue::Int(0) => Some(DexValue::Null),
+        DexValue::Object(_) | DexValue::Reference(_) => Some(invocation.arguments[2].clone()),
+        DexValue::Uninitialized
+        | DexValue::Int(_)
+        | DexValue::Long(_)
+        | DexValue::Float(_)
+        | DexValue::String(_) => None,
     }
 }
 

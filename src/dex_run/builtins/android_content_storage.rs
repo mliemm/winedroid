@@ -627,6 +627,17 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Landroid/content/SharedPreferences;"
+            && method.name == "getStringSet"
+            && method.proto.descriptor() == "(Ljava/lang/String;Ljava/util/Set;)Ljava/util/Set;"
+        {
+            // cite: frameworks-base SharedPreferencesImpl.java#getStringSet, awaitLoadedLocked
+            let invocation = invocation?;
+            let value = self.shared_preferences_get_string_set(invocation)?;
+
+            return Some(DexExecutionResult::Value(value));
+        }
+
+        if method.class_descriptor == "Landroid/content/SharedPreferences;"
             && method.name == "getInt"
             && method.proto.descriptor_is("(Ljava/lang/String;I)I")
         {

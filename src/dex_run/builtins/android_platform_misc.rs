@@ -1221,6 +1221,16 @@ impl DexProgram {
             return Some(DexExecutionResult::Int(BOOTSTRAP_PROCESS_UID));
         }
 
+        if method.class_descriptor == "Landroid/os/Process;"
+            && method.name == "getStartUptimeMillis"
+            && method.proto.descriptor_is("()J")
+        {
+            // cite: frameworks-base Process.java#getStartUptimeMillis, setStartTimes
+            let value = self.runtime.borrow().process_start_uptime_millis;
+
+            return Some(DexExecutionResult::Value(DexValue::Long(value)));
+        }
+
         if method.class_descriptor == "Landroid/database/Observable;"
             && method.name == "<init>"
             && method.proto.descriptor_is("()V")

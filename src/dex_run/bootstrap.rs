@@ -309,7 +309,8 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         "Ljava/util/AbstractList;" => Some("Ljava/util/AbstractCollection;"),
         "Ljava/util/PriorityQueue;"
         | "Ljava/util/concurrent/ConcurrentLinkedQueue;"
-        | "Ljava/util/concurrent/LinkedBlockingQueue;" => Some("Ljava/util/AbstractQueue;"),
+        | "Ljava/util/concurrent/LinkedBlockingQueue;"
+        | "Ljava/util/concurrent/SynchronousQueue;" => Some("Ljava/util/AbstractQueue;"),
         "Ljava/util/AbstractQueue;" => Some("Ljava/util/AbstractCollection;"),
         "Ljava/util/HashMap;"
         | "Ljava/util/IdentityHashMap;"
@@ -408,6 +409,10 @@ pub(super) fn bootstrap_direct_interface_descriptors(
         }
         // cite: libcore LinkedBlockingQueue.java#LinkedBlockingQueue
         "Ljava/util/concurrent/LinkedBlockingQueue;" => {
+            &["Ljava/util/concurrent/BlockingQueue;", "Ljava/io/Serializable;"]
+        }
+        // cite: libcore SynchronousQueue.java#SynchronousQueue
+        "Ljava/util/concurrent/SynchronousQueue;" => {
             &["Ljava/util/concurrent/BlockingQueue;", "Ljava/io/Serializable;"]
         }
         "Ljava/util/AbstractQueue;" => &["Ljava/util/Queue;"],

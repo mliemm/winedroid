@@ -1251,8 +1251,15 @@ impl DexProgram {
         invocation: &DexInvocation,
     ) -> Option<DexExecutionResult> {
         // cite: libcore ThreadPoolExecutor.java#ThreadPoolExecutor, defaultHandler, keepAliveTime
+        let (pool_arguments, handler) = match invocation.arguments.as_slice() {
+            [pool_arguments @ .., handler] if pool_arguments.len() == 8 => {
+                (pool_arguments, Some(handler))
+            }
+            pool_arguments if pool_arguments.len() == 8 => (pool_arguments, None),
+            _ => return None,
+        };
         let [receiver, DexValue::Int(core), DexValue::Int(maximum), DexValue::Long(keep_alive), DexValue::Long(keep_alive_high), unit, work_queue, thread_factory] =
-            invocation.arguments.as_slice()
+            pool_arguments
         else {
             return None;
         };
@@ -1266,6 +1273,7 @@ impl DexProgram {
         }
         if *work_queue == DexValue::Null
             || *thread_factory == DexValue::Null
+            || handler == Some(&DexValue::Null)
             || *unit == DexValue::Null
         {
             return Some(DexExecutionResult::Throw(self.allocate_object(
@@ -1295,6 +1303,13 @@ impl DexProgram {
             &thread_pool_executor_thread_factory_field(),
             thread_factory.clone(),
         );
+        if let Some(handler) = handler {
+            self.write_stored_instance_field(
+                receiver,
+                &thread_pool_executor_handler_field(),
+                handler.clone(),
+            );
+        }
 
         Some(DexExecutionResult::Void)
     }
@@ -1945,6 +1960,15 @@ fn thread_pool_executor_thread_factory_field() -> DexFieldId {
         class_descriptor: "Ljava/util/concurrent/ThreadPoolExecutor;".to_owned(),
         type_descriptor: "Ljava/util/concurrent/ThreadFactory;".to_owned(),
         name: "threadFactory".to_owned(),
+    }
+}
+
+fn thread_pool_executor_handler_field() -> DexFieldId {
+    // cite: libcore ThreadPoolExecutor.java#handler
+    DexFieldId {
+        class_descriptor: "Ljava/util/concurrent/ThreadPoolExecutor;".to_owned(),
+        type_descriptor: "Ljava/util/concurrent/RejectedExecutionHandler;".to_owned(),
+        name: "handler".to_owned(),
     }
 }
 

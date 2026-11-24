@@ -1793,6 +1793,43 @@ fn java_array_list_add_all_at_inserts_projected_collection_values() {
 }
 
 #[test]
+fn builtin_copy_on_write_array_list_add_if_absent_follows_libcore_copy_on_write_array_list_java() {
+    let program = DexProgram::new(Vec::new());
+    let add_if_absent = DexMethodId {
+        class_descriptor: "Ljava/util/concurrent/CopyOnWriteArrayList;".to_owned(),
+        name: "addIfAbsent".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "ZL".to_owned(),
+            return_type: "Z".to_owned(),
+            parameters: vec!["Ljava/lang/Object;".to_owned()],
+        },
+    };
+    let list = program.allocate_object("Ljava/util/concurrent/CopyOnWriteArrayList;".to_owned());
+    let list_key = map_identity_key(&list);
+    let first = DexValue::String(std::rc::Rc::from("first"));
+    let second = DexValue::String(std::rc::Rc::from("second"));
+    let call = |value: DexValue| {
+        program
+            .invoke_java_collection_equality_method(
+                &add_if_absent,
+                &test_invocation(vec![list.clone(), value]),
+                0,
+            )
+            .expect("CopyOnWriteArrayList.addIfAbsent should run")
+    };
+
+    assert_eq!(call(first.clone()), Some(DexExecutionResult::Int(1)));
+    assert_eq!(call(second.clone()), Some(DexExecutionResult::Int(1)));
+    assert_eq!(call(first.clone()), Some(DexExecutionResult::Int(0)));
+    assert_eq!(call(DexValue::Null), Some(DexExecutionResult::Int(1)));
+    assert_eq!(call(DexValue::Null), Some(DexExecutionResult::Int(0)));
+    assert_eq!(
+        program.runtime.borrow().list_entries.get(&list_key),
+        Some(&vec![first, second, DexValue::Null])
+    );
+}
+
+#[test]
 fn builtin_array_list_sub_list_clear_removes_parent_range() {
     let program = DexProgram::new(Vec::new());
     let sub_list = DexMethodId {
@@ -1933,6 +1970,49 @@ fn builtin_array_list_remove_object_removes_matching_value() {
     assert_eq!(
         program.invoke_builtin_method(&size, Some(&test_invocation(vec![list]))),
         Some(DexExecutionResult::Int(1))
+    );
+}
+
+#[test]
+fn builtin_collections_empty_set_returns_shared_empty_set_per_libcore_collections_java() {
+    let program = DexProgram::new(Vec::new());
+    let empty_set = DexMethodId {
+        class_descriptor: "Ljava/util/Collections;".to_owned(),
+        name: "emptySet".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "L".to_owned(),
+            return_type: "Ljava/util/Set;".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let array_list_init = DexMethodId {
+        class_descriptor: "Ljava/util/ArrayList;".to_owned(),
+        name: "<init>".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VL".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec!["Ljava/util/Collection;".to_owned()],
+        },
+    };
+    let first = program.invoke_builtin_method(&empty_set, None);
+    let second = program.invoke_builtin_method(&empty_set, None);
+    let Some(DexExecutionResult::Value(set)) = first.clone() else {
+        panic!("emptySet did not return a set reference");
+    };
+    let target = program.allocate_object("Ljava/util/ArrayList;".to_owned());
+    let target_key = map_identity_key(&target);
+
+    assert_eq!(first, second);
+    assert_eq!(
+        program.invoke_builtin_method(
+            &array_list_init,
+            Some(&test_invocation(vec![target, set]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.runtime.borrow().list_entries.get(&target_key),
+        Some(&Vec::<DexValue>::new())
     );
 }
 
@@ -2726,4 +2806,35 @@ fn libcore_linked_blocking_queue_constructor_creates_an_empty_queue() {
     assert!(program.value_matches_type(&queue, "Ljava/util/AbstractCollection;"));
     assert!(program.value_matches_type(&queue, "Ljava/util/concurrent/BlockingQueue;"));
     assert!(program.value_matches_type(&queue, "Ljava/io/Serializable;"));
+}
+
+#[test]
+fn libcore_synchronous_queue_constructor_creates_an_empty_blocking_queue() {
+    // cite: libcore SynchronousQueue.java#SynchronousQueue
+    let program = DexProgram::new(Vec::new());
+    let constructor = DexMethodId {
+        class_descriptor: "Ljava/util/concurrent/SynchronousQueue;".to_owned(),
+        name: "<init>".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "V".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let queue = program.allocate_object("Ljava/util/concurrent/SynchronousQueue;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(&constructor, Some(&test_invocation(vec![queue.clone()]))),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program
+            .runtime
+            .borrow()
+            .list_entries
+            .get(&map_identity_key(&queue)),
+        Some(&Vec::<DexValue>::new())
+    );
+    assert!(program.value_matches_type(&queue, "Ljava/util/concurrent/BlockingQueue;"));
+    assert!(program.value_matches_type(&queue, "Ljava/util/AbstractQueue;"));
 }
