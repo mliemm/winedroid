@@ -1,17 +1,26 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
+// cite: bionic elf.h#PT_LOAD, PT_DYNAMIC, PT_TLS, PT_GNU_EH_FRAME, PF_X, PF_W
 pub const PT_LOAD: u32 = 1;
 pub const PT_DYNAMIC: u32 = 2;
 pub const PT_TLS: u32 = 7;
+pub const PT_GNU_EH_FRAME: u32 = 0x6474_e550;
+pub const PF_X: u32 = 1;
+pub const PF_W: u32 = 2;
 
+// cite: bionic elf_common.h#R_AARCH64_ABS64, R_AARCH64_GLOB_DAT, R_AARCH64_JUMP_SLOT, R_AARCH64_RELATIVE, R_AARCH64_TLSDESC
 pub const R_AARCH64_ABS64: u32 = 257;
 pub const R_AARCH64_GLOB_DAT: u32 = 1025;
 pub const R_AARCH64_JUMP_SLOT: u32 = 1026;
 pub const R_AARCH64_RELATIVE: u32 = 1027;
 pub const R_AARCH64_TLSDESC: u32 = 1031;
 
+// cite: bionic elf_common.h#DT_HASH, DT_GNU_HASH, DT_RELR, DT_RELRSZ
+pub const DT_HASH: u64 = 4;
+pub const DT_GNU_HASH: u64 = 0x6fff_fef5;
 pub const DT_RELRSZ: u64 = 35;
 pub const DT_RELR: u64 = 36;
+// cite: bionic elf.h#DT_ANDROID_RELA, DT_ANDROID_RELASZ
 pub const DT_ANDROID_RELA: u64 = 0x6000_0011;
 pub const DT_ANDROID_RELASZ: u64 = 0x6000_0012;
 
@@ -30,9 +39,11 @@ const SHN_UNDEF: u16 = 0;
 
 pub struct Segment {
     pub kind: u32,
+    pub flags: u32,
     pub offset: u64,
     pub vaddr: u64,
     pub filesz: u64,
+    pub memsz: u64,
 }
 
 pub struct Relocation {
@@ -47,6 +58,7 @@ pub struct FixtureElf {
     pub init_array_len: usize,
     pub fini_array_len: usize,
     pub exports: BTreeSet<String>,
+    pub export_addresses: BTreeMap<String, u64>,
     pub imports: BTreeSet<String>,
 }
 
@@ -75,9 +87,11 @@ fn read_segments(data: &[u8]) -> Vec<Segment> {
         .map(|index| table + index * entry_size)
         .map(|header| Segment {
             kind: u32_at(data, header),
+            flags: u32_at(data, header + 4),
             offset: u64_at(data, header + 8),
             vaddr: u64_at(data, header + 16),
             filesz: u64_at(data, header + 32),
+            memsz: u64_at(data, header + 40),
         })
         .collect()
 }
@@ -93,6 +107,7 @@ fn vaddr_to_offset(segments: &[Segment], vaddr: u64) -> usize {
 struct Symbol {
     name: String,
     defined: bool,
+    value: u64,
 }
 
 fn read_dynamic_symbols(data: &[u8]) -> Vec<Symbol> {
@@ -114,6 +129,7 @@ fn read_dynamic_symbols(data: &[u8]) -> Vec<Symbol> {
         .map(|entry| Symbol {
             name: c_string(data, string_offset + u32_at(data, entry) as usize),
             defined: u16_at(data, entry + 6) != SHN_UNDEF,
+            value: u64_at(data, entry + 8),
         })
         .collect()
 }
@@ -180,6 +196,11 @@ impl FixtureElf {
             init_array_len,
             fini_array_len,
             exports: named(true),
+            export_addresses: symbols
+                .iter()
+                .filter(|symbol| !symbol.name.is_empty() && symbol.defined)
+                .map(|symbol| (symbol.name.clone(), symbol.value))
+                .collect(),
             imports: named(false),
             segments,
         }

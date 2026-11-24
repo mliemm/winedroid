@@ -112,6 +112,7 @@ typedef const struct JNINativeInterface* JNIEnv;
 typedef const struct JNIInvokeInterface* JavaVM;
 #endif
 
+// cite: art jni_internal.cc#gJniNativeInterface
 struct JNINativeInterface {
     void*       reserved0;
     void*       reserved1;
@@ -985,6 +986,7 @@ struct _JNIEnv {
 #endif
 };
 
+// cite: art java_vm_ext.cc#gJniInvokeInterface
 struct JNIInvokeInterface {
     void*       reserved0;
     void*       reserved1;

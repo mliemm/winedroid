@@ -8,6 +8,7 @@ OUT_ROOT="${FIXTURE_OUT_ROOT:-$FIXTURES/bin}"
 BIONIC="$REF_ROOT/bionic/libc"
 CLANG="${CLANG:-clang}"
 TARGET="aarch64-linux-android29"
+TOOL_MISSING_STATUS=127
 
 find_lld() {
     if [ -n "${LD_LLD:-}" ]; then
@@ -19,7 +20,7 @@ find_lld() {
         return
     fi
     local sysroot
-    sysroot="$(rustc --print sysroot)"
+    sysroot="$(rustc --print sysroot 2>/dev/null)" || sysroot=""
     local candidate
     for candidate in "$sysroot"/lib/rustlib/*/bin/gcc-ld/ld.lld; do
         if [ -x "$candidate" ]; then
@@ -28,8 +29,13 @@ find_lld() {
         fi
     done
     echo "ld.lld not found: set LD_LLD" >&2
-    exit 1
+    exit "$TOOL_MISSING_STATUS"
 }
+
+if ! command -v "$CLANG" >/dev/null 2>&1; then
+    echo "clang not found: set CLANG" >&2
+    exit "$TOOL_MISSING_STATUS"
+fi
 
 LLD="$(find_lld)"
 RESOURCE_INCLUDE="$("$CLANG" -print-resource-dir)/include"

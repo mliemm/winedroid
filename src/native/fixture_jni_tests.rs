@@ -85,10 +85,15 @@ fn fixture_source_fx_jni_calls_exactly_the_jni_slots_its_source_names() {
 }
 
 #[test]
-fn call_site_scanner_reports_the_slot_of_a_load_followed_by_blr_and_ignores_other_loads() {
-    let ldr = |register: u32, base: u32, slot: u32| LDR_X_UNSIGNED_OFFSET | (slot << 10) | (base << 5) | register;
-    let blr = |register: u32| 0xD63F_0000 | (register << 5);
-    let words = [ldr(9, 0, 3), ldr(8, 0, 0), ldr(8, 8, 14), blr(8), ldr(17, 16, 40), blr(17)];
+fn llvm_mc_aarch64_encodings_scanner_reports_the_slot_of_a_load_followed_by_blr_and_ignores_plt_loads() {
+    let words: [u32; 6] = [
+        0xF940_0C09,
+        0xF940_0008,
+        0xF940_3908,
+        0xD63F_0100,
+        0xF940_A211,
+        0xD63F_0220,
+    ];
     let binary: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
 
     assert_eq!(called_table_offsets(&binary), BTreeSet::from([14 * SLOT_SIZE]));

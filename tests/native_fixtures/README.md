@@ -21,7 +21,11 @@ from the matching file in `src/`; nothing is hand edited.
 - `bin/manifest.txt` also lists the POSIX `cksum` of every source, `jni.h` and
   binary. A unit test fails when a source or binary changes without a rebuild.
   The byte for byte rebuild test needs `ANDROID_REF_ROOT` and the recorded
-  toolchain, and says so when it skips.
+  toolchain, and says so when it skips (the build script exits 127 when it
+  finds no clang or ld.lld, which the test treats as a skip).
+- `libfx_add.so` has no relocations, so a unit test maps it and runs `add`
+  natively on Apple Silicon. The other fixtures need the loader and are only
+  checked structurally.
 - `include/jni.h` parameter and return types are compared with the ART
   `JNIImpl` and `JII` definitions slot by slot when `ANDROID_REF_ROOT` is set.
 - Import stubs: the script builds throwaway `libc.so`, `libdl.so` and

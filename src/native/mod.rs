@@ -10,3 +10,7 @@ mod fixture_header;
 mod fixture_manifest_tests;
 #[cfg(test)]
 mod fixture_jni_tests;
+#[cfg(test)]
+mod fixture_layout_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod fixture_exec_tests;
