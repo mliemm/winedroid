@@ -343,6 +343,17 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        if method.class_descriptor == "Ljava/util/concurrent/ConcurrentLinkedQueue;"
+            && method.name == "<init>"
+            && method.proto.descriptor_is("()V")
+        {
+            // cite: libcore ConcurrentLinkedQueue.java#ConcurrentLinkedQueue
+            let invocation = invocation?;
+            self.initialize_empty_list(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
         if method.class_descriptor == "Ljava/util/ArrayList;"
             && method.name == "add"
             && method.proto.descriptor_is("(Ljava/lang/Object;)Z")

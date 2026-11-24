@@ -41,6 +41,44 @@ fn builtin_collections_synchronized_map_returns_same_map_reference() {
 }
 
 #[test]
+fn builtin_collections_synchronized_set_and_list_return_backing_view_per_libcore_collections() {
+    let program = DexProgram::new(Vec::new());
+    for (name, interface, backing) in [
+        (
+            "synchronizedSet",
+            "Ljava/util/Set;",
+            "Ljava/util/HashSet;",
+        ),
+        (
+            "synchronizedList",
+            "Ljava/util/List;",
+            "Ljava/util/ArrayList;",
+        ),
+    ] {
+        let method = DexMethodId {
+            class_descriptor: "Ljava/util/Collections;".to_owned(),
+            name: name.to_owned(),
+            proto: crate::dex::DexProto {
+                shorty: "LL".to_owned(),
+                return_type: interface.to_owned(),
+                parameters: vec![interface.to_owned()],
+            },
+        };
+        let collection = DexValue::Object(DexObjectRef {
+            id: 1,
+            class_descriptor: std::rc::Rc::from(backing),
+        });
+        let invocation = test_invocation(vec![collection.clone()]);
+
+        assert_eq!(
+            program.invoke_builtin_method(&method, Some(&invocation)),
+            Some(DexExecutionResult::Value(collection))
+        );
+        assert_eq!(program.invoke_builtin_method(&method, None), None);
+    }
+}
+
+#[test]
 fn builtin_collections_unmodifiable_map_returns_same_map_reference() {
     let program = DexProgram::new(Vec::new());
     let method = DexMethodId {

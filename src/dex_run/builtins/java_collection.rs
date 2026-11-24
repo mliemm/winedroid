@@ -461,6 +461,32 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(value));
         }
 
+        if method.class_descriptor == "Ljava/util/Collections;"
+            && method.name == "synchronizedSet"
+            && method
+                .proto
+                .descriptor_is("(Ljava/util/Set;)Ljava/util/Set;")
+        {
+            // cite: libcore Collections.java#synchronizedSet, SynchronizedSet, SynchronizedCollection
+            let invocation = invocation?;
+            let value = Self::collections_identity(invocation)?;
+
+            return Some(DexExecutionResult::Value(value));
+        }
+
+        if method.class_descriptor == "Ljava/util/Collections;"
+            && method.name == "synchronizedList"
+            && method
+                .proto
+                .descriptor_is("(Ljava/util/List;)Ljava/util/List;")
+        {
+            // cite: libcore Collections.java#synchronizedList, SynchronizedList, SynchronizedRandomAccessList
+            let invocation = invocation?;
+            let value = Self::collections_identity(invocation)?;
+
+            return Some(DexExecutionResult::Value(value));
+        }
+
         if method.class_descriptor == "Ljava/lang/Iterable;"
             && method.name == "iterator"
             && method.proto.descriptor_is("()Ljava/util/Iterator;")

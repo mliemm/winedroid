@@ -27,6 +27,17 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        if method.class_descriptor == "Landroid/app/Application;"
+            && method.name == "registerActivityLifecycleCallbacks"
+            && method.proto.descriptor()
+                == "(Landroid/app/Application$ActivityLifecycleCallbacks;)V"
+        {
+            let invocation = invocation?;
+            self.register_application_activity_lifecycle_callback(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
         if method.class_descriptor == "Landroid/view/WindowManager$LayoutParams;"
             && method.name == "<init>"
             && method.proto.descriptor_is("()V")

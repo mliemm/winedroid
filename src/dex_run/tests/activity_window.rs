@@ -1,5 +1,6 @@
 use super::super::*;
 use super::helpers::*;
+use crate::dex_run::android::app::application_callbacks_run_first;
 
 #[test]
 fn builtin_application_constructor_and_on_create_return_void() {
@@ -111,6 +112,58 @@ fn builtin_activity_lifecycle_callback_registration_returns_void() {
             .cloned(),
         Some(vec![callback])
     );
+}
+
+#[test]
+fn frameworks_base_application_registers_lifecycle_callbacks_without_dedupe() {
+    let program = DexProgram::new(Vec::new());
+    let method = DexMethodId {
+        class_descriptor: "Landroid/app/Application;".to_owned(),
+        name: "registerActivityLifecycleCallbacks".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VL".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec!["Landroid/app/Application$ActivityLifecycleCallbacks;".to_owned()],
+        },
+    };
+    let application = program.application_value();
+    let callback = DexValue::Reference(std::rc::Rc::from(
+        "Landroid/app/Application$ActivityLifecycleCallbacks;:test",
+    ));
+    let invocation = test_invocation(vec![application.clone(), callback.clone()]);
+
+    for _ in 0..2 {
+        assert_eq!(
+            program.invoke_builtin_method(&method, Some(&invocation)),
+            Some(DexExecutionResult::Void)
+        );
+    }
+    assert_eq!(
+        program
+            .runtime
+            .borrow()
+            .activity_lifecycle_callbacks
+            .get(&map_identity_key(&application))
+            .cloned(),
+        Some(vec![callback.clone(), callback.clone()])
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &method,
+            Some(&test_invocation(vec![application, DexValue::Null]))
+        ),
+        None
+    );
+}
+
+#[test]
+fn frameworks_base_activity_dispatch_order_puts_application_callbacks_first_for_created_not_post_created(
+) {
+    assert!(application_callbacks_run_first("onActivityCreated"));
+    assert!(application_callbacks_run_first("onActivityPreCreated"));
+    assert!(application_callbacks_run_first("onActivityResumed"));
+    assert!(!application_callbacks_run_first("onActivityPostCreated"));
+    assert!(!application_callbacks_run_first("onActivityPaused"));
 }
 
 #[test]

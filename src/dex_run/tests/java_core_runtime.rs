@@ -2645,6 +2645,34 @@ fn builtin_system_clock_methods_return_runtime_uptime() {
 }
 
 #[test]
+fn builtin_system_clock_current_thread_time_millis_is_monotonic_per_art_thread_cpu_clock() {
+    let program = DexProgram::new(Vec::new());
+    let method = DexMethodId {
+        class_descriptor: "Landroid/os/SystemClock;".to_owned(),
+        name: "currentThreadTimeMillis".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "J".to_owned(),
+            return_type: "J".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let read = || match program.invoke_builtin_method(&method, None) {
+        Some(DexExecutionResult::Value(DexValue::Long(value))) => value,
+        other => panic!("unexpected result {other:?}"),
+    };
+
+    let first = read();
+    let started = std::time::Instant::now();
+    while started.elapsed() < std::time::Duration::from_millis(20) {
+        std::hint::black_box(0);
+    }
+    let second = read();
+
+    assert!(first >= 0);
+    assert!(second >= first);
+}
+
+#[test]
 fn builtin_sdk_extensions_get_extension_version_returns_zero() {
     let program = DexProgram::new(Vec::new());
     let method = DexMethodId {

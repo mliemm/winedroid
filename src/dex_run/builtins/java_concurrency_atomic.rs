@@ -296,6 +296,26 @@ impl DexProgram {
         }
 
         if method.matches_builtin_signature(
+            "Ljava/util/concurrent/CountDownLatch;",
+            "<init>",
+            "(I)V",
+        ) {
+            // cite: libcore CountDownLatch.java#CountDownLatch, Sync, setState
+            let invocation = invocation?;
+            let DexValue::Int(count) = invocation.arguments.get(1)? else {
+                return None;
+            };
+            if *count < 0 {
+                return Some(DexExecutionResult::Throw(
+                    self.allocate_object("Ljava/lang/IllegalArgumentException;".to_owned()),
+                ));
+            }
+            self.initialize_atomic_integer(invocation, *count)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.matches_builtin_signature(
             "Ljava/util/concurrent/atomic/AtomicInteger;",
             "incrementAndGet",
             "()I",

@@ -2108,3 +2108,58 @@ fn builtin_reference_queue_and_queued_weak_reference_are_supported() {
         Some(DexExecutionResult::Value(referent))
     );
 }
+
+#[test]
+fn libcore_count_down_latch_constructor_stores_count_and_rejects_negative() {
+    // cite: libcore CountDownLatch.java#CountDownLatch, Sync
+    let program = DexProgram::new(Vec::new());
+    let constructor = DexMethodId {
+        class_descriptor: "Ljava/util/concurrent/CountDownLatch;".to_owned(),
+        name: "<init>".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VI".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec!["I".to_owned()],
+        },
+    };
+    let latch = DexValue::Object(DexObjectRef {
+        id: 600,
+        class_descriptor: std::rc::Rc::from("Ljava/util/concurrent/CountDownLatch;"),
+    });
+    let rejected = DexValue::Object(DexObjectRef {
+        id: 601,
+        class_descriptor: std::rc::Rc::from("Ljava/util/concurrent/CountDownLatch;"),
+    });
+
+    for count in [3, 0] {
+        assert_eq!(
+            program.invoke_builtin_method(
+                &constructor,
+                Some(&test_invocation(vec![latch.clone(), DexValue::Int(count)]))
+            ),
+            Some(DexExecutionResult::Void)
+        );
+        assert_eq!(
+            program
+                .runtime
+                .borrow()
+                .atomic_integer_values
+                .get(&map_identity_key(&latch))
+                .copied(),
+            Some(count)
+        );
+    }
+
+    let Some(DexExecutionResult::Throw(exception)) = program.invoke_builtin_method(
+        &constructor,
+        Some(&test_invocation(vec![rejected.clone(), DexValue::Int(-1)])),
+    ) else {
+        panic!("negative count should throw");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/lang/IllegalArgumentException;"));
+    assert!(!program
+        .runtime
+        .borrow()
+        .atomic_integer_values
+        .contains_key(&map_identity_key(&rejected)));
+}

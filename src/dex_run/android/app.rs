@@ -807,6 +807,32 @@ impl DexProgram {
         Some(())
     }
 
+    pub(in crate::dex_run) fn register_application_activity_lifecycle_callback(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<()> {
+        if invocation.arguments.len() != 2 {
+            return None;
+        }
+        if !dex_value_is_object_like(&invocation.arguments[0]) {
+            return None;
+        }
+        if !dex_value_is_object_like(&invocation.arguments[1]) {
+            return None;
+        }
+
+        // cite: frameworks-base Application.java#registerActivityLifecycleCallbacks, mActivityLifecycleCallbacks
+        let application_key = map_identity_key(&self.application_value());
+        self.runtime
+            .borrow_mut()
+            .activity_lifecycle_callbacks
+            .entry(application_key)
+            .or_default()
+            .push(invocation.arguments[1].clone());
+
+        Some(())
+    }
+
     fn dispatch_activity_lifecycle_callbacks(
         &self,
         activity_receiver: &DexValue,
@@ -815,13 +841,27 @@ impl DexProgram {
         depth: usize,
     ) -> Result<()> {
         let activity_key = map_identity_key(activity_receiver);
-        let callbacks = self
-            .runtime
-            .borrow()
-            .activity_lifecycle_callbacks
-            .get(&activity_key)
-            .cloned()
-            .unwrap_or_default();
+        let application_key = map_identity_key(&self.application_value());
+        let (application_callbacks, activity_callbacks) = {
+            let runtime = self.runtime.borrow();
+            (
+                runtime
+                    .activity_lifecycle_callbacks
+                    .get(&application_key)
+                    .cloned()
+                    .unwrap_or_default(),
+                runtime
+                    .activity_lifecycle_callbacks
+                    .get(&activity_key)
+                    .cloned()
+                    .unwrap_or_default(),
+            )
+        };
+        let callbacks = if application_callbacks_run_first(method_name) {
+            [application_callbacks, activity_callbacks].concat()
+        } else {
+            [activity_callbacks, application_callbacks].concat()
+        };
 
         for callback in callbacks {
             self.dispatch_single_activity_lifecycle_callback(
@@ -4064,4 +4104,13 @@ fn view_id_from_reference(reference: &str) -> Option<i32> {
         return None;
     }
     view_id.parse().ok()
+}
+
+// cite: frameworks-base Activity.java#dispatchActivityPreCreated, dispatchActivityCreated, dispatchActivityPostCreated, dispatchActivityStarted, dispatchActivityResumed
+pub(in crate::dex_run) fn application_callbacks_run_first(method_name: &str) -> bool {
+    method_name.starts_with("onActivityPre")
+        || matches!(
+            method_name,
+            "onActivityCreated" | "onActivityStarted" | "onActivityResumed"
+        )
 }

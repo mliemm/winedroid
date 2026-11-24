@@ -1619,6 +1619,15 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(DexValue::Long(value)));
         }
 
+        if method.class_descriptor == "Landroid/os/SystemClock;"
+            && method.name == "currentThreadTimeMillis"
+            && method.proto.descriptor_is("()J")
+        {
+            let value = thread_cpu_millis()?;
+
+            return Some(DexExecutionResult::Value(DexValue::Long(value)));
+        }
+
         if method.class_descriptor == "Landroid/os/ext/SdkExtensions;"
             && method.name == "getExtensionVersion"
             && method.proto.descriptor_is("(I)I")
@@ -3343,4 +3352,23 @@ fn thread_name_field() -> DexFieldId {
         type_descriptor: "Ljava/lang/String;".to_owned(),
         name: "name".to_owned(),
     }
+}
+
+// cite: frameworks-base SystemClock.java#currentThreadTimeMillis
+// cite: art time_utils.cc#ThreadCpuNanoTime, CLOCK_THREAD_CPUTIME_ID
+fn thread_cpu_millis() -> Option<i64> {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    let result = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut now) };
+    if result != 0 {
+        return None;
+    }
+
+    Some(
+        i64::from(now.tv_sec)
+            .saturating_mul(1000)
+            .saturating_add(i64::from(now.tv_nsec) / 1_000_000),
+    )
 }

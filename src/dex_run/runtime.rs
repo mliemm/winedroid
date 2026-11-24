@@ -1691,6 +1691,7 @@ pub(super) struct SharedPreferencesEditorState {
 pub(super) struct InputStreamState {
     pub(super) bytes: Vec<u8>,
     pub(super) position: usize,
+    pub(super) pending_low_surrogate: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

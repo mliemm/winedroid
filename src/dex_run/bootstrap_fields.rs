@@ -7,6 +7,72 @@ pub(in crate::dex_run) fn bootstrap_instance_field(field: &DexFieldId) -> Option
     bootstrap_instance_field_with_display_size(&system_metrics, field, DisplaySize::default())
 }
 
+pub(in crate::dex_run) struct BootstrapDeclaredField {
+    pub(in crate::dex_run) name: &'static str,
+    pub(in crate::dex_run) type_descriptor: &'static str,
+    pub(in crate::dex_run) access_flags: u32,
+}
+
+const ACCESS_PUBLIC: u32 = 0x0001;
+const ACCESS_PRIVATE: u32 = 0x0002;
+const ACCESS_PACKAGE: u32 = 0x0000;
+const ACCESS_PRIVATE_FINAL: u32 = 0x0012;
+const ACCESS_PRIVATE_STATIC_FINAL: u32 = 0x001A;
+
+pub(in crate::dex_run) fn bootstrap_declared_fields(
+    class_descriptor: &str,
+) -> Option<&'static [BootstrapDeclaredField]> {
+    match class_descriptor {
+        // cite: frameworks-base ContextWrapper.java#mBase, mCallbacksRegisteredToSuper, mLock
+        "Landroid/content/ContextWrapper;" => Some(&[
+            BootstrapDeclaredField {
+                name: "mBase",
+                type_descriptor: "Landroid/content/Context;",
+                access_flags: ACCESS_PACKAGE,
+            },
+            BootstrapDeclaredField {
+                name: "mCallbacksRegisteredToSuper",
+                type_descriptor: "Ljava/util/List;",
+                access_flags: ACCESS_PUBLIC,
+            },
+            BootstrapDeclaredField {
+                name: "mLock",
+                type_descriptor: "Ljava/lang/Object;",
+                access_flags: ACCESS_PRIVATE_FINAL,
+            },
+        ]),
+        // cite: frameworks-base Application.java#TAG, mActivityLifecycleCallbacks, mAssistCallbacks, mCallbacksController, mLoadedApk
+        "Landroid/app/Application;" => Some(&[
+            BootstrapDeclaredField {
+                name: "TAG",
+                type_descriptor: "Ljava/lang/String;",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "mActivityLifecycleCallbacks",
+                type_descriptor: "Ljava/util/ArrayList;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mAssistCallbacks",
+                type_descriptor: "Ljava/util/ArrayList;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mCallbacksController",
+                type_descriptor: "Landroid/content/ComponentCallbacksController;",
+                access_flags: ACCESS_PRIVATE_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "mLoadedApk",
+                type_descriptor: "Landroid/app/LoadedApk;",
+                access_flags: ACCESS_PUBLIC,
+            },
+        ]),
+        _ => None,
+    }
+}
+
 pub(in crate::dex_run) fn bootstrap_instance_field_with_display_size(
     object: &DexValue,
     field: &DexFieldId,

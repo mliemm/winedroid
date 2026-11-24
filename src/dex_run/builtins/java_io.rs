@@ -15,7 +15,25 @@ impl DexProgram {
                 .descriptor_is("(Ljava/io/File;Ljava/lang/String;)V")
         {
             let invocation = invocation?;
+            if file_child_is_null(invocation) {
+                return Some(self.null_pointer_exception_result());
+            }
             self.initialize_file_from_parent_and_child(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.class_descriptor == "Ljava/io/File;"
+            && method.name == "<init>"
+            && method
+                .proto
+                .descriptor_is("(Ljava/lang/String;Ljava/lang/String;)V")
+        {
+            let invocation = invocation?;
+            if file_child_is_null(invocation) {
+                return Some(self.null_pointer_exception_result());
+            }
+            self.initialize_file_from_parent_string_and_child(invocation)?;
 
             return Some(DexExecutionResult::Void);
         }
@@ -219,6 +237,16 @@ impl DexProgram {
             return Some(result);
         }
 
+        if method.class_descriptor == "Ljava/io/FileInputStream;"
+            && method.name == "<init>"
+            && method.proto.descriptor_is("(Ljava/lang/String;)V")
+        {
+            let invocation = invocation?;
+            let result = self.initialize_file_input_stream_from_path(invocation)?;
+
+            return Some(result);
+        }
+
         // cite: libcore FileReader.java#FileReader
         if method.class_descriptor == "Ljava/io/FileReader;"
             && method.name == "<init>"
@@ -256,6 +284,21 @@ impl DexProgram {
             self.write_reader_delegate(invocation)?;
 
             return Some(DexExecutionResult::Void);
+        }
+
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/io/BufferedReader;" | "Ljava/io/InputStreamReader;" | "Ljava/io/FileReader;"
+        ) && method.name == "read"
+            && method.proto.descriptor_is("()I")
+        {
+            // cite: libcore BufferedReader.java#read, fill
+            // cite: libcore InputStreamReader.java#read
+            // cite: libcore StreamDecoder.java#read0
+            let invocation = invocation?;
+            let value = self.reader_read_char(invocation.arguments.first()?)?;
+
+            return Some(DexExecutionResult::Int(value));
         }
 
         if matches!(
@@ -882,6 +925,45 @@ impl DexProgram {
         .then_some(())
     }
 
+    fn initialize_file_from_parent_string_and_child(&self, invocation: &DexInvocation) -> Option<()> {
+        if invocation.arguments.len() != 3 || !dex_value_is_object_like(&invocation.arguments[0]) {
+            return None;
+        }
+
+        let parent = match &invocation.arguments[1] {
+            DexValue::Null | DexValue::Int(0) => None,
+            DexValue::String(parent) => Some(parent),
+            _ => return None,
+        };
+        let DexValue::String(child) = &invocation.arguments[2] else {
+            return None;
+        };
+
+        // cite: libcore File.java#File
+        // cite: libcore UnixFileSystem.java#normalize, resolve
+        let path = match parent {
+            Some(parent) if !parent.is_empty() => {
+                let parent = crate::guest_filesystem::normalize_guest_file_path(parent);
+                resolve_file_parent_and_child(Some(&parent), child)
+            }
+            _ => resolve_file_parent_and_child(None, child),
+        };
+
+        self.write_stored_instance_field(
+            &invocation.arguments[0],
+            &file_path_field(),
+            DexValue::String(std::rc::Rc::from(path)),
+        )
+        .then_some(())
+    }
+
+    fn null_pointer_exception_result(&self) -> DexExecutionResult {
+        DexExecutionResult::Throw(self.allocate_generated_exception(DexGeneratedException {
+            class_descriptor: "Ljava/lang/NullPointerException;".to_owned(),
+            detail_message: None,
+        }))
+    }
+
     fn initialize_file_from_path(&self, invocation: &DexInvocation) -> Option<()> {
         if invocation.arguments.len() != 2 || !dex_value_is_object_like(&invocation.arguments[0]) {
             return None;
@@ -1088,6 +1170,46 @@ impl DexProgram {
         }
 
         let guest_path = file_path_from_value(self, &invocation.arguments[1])?;
+
+        self.open_file_input_stream(&invocation.arguments[0], guest_path)
+    }
+
+    fn initialize_file_input_stream_from_path(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        if invocation.arguments.len() != 2 || !dex_value_is_object_like(&invocation.arguments[0]) {
+            return None;
+        }
+
+        // cite: libcore FileInputStream.java#FileInputStream
+        // cite: libcore File.java#File
+        // cite: libcore UnixFileSystem.java#normalize
+        let guest_path = match &invocation.arguments[1] {
+            DexValue::Null | DexValue::Int(0) => return Some(self.null_pointer_exception_result()),
+            DexValue::String(name) => resolve_file_parent_and_child(None, name),
+            _ => return None,
+        };
+
+        self.open_file_input_stream(&invocation.arguments[0], guest_path)
+    }
+
+    fn open_file_input_stream(
+        &self,
+        stream: &DexValue,
+        guest_path: String,
+    ) -> Option<DexExecutionResult> {
+        // cite: libcore File.java#isInvalid
+        if guest_path.contains('\0') {
+            let exception = self.allocate_object("Ljava/io/FileNotFoundException;".to_owned());
+            self.write_stored_instance_field(
+                &exception,
+                &throwable_detail_message_field(),
+                DexValue::String(std::rc::Rc::from("Invalid file path")),
+            );
+            return Some(DexExecutionResult::Throw(exception));
+        }
+
         let path = match self.resolved_guest_path_result(&guest_path, ExternalStorageAccess::Read) {
             Ok(path) => path,
             Err(detail) => {
@@ -1120,7 +1242,7 @@ impl DexProgram {
         }
 
         self.write_stored_instance_field(
-            &invocation.arguments[0],
+            stream,
             &file_input_stream_path_field(),
             DexValue::String(std::rc::Rc::from(guest_path)),
         )
@@ -1364,7 +1486,11 @@ impl DexProgram {
 
         self.runtime.borrow_mut().input_stream_values.insert(
             map_identity_key(&invocation.arguments[0]),
-            InputStreamState { bytes, position: 0 },
+            InputStreamState {
+                bytes,
+                position: 0,
+                pending_low_surrogate: None,
+            },
         );
 
         Some(DexExecutionResult::Void)
@@ -1395,10 +1521,36 @@ impl DexProgram {
         self.resolve_input_stream_key(&delegate)
     }
 
+    fn reader_read_char(&self, reader: &DexValue) -> Option<i32> {
+        let key = self.resolve_input_stream_key(reader)?;
+        let mut runtime = self.runtime.borrow_mut();
+        let stream = runtime.input_stream_values.get_mut(&key)?;
+        if let Some(low_surrogate) = stream.pending_low_surrogate.take() {
+            return Some(i32::from(low_surrogate));
+        }
+        if stream.position >= stream.bytes.len() {
+            return Some(-1);
+        }
+
+        let (scalar, consumed) = decode_utf8_scalar_replacing(&stream.bytes[stream.position..]);
+        stream.position += consumed;
+        let mut units = [0u16; 2];
+        let encoded = scalar.encode_utf16(&mut units);
+        if let [high, low] = *encoded {
+            stream.pending_low_surrogate = Some(low);
+            return Some(i32::from(high));
+        }
+
+        Some(i32::from(encoded[0]))
+    }
+
     fn reader_read_line(&self, reader: &DexValue) -> Option<DexValue> {
         let key = self.resolve_input_stream_key(reader)?;
         let mut runtime = self.runtime.borrow_mut();
         let stream = runtime.input_stream_values.get_mut(&key)?;
+        if stream.pending_low_surrogate.is_some() {
+            return None;
+        }
         if stream.position >= stream.bytes.len() {
             return Some(DexValue::Null);
         }
@@ -1585,6 +1737,37 @@ impl DexProgram {
             .resolve(guest_path, access, &self.external_storage_policy)
             .map_err(|error| error.to_string())
     }
+}
+
+fn file_child_is_null(invocation: &DexInvocation) -> bool {
+    matches!(
+        invocation.arguments.get(2),
+        Some(DexValue::Null | DexValue::Int(0))
+    )
+}
+
+// cite: libcore StreamDecoder.java#read0
+fn decode_utf8_scalar_replacing(bytes: &[u8]) -> (char, usize) {
+    let window = &bytes[..bytes.len().min(4)];
+    let valid_length = match std::str::from_utf8(window) {
+        Ok(_) => window.len(),
+        Err(error) => error.valid_up_to(),
+    };
+    if valid_length > 0 {
+        if let Some(scalar) = std::str::from_utf8(&window[..valid_length])
+            .ok()
+            .and_then(|valid| valid.chars().next())
+        {
+            return (scalar, scalar.len_utf8());
+        }
+    }
+
+    let invalid_length = std::str::from_utf8(window)
+        .err()
+        .and_then(|error| error.error_len())
+        .unwrap_or(window.len());
+
+    (char::REPLACEMENT_CHARACTER, invalid_length)
 }
 
 fn resolve_file_parent_and_child(parent: Option<&str>, child: &str) -> String {

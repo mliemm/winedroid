@@ -2363,3 +2363,76 @@ fn enum_descriptor_matches_serializable_and_comparable() {
     assert!(program.descriptor_matches_type("Ljava/lang/Enum;", "Ljava/io/Serializable;"));
     assert!(program.descriptor_matches_type("Ljava/lang/Enum;", "Ljava/lang/Comparable;"));
 }
+
+#[test]
+fn art_class_get_declared_field_follows_own_fields_and_throws_no_such_field() {
+    // cite: art java_lang_Class.cc#Class_getDeclaredField, GetDeclaredField
+    // cite: art common_throws.cc#ThrowNoSuchFieldException
+    let program = DexProgram::new(Vec::new());
+    let get_declared_field = DexMethodId {
+        class_descriptor: "Ljava/lang/Class;".to_owned(),
+        name: "getDeclaredField".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "LL".to_owned(),
+            return_type: "Ljava/lang/reflect/Field;".to_owned(),
+            parameters: vec!["Ljava/lang/String;".to_owned()],
+        },
+    };
+    let message_field = DexFieldId {
+        class_descriptor: "Ljava/lang/Throwable;".to_owned(),
+        type_descriptor: "Ljava/lang/String;".to_owned(),
+        name: "detailMessage".to_owned(),
+    };
+    let class_of = |name: &str| {
+        let DexExecutionResult::Value(class_reference) = program
+            .class_for_name(
+                &test_invocation(vec![DexValue::String(std::rc::Rc::from(name))]),
+                0,
+            )
+            .expect("Class.forName should execute")
+        else {
+            panic!("forName did not return a class reference");
+        };
+        class_reference
+    };
+    let declared = |class_name: &str, field_name: DexValue| {
+        program.invoke_builtin_method(
+            &get_declared_field,
+            Some(&test_invocation(vec![class_of(class_name), field_name])),
+        )
+    };
+    let name = |text: &str| DexValue::String(std::rc::Rc::from(text));
+
+    assert_eq!(
+        declared("android.content.ContextWrapper", name("mBase")),
+        Some(DexExecutionResult::Value(DexValue::Reference(
+            std::rc::Rc::from(
+                "Ljava/lang/reflect/Field;:Landroid/content/ContextWrapper;:mBase:Landroid/content/Context;:0"
+            )
+        )))
+    );
+
+    let Some(DexExecutionResult::Throw(exception)) =
+        declared("android.app.Application", name("mBase"))
+    else {
+        panic!("superclass field should throw NoSuchFieldException");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/lang/NoSuchFieldException;"));
+    assert_eq!(
+        program.read_stored_instance_field(&exception, &message_field),
+        Some(name("No field mBase in class Landroid/app/Application;"))
+    );
+
+    let Some(DexExecutionResult::Throw(exception)) =
+        declared("android.app.Application", DexValue::Null)
+    else {
+        panic!("null name should throw NullPointerException");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
+    assert_eq!(
+        program.read_stored_instance_field(&exception, &message_field),
+        Some(name("name == null"))
+    );
+
+    assert_eq!(declared("android.app.ContextImpl", name("mBase")), None);
+}

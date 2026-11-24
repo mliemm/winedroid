@@ -297,7 +297,9 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
             Some("Ljava/util/AbstractList;")
         }
         "Ljava/util/AbstractList;" => Some("Ljava/util/AbstractCollection;"),
-        "Ljava/util/PriorityQueue;" => Some("Ljava/util/AbstractQueue;"),
+        "Ljava/util/PriorityQueue;" | "Ljava/util/concurrent/ConcurrentLinkedQueue;" => {
+            Some("Ljava/util/AbstractQueue;")
+        }
         "Ljava/util/AbstractQueue;" => Some("Ljava/util/AbstractCollection;"),
         "Ljava/util/HashMap;"
         | "Ljava/util/IdentityHashMap;"
@@ -389,7 +391,9 @@ pub(super) fn bootstrap_direct_interface_descriptors(
             "Ljava/io/Serializable;",
         ],
         "Ljava/util/AbstractList;" => &["Ljava/util/List;"],
-        "Ljava/util/PriorityQueue;" => &["Ljava/io/Serializable;"],
+        "Ljava/util/PriorityQueue;" | "Ljava/util/concurrent/ConcurrentLinkedQueue;" => {
+            &["Ljava/io/Serializable;"]
+        }
         "Ljava/util/AbstractQueue;" => &["Ljava/util/Queue;"],
         "Ljava/util/AbstractCollection;" => &["Ljava/util/Collection;"],
         "Ljava/util/HashSet;"

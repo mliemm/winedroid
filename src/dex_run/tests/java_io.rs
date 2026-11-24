@@ -1512,6 +1512,311 @@ fn builtin_closeable_close_returns_void() {
     );
 }
 
+fn file_path_after_constructor(
+    program: &DexProgram,
+    parameters: &[&str],
+    arguments: Vec<DexValue>,
+) -> Option<DexValue> {
+    let constructor = java_io_method("Ljava/io/File;", "<init>", "V", parameters);
+    let file = object_value(500, "Ljava/io/File;");
+    let mut invocation_arguments = vec![file.clone()];
+    invocation_arguments.extend(arguments);
+    let result = program
+        .invoke_builtin_method(&constructor, Some(&test_invocation(invocation_arguments)))?;
+    assert_eq!(result, DexExecutionResult::Void);
+
+    program.read_stored_instance_field(
+        &file,
+        &DexFieldId {
+            class_descriptor: "Ljava/io/File;".to_owned(),
+            type_descriptor: "Ljava/lang/String;".to_owned(),
+            name: "path".to_owned(),
+        },
+    )
+}
+
+fn string_value(text: &str) -> DexValue {
+    DexValue::String(std::rc::Rc::from(text))
+}
+
+#[test]
+fn libcore_file_string_parent_child_constructor_resolves_like_unix_file_system() {
+    // cite: libcore File.java#File
+    // cite: libcore UnixFileSystem.java#normalize, resolve
+    let program = DexProgram::new(Vec::new());
+    let parameters = ["Ljava/lang/String;", "Ljava/lang/String;"];
+    let cases = [
+        (Some("/data/user/0/x"), "files", "/data/user/0/x/files"),
+        (Some("/"), "a", "/a"),
+        (Some("/a/"), "/b/", "/a/b"),
+        (Some("/a"), "", "/a"),
+        (Some(""), "b", "b"),
+        (None, "b//c/", "b/c"),
+    ];
+
+    for (parent, child, expected) in cases {
+        let parent = parent.map_or(DexValue::Null, string_value);
+        assert_eq!(
+            file_path_after_constructor(&program, &parameters, vec![parent, string_value(child)]),
+            Some(string_value(expected)),
+            "child {child}"
+        );
+    }
+}
+
+#[test]
+fn libcore_file_constructors_throw_null_pointer_exception_for_a_null_child() {
+    // cite: libcore File.java#File
+    let program = DexProgram::new(Vec::new());
+    let file = object_value(501, "Ljava/io/File;");
+    let path_field = DexFieldId {
+        class_descriptor: "Ljava/io/File;".to_owned(),
+        type_descriptor: "Ljava/lang/String;".to_owned(),
+        name: "path".to_owned(),
+    };
+
+    for parent_type in ["Ljava/lang/String;", "Ljava/io/File;"] {
+        let constructor = java_io_method(
+            "Ljava/io/File;",
+            "<init>",
+            "V",
+            &[parent_type, "Ljava/lang/String;"],
+        );
+        let Some(DexExecutionResult::Throw(exception)) = program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![
+                file.clone(),
+                string_value("/a"),
+                DexValue::Null,
+            ])),
+        ) else {
+            panic!("null child should throw for {parent_type}");
+        };
+        assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
+    }
+    assert_eq!(program.read_stored_instance_field(&file, &path_field), None);
+}
+
+#[test]
+fn libcore_file_parent_file_child_constructor_resolves_a_parent_built_from_two_strings() {
+    // cite: libcore File.java#File
+    // cite: libcore UnixFileSystem.java#resolve, getDefaultParent
+    let program = DexProgram::new(Vec::new());
+    let string_constructor = java_io_method(
+        "Ljava/io/File;",
+        "<init>",
+        "V",
+        &["Ljava/lang/String;", "Ljava/lang/String;"],
+    );
+    let file_constructor = java_io_method(
+        "Ljava/io/File;",
+        "<init>",
+        "V",
+        &["Ljava/io/File;", "Ljava/lang/String;"],
+    );
+    let parent = object_value(502, "Ljava/io/File;");
+    let child = object_value(503, "Ljava/io/File;");
+    let path_field = DexFieldId {
+        class_descriptor: "Ljava/io/File;".to_owned(),
+        type_descriptor: "Ljava/lang/String;".to_owned(),
+        name: "path".to_owned(),
+    };
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &string_constructor,
+            Some(&test_invocation(vec![
+                parent.clone(),
+                string_value("/data/user/0/x"),
+                string_value("cache"),
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &file_constructor,
+            Some(&test_invocation(vec![
+                child.clone(),
+                parent,
+                string_value("room.db"),
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&child, &path_field),
+        Some(string_value("/data/user/0/x/cache/room.db"))
+    );
+}
+
+#[test]
+fn libcore_file_input_stream_string_constructor_opens_and_rejects_like_file_input_stream() {
+    // cite: libcore FileInputStream.java#FileInputStream
+    // cite: libcore File.java#isInvalid
+    let fixture = GuestIoFixture::new("input_stream_string");
+    let program = fixture.program();
+    let constructor = java_io_method(
+        "Ljava/io/FileInputStream;",
+        "<init>",
+        "V",
+        &["Ljava/lang/String;"],
+    );
+    let path = fixture.private.join("files/data.bin");
+    fs::create_dir_all(path.parent().expect("test file should have a parent"))
+        .expect("test directory should be created");
+    fs::write(&path, b"data").expect("test file should be written");
+    let guest_path = "/data/user/0/com.example/files/data.bin";
+    let path_field = DexFieldId {
+        class_descriptor: "Ljava/io/FileInputStream;".to_owned(),
+        type_descriptor: "Ljava/lang/String;".to_owned(),
+        name: "path".to_owned(),
+    };
+    let message_field = DexFieldId {
+        class_descriptor: "Ljava/lang/Throwable;".to_owned(),
+        type_descriptor: "Ljava/lang/String;".to_owned(),
+        name: "detailMessage".to_owned(),
+    };
+
+    let stream = object_value(510, "Ljava/io/FileInputStream;");
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![
+                stream.clone(),
+                string_value("/data/user/0/com.example//files/data.bin/")
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&stream, &path_field),
+        Some(string_value(guest_path))
+    );
+
+    let Some(DexExecutionResult::Throw(missing)) = program.invoke_builtin_method(
+        &constructor,
+        Some(&test_invocation(vec![
+            object_value(511, "Ljava/io/FileInputStream;"),
+            string_value("/data/user/0/com.example/files/missing.bin"),
+        ])),
+    ) else {
+        panic!("missing file should throw");
+    };
+    assert!(program.value_matches_type(&missing, "Ljava/io/FileNotFoundException;"));
+
+    let Some(DexExecutionResult::Throw(directory)) = program.invoke_builtin_method(
+        &constructor,
+        Some(&test_invocation(vec![
+            object_value(512, "Ljava/io/FileInputStream;"),
+            string_value("/data/user/0/com.example/files"),
+        ])),
+    ) else {
+        panic!("directory should throw");
+    };
+    assert!(program.value_matches_type(&directory, "Ljava/io/FileNotFoundException;"));
+
+    let Some(DexExecutionResult::Throw(invalid)) = program.invoke_builtin_method(
+        &constructor,
+        Some(&test_invocation(vec![
+            object_value(513, "Ljava/io/FileInputStream;"),
+            string_value("/data/user/0/com.example/files/a\0b"),
+        ])),
+    ) else {
+        panic!("NUL path should throw");
+    };
+    assert!(program.value_matches_type(&invalid, "Ljava/io/FileNotFoundException;"));
+    assert_eq!(
+        program.read_stored_instance_field(&invalid, &message_field),
+        Some(string_value("Invalid file path"))
+    );
+
+    let Some(DexExecutionResult::Throw(null_name)) = program.invoke_builtin_method(
+        &constructor,
+        Some(&test_invocation(vec![
+            object_value(514, "Ljava/io/FileInputStream;"),
+            DexValue::Null,
+        ])),
+    ) else {
+        panic!("null name should throw");
+    };
+    assert!(program.value_matches_type(&null_name, "Ljava/lang/NullPointerException;"));
+}
+
+fn buffered_reader_read_all(program: &DexProgram, reader: &DexValue, count: usize) -> Vec<i32> {
+    let read = java_io_method("Ljava/io/BufferedReader;", "read", "I", &[]);
+    (0..count)
+        .map(|_| {
+            match program.invoke_builtin_method(&read, Some(&test_invocation(vec![reader.clone()])))
+            {
+                Some(DexExecutionResult::Int(value)) => value,
+                other => panic!("unexpected read result {other:?}"),
+            }
+        })
+        .collect()
+}
+
+fn buffered_reader_over(program: &DexProgram, bytes: &[u8]) -> DexValue {
+    let reader = object_value(520, "Ljava/io/BufferedReader;");
+    program.runtime.borrow_mut().input_stream_values.insert(
+        map_identity_key(&reader),
+        InputStreamState {
+            bytes: bytes.to_vec(),
+            position: 0,
+            pending_low_surrogate: None,
+        },
+    );
+
+    reader
+}
+
+#[test]
+fn libcore_buffered_reader_read_returns_utf16_units_and_minus_one_at_end() {
+    // cite: libcore BufferedReader.java#read, fill
+    // cite: libcore StreamDecoder.java#read0
+    let program = DexProgram::new(Vec::new());
+    let cases: [(&[u8], Vec<i32>); 7] = [
+        (b"ab", vec![97, 98, -1, -1]),
+        ("\u{e9}".as_bytes(), vec![233, -1]),
+        ("\u{20ac}".as_bytes(), vec![8364, -1]),
+        ("\u{1f600}".as_bytes(), vec![0xD83D, 0xDE00, -1]),
+        (&[0xFF, b'a'], vec![65533, 97, -1]),
+        (&[0xE2, 0x82], vec![65533, -1]),
+        (b"", vec![-1]),
+    ];
+
+    for (bytes, expected) in cases {
+        let reader = buffered_reader_over(&program, bytes);
+        assert_eq!(
+            buffered_reader_read_all(&program, &reader, expected.len()),
+            expected,
+            "bytes {bytes:?}"
+        );
+    }
+}
+
+#[test]
+fn libcore_buffered_reader_read_continues_after_read_line() {
+    // cite: libcore BufferedReader.java#read, readLine
+    let program = DexProgram::new(Vec::new());
+    let read_line = java_io_method(
+        "Ljava/io/BufferedReader;",
+        "readLine",
+        "Ljava/lang/String;",
+        &[],
+    );
+    let reader = buffered_reader_over(&program, b"ab\ncd");
+
+    assert_eq!(
+        program.invoke_builtin_method(&read_line, Some(&test_invocation(vec![reader.clone()]))),
+        Some(DexExecutionResult::Value(string_value("ab")))
+    );
+    assert_eq!(
+        buffered_reader_read_all(&program, &reader, 3),
+        vec![99, 100, -1]
+    );
+}
+
 fn java_io_method(
     class_descriptor: &str,
     name: &str,

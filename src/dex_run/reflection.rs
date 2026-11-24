@@ -653,18 +653,31 @@ impl DexProgram {
         Some(self.allocate_filled_array("[Ljava/lang/reflect/Field;".to_owned(), Vec::new()))
     }
 
-    pub(super) fn class_get_declared_field(&self, invocation: &DexInvocation) -> Option<DexValue> {
+    pub(super) fn class_get_declared_field(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
         if invocation.arguments.len() != 2 {
             return None;
         }
 
         if invocation.arguments[0] == DexValue::Null {
-            return Some(DexValue::Null);
+            return Some(DexExecutionResult::Value(DexValue::Null));
         }
 
         let descriptor = class_reference_descriptor_from_value(&invocation.arguments[0])?;
-        let DexValue::String(field_name) = &invocation.arguments[1] else {
-            return None;
+        // cite: art java_lang_Class.cc#Class_getDeclaredField, GetDeclaredField
+        let field_name = match &invocation.arguments[1] {
+            DexValue::Null | DexValue::Int(0) => {
+                return Some(DexExecutionResult::Throw(self.allocate_generated_exception(
+                    DexGeneratedException {
+                        class_descriptor: "Ljava/lang/NullPointerException;".to_owned(),
+                        detail_message: Some("name == null".to_owned()),
+                    },
+                )));
+            }
+            DexValue::String(field_name) => field_name,
+            _ => return None,
         };
 
         if let Some(loaded_class) = self.load_class(descriptor) {
@@ -678,17 +691,50 @@ impl DexProgram {
                     .field_id(loaded_class.dex_file_index, encoded_field.field_index)
                     .ok()?;
                 if field.name == **field_name {
-                    return Some(reflect_dex_field_value(&field, encoded_field.access_flags));
+                    return Some(DexExecutionResult::Value(reflect_dex_field_value(
+                        &field,
+                        encoded_field.access_flags,
+                    )));
                 }
             }
+
+            return Some(self.no_such_field_exception(descriptor, field_name));
         }
 
-        let field = reflect_bootstrap_field(descriptor, field_name)?;
+        if let Some(field) = reflect_bootstrap_field(descriptor, field_name) {
+            return Some(DexExecutionResult::Value(DexValue::Reference(
+                std::rc::Rc::from(format!(
+                    "Ljava/lang/reflect/Field;:{}:{}",
+                    field.class_descriptor, field.name
+                )),
+            )));
+        }
 
-        Some(DexValue::Reference(std::rc::Rc::from(format!(
-            "Ljava/lang/reflect/Field;:{}:{}",
-            field.class_descriptor, field.name
-        ))))
+        let declared_fields = bootstrap_declared_fields(descriptor)?;
+        let Some(declared) = declared_fields
+            .iter()
+            .find(|declared| declared.name == &**field_name)
+        else {
+            return Some(self.no_such_field_exception(descriptor, field_name));
+        };
+        let field = DexFieldId {
+            class_descriptor: descriptor.to_owned(),
+            type_descriptor: declared.type_descriptor.to_owned(),
+            name: declared.name.to_owned(),
+        };
+
+        Some(DexExecutionResult::Value(reflect_dex_field_value(
+            &field,
+            declared.access_flags,
+        )))
+    }
+
+    fn no_such_field_exception(&self, descriptor: &str, field_name: &str) -> DexExecutionResult {
+        // cite: art common_throws.cc#ThrowNoSuchFieldException
+        DexExecutionResult::Throw(self.allocate_generated_exception(DexGeneratedException {
+            class_descriptor: "Ljava/lang/NoSuchFieldException;".to_owned(),
+            detail_message: Some(format!("No field {field_name} in class {descriptor}")),
+        }))
     }
 
     pub(super) fn class_interface_descriptors(&self, descriptor: &str) -> Vec<String> {

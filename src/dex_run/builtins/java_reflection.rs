@@ -183,9 +183,8 @@ impl DexProgram {
                 .descriptor_is("(Ljava/lang/String;)Ljava/lang/reflect/Field;")
         {
             let invocation = invocation?;
-            let value = self.class_get_declared_field(invocation)?;
 
-            return Some(DexExecutionResult::Value(value));
+            return self.class_get_declared_field(invocation);
         }
 
         if method.class_descriptor == "Ljava/lang/Class;"

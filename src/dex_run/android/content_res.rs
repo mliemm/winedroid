@@ -1687,7 +1687,11 @@ impl DexProgram {
         )));
         self.runtime.borrow_mut().input_stream_values.insert(
             map_identity_key(&reference),
-            InputStreamState { bytes, position: 0 },
+            InputStreamState {
+                bytes,
+                position: 0,
+                pending_low_surrogate: None,
+            },
         );
         Some(reference)
     }
