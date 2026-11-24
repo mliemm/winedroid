@@ -2838,3 +2838,68 @@ fn libcore_synchronous_queue_constructor_creates_an_empty_blocking_queue() {
     assert!(program.value_matches_type(&queue, "Ljava/util/concurrent/BlockingQueue;"));
     assert!(program.value_matches_type(&queue, "Ljava/util/AbstractQueue;"));
 }
+
+#[test]
+fn libcore_linked_list_constructor_and_add_keep_insertion_order_including_null() {
+    // cite: libcore LinkedList.java#LinkedList, add, linkLast
+    let program = DexProgram::new(Vec::new());
+    let init = DexMethodId {
+        class_descriptor: "Ljava/util/LinkedList;".to_owned(),
+        name: "<init>".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "V".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let add = DexMethodId {
+        class_descriptor: "Ljava/util/LinkedList;".to_owned(),
+        name: "add".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "ZL".to_owned(),
+            return_type: "Z".to_owned(),
+            parameters: vec!["Ljava/lang/Object;".to_owned()],
+        },
+    };
+    let list = program.allocate_object("Ljava/util/LinkedList;".to_owned());
+    let first = DexValue::String(std::rc::Rc::from("a"));
+
+    assert_eq!(
+        program.invoke_builtin_method(&init, Some(&test_invocation(vec![list.clone()]))),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program
+            .runtime
+            .borrow()
+            .list_entries
+            .get(&map_identity_key(&list))
+            .cloned(),
+        Some(Vec::new())
+    );
+    for element in [first.clone(), DexValue::Null] {
+        assert_eq!(
+            program.invoke_builtin_method(&add, Some(&test_invocation(vec![list.clone(), element]))),
+            Some(DexExecutionResult::Int(1))
+        );
+    }
+
+    assert_eq!(
+        program
+            .runtime
+            .borrow()
+            .list_entries
+            .get(&map_identity_key(&list))
+            .cloned(),
+        Some(vec![first, DexValue::Null])
+    );
+    for supertype in [
+        "Ljava/util/List;",
+        "Ljava/util/Deque;",
+        "Ljava/util/Queue;",
+        "Ljava/util/AbstractSequentialList;",
+        "Ljava/util/AbstractList;",
+    ] {
+        assert!(program.value_matches_type(&list, supertype), "{supertype}");
+    }
+}

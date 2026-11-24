@@ -3904,3 +3904,109 @@ fn builtin_object_notify_validates_receiver_like_notify_all() {
         None
     );
 }
+
+fn load_library_program(name: &str, native_files: &[&str]) -> (DexProgram, std::path::PathBuf) {
+    let app_dir = std::env::temp_dir().join(format!(
+        "winedroid-load-library-{name}-{}",
+        std::process::id()
+    ));
+    std::fs::remove_dir_all(&app_dir).ok();
+    std::fs::create_dir_all(app_dir.join("native/arm64-v8a")).expect("native dir should exist");
+    for file in native_files {
+        std::fs::write(app_dir.join("native/arm64-v8a").join(file), b"").expect("library file");
+    }
+    let mut program = DexProgram::new(Vec::new());
+    program.apk_path = Some(app_dir.join("source.apk"));
+
+    (program, app_dir)
+}
+
+fn load_library(program: &DexProgram, name: DexValue) -> Option<DexExecutionResult> {
+    let method = builtin_method(
+        "Ljava/lang/System;",
+        "loadLibrary",
+        "V",
+        &["Ljava/lang/String;"],
+    );
+
+    program.invoke_builtin_method(&method, Some(&test_invocation(vec![name])))
+}
+
+#[test]
+fn libcore_system_load_library_null_name_throws_null_pointer_exception() {
+    // cite: libcore Runtime.java#loadLibrary0
+    let (program, app_dir) = load_library_program("null", &[]);
+
+    let exception = thrown_exception(load_library(&program, DexValue::Null));
+
+    assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
+    std::fs::remove_dir_all(app_dir).ok();
+}
+
+#[test]
+fn libcore_runtime_load_library_rejects_directory_separator_and_long_names() {
+    // cite: libcore Runtime.java#loadLibrary0
+    // cite: libcore System.c#System_mapLibraryName
+    let (program, app_dir) = load_library_program("separator", &[]);
+
+    let separator = thrown_exception(load_library(
+        &program,
+        DexValue::String(std::rc::Rc::from("a/b")),
+    ));
+    let too_long = thrown_exception(load_library(
+        &program,
+        DexValue::String(std::rc::Rc::from("x".repeat(241))),
+    ));
+
+    assert!(program.value_matches_type(&separator, "Ljava/lang/UnsatisfiedLinkError;"));
+    assert_eq!(
+        thrown_detail_message(&program, &separator).as_deref(),
+        Some("Directory separator should not appear in library name: a/b")
+    );
+    assert!(program.value_matches_type(&too_long, "Ljava/lang/IllegalArgumentException;"));
+    assert_eq!(
+        thrown_detail_message(&program, &too_long).as_deref(),
+        Some("name too long")
+    );
+    std::fs::remove_dir_all(app_dir).ok();
+}
+
+#[test]
+fn bionic_dlopen_missing_library_throws_unsatisfied_link_error_catchable_as_linkage_error() {
+    // cite: bionic linker.cpp#DL_OPEN_ERR
+    // cite: bionic dlfcn.cpp#dlopen_ext, __bionic_format_dlerror
+    // cite: libcore UnsatisfiedLinkError.java#UnsatisfiedLinkError
+    // cite: libcore LinkageError.java#LinkageError
+    let (program, app_dir) = load_library_program("missing", &["libother.so"]);
+
+    let exception = thrown_exception(load_library(
+        &program,
+        DexValue::String(std::rc::Rc::from("x")),
+    ));
+
+    assert_eq!(
+        thrown_detail_message(&program, &exception).as_deref(),
+        Some("dlopen failed: library \"libx.so\" not found")
+    );
+    for supertype in [
+        "Ljava/lang/UnsatisfiedLinkError;",
+        "Ljava/lang/LinkageError;",
+        "Ljava/lang/Error;",
+    ] {
+        assert!(program.value_matches_type(&exception, supertype), "{supertype}");
+    }
+    assert!(!program.value_matches_type(&exception, "Ljava/lang/Exception;"));
+    std::fs::remove_dir_all(app_dir).ok();
+}
+
+#[test]
+fn art_load_native_library_present_but_unloadable_is_missing_primitive_not_success() {
+    // cite: art java_vm_ext.cc#LoadNativeLibrary
+    let (program, app_dir) = load_library_program("present", &["libx.so"]);
+
+    assert_eq!(
+        load_library(&program, DexValue::String(std::rc::Rc::from("x"))),
+        None
+    );
+    std::fs::remove_dir_all(app_dir).ok();
+}

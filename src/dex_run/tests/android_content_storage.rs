@@ -2651,3 +2651,150 @@ fn builtin_intent_set_action_and_set_data_and_type_accept_null_as_zero() {
         Some(DexExecutionResult::Value(intent))
     );
 }
+
+fn storage_test_program(name: &str) -> (DexProgram, PathBuf) {
+    let app_dir = test_app_data_dir(name);
+    let data_dir = app_dir.join("apps/com.example/data");
+    let shared_dir = app_dir.join("storage");
+    fs::create_dir_all(&data_dir).expect("data dir should be created");
+    fs::create_dir_all(&shared_dir).expect("shared dir should be created");
+    let program = DexProgram::with_guest_filesystem(Vec::new(), "com.example", data_dir, shared_dir)
+        .expect("program should load guest filesystem");
+
+    (program, app_dir)
+}
+
+fn get_dir(program: &DexProgram, name: DexValue, mode: i32) -> Option<DexExecutionResult> {
+    let method = builtin_method(
+        "Landroid/content/Context;",
+        "getDir",
+        "Ljava/io/File;",
+        &["Ljava/lang/String;", "I"],
+    );
+    let context = DexValue::Reference(std::rc::Rc::from("Landroid/content/Context;.bootstrap"));
+
+    program.invoke_builtin_method(
+        &method,
+        Some(&test_invocation(vec![context, name, DexValue::Int(mode)])),
+    )
+}
+
+#[test]
+fn frameworks_base_context_impl_get_dir_prefixes_app_and_creates_private_directory() {
+    // cite: frameworks-base ContextImpl.java#getDir
+    let (program, app_dir) = storage_test_program("context_get_dir");
+
+    assert_eq!(
+        get_dir(&program, DexValue::String(std::rc::Rc::from("x")), 0),
+        Some(DexExecutionResult::Value(DexValue::Reference(
+            std::rc::Rc::from("Ljava/io/File;:/data/user/0/com.example/app_x")
+        )))
+    );
+    assert!(app_dir.join("apps/com.example/data/app_x").is_dir());
+    assert_eq!(
+        get_dir(&program, DexValue::Null, 0),
+        Some(DexExecutionResult::Value(DexValue::Reference(
+            std::rc::Rc::from("Ljava/io/File;:/data/user/0/com.example/app_null")
+        )))
+    );
+    fs::remove_dir_all(app_dir).ok();
+}
+
+#[test]
+fn frameworks_base_context_impl_get_dir_check_mode_rejects_world_modes_from_api_24() {
+    // cite: frameworks-base ContextImpl.java#checkMode
+    let (mut program, app_dir) = storage_test_program("context_get_dir_mode");
+    let name = || DexValue::String(std::rc::Rc::from("x"));
+
+    for (mode, message) in [
+        (1, "MODE_WORLD_READABLE no longer supported"),
+        (2, "MODE_WORLD_WRITEABLE no longer supported"),
+    ] {
+        let exception = thrown_exception(get_dir(&program, name(), mode));
+
+        assert!(program.value_matches_type(&exception, "Ljava/lang/SecurityException;"));
+        assert_eq!(
+            thrown_detail_message(&program, &exception).as_deref(),
+            Some(message)
+        );
+    }
+    assert!(!app_dir.join("apps/com.example/data/app_x").exists());
+
+    program.target_sdk_version = 23;
+    assert!(matches!(
+        get_dir(&program, name(), 1),
+        Some(DexExecutionResult::Value(_))
+    ));
+    fs::remove_dir_all(app_dir).ok();
+}
+
+#[test]
+fn frameworks_base_context_impl_get_dir_make_filename_rejects_path_separator() {
+    // cite: frameworks-base ContextImpl.java#makeFilename
+    let (program, app_dir) = storage_test_program("context_get_dir_separator");
+
+    let exception = thrown_exception(get_dir(
+        &program,
+        DexValue::String(std::rc::Rc::from("a/b")),
+        0,
+    ));
+
+    assert!(program.value_matches_type(&exception, "Ljava/lang/IllegalArgumentException;"));
+    assert_eq!(
+        thrown_detail_message(&program, &exception).as_deref(),
+        Some("File app_a/b contains a path separator")
+    );
+    fs::remove_dir_all(app_dir).ok();
+}
+
+#[test]
+fn frameworks_base_package_manager_get_application_info_finds_only_the_installed_package() {
+    // cite: frameworks-base ApplicationPackageManager.java#getApplicationInfo, getApplicationInfoAsUser
+    // cite: frameworks-base PackageManager.java#NameNotFoundException
+    // cite: frameworks-base AndroidException.java#AndroidException
+    let (program, app_dir) = storage_test_program("package_manager_application_info");
+    let method = builtin_method(
+        "Landroid/content/pm/PackageManager;",
+        "getApplicationInfo",
+        "Landroid/content/pm/ApplicationInfo;",
+        &["Ljava/lang/String;", "I"],
+    );
+    let manager = DexValue::Reference(std::rc::Rc::from(
+        "Landroid/content/pm/PackageManager;.bootstrap",
+    ));
+    let ask = |name: DexValue, flags: i32| {
+        program.invoke_builtin_method(
+            &method,
+            Some(&test_invocation(vec![
+                manager.clone(),
+                name,
+                DexValue::Int(flags),
+            ])),
+        )
+    };
+    let installed = Some(DexExecutionResult::Value(DexValue::Reference(
+        std::rc::Rc::from("Landroid/content/pm/ApplicationInfo;.bootstrap"),
+    )));
+
+    assert_eq!(ask(DexValue::String(std::rc::Rc::from("com.example")), 128), installed);
+    assert_eq!(ask(DexValue::String(std::rc::Rc::from("com.example")), 0x2000), installed);
+    let missing = thrown_exception(ask(DexValue::String(std::rc::Rc::from("com.other")), 0));
+    let null_name = thrown_exception(ask(DexValue::Null, 0));
+
+    assert!(program.value_matches_type(
+        &missing,
+        "Landroid/content/pm/PackageManager$NameNotFoundException;"
+    ));
+    assert!(program.value_matches_type(&missing, "Ljava/lang/Exception;"));
+    assert!(!program.value_matches_type(&missing, "Ljava/lang/RuntimeException;"));
+    assert_eq!(
+        thrown_detail_message(&program, &missing).as_deref(),
+        Some("com.other")
+    );
+    assert!(program.value_matches_type(
+        &null_name,
+        "Landroid/content/pm/PackageManager$NameNotFoundException;"
+    ));
+    assert_eq!(ask(DexValue::Int(1), 0), None);
+    fs::remove_dir_all(app_dir).ok();
+}

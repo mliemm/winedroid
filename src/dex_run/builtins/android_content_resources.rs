@@ -241,6 +241,42 @@ impl DexProgram {
             )));
         }
 
+        if method.class_descriptor == "Landroid/content/Context;"
+            && method.name == "getAssets"
+            && method
+                .proto
+                .descriptor_is("()Landroid/content/res/AssetManager;")
+        {
+            // cite: frameworks-base ContextImpl.java#getAssets
+            return Some(DexExecutionResult::Value(DexValue::Reference(
+                std::rc::Rc::from("Landroid/content/res/AssetManager;.bootstrap"),
+            )));
+        }
+
+        if method.class_descriptor == "Landroid/content/res/Resources;"
+            && method.name == "getAssets"
+            && method
+                .proto
+                .descriptor_is("()Landroid/content/res/AssetManager;")
+        {
+            // cite: frameworks-base Resources.java#getAssets
+            // cite: frameworks-base ResourcesImpl.java#getAssets
+            return Some(DexExecutionResult::Value(DexValue::Reference(
+                std::rc::Rc::from("Landroid/content/res/AssetManager;.bootstrap"),
+            )));
+        }
+
+        if method.class_descriptor == "Landroid/content/res/AssetManager;"
+            && method.name == "open"
+            && method
+                .proto
+                .descriptor_is("(Ljava/lang/String;)Ljava/io/InputStream;")
+        {
+            let invocation = invocation?;
+
+            return self.open_asset(invocation);
+        }
+
         if method.class_descriptor == "Landroid/content/res/Resources;"
             && method.name == "getSystem"
             && method

@@ -170,15 +170,14 @@ impl DexProgram {
             )));
         }
 
-        if method.matches_builtin_signature("Ljava/lang/Integer;", "intValue", "()I") {
+        if method.matches_builtin_signature("Ljava/lang/Integer;", "intValue", "()I")
+            || method.matches_builtin_signature("Ljava/lang/Number;", "intValue", "()I")
+        {
             let invocation = invocation?;
-            let value = self.integer_int_value(invocation)?;
-
-            return Some(DexExecutionResult::Int(value));
-        }
-
-        if method.matches_builtin_signature("Ljava/lang/Number;", "intValue", "()I") {
-            let invocation = invocation?;
+            if invocation.arguments.first() == Some(&DexValue::Null) {
+                // cite: art common_throws.cc#ThrowNullPointerExceptionForMethodAccess
+                return Some(self.null_pointer_exception_result());
+            }
             let value = self.integer_int_value(invocation)?;
 
             return Some(DexExecutionResult::Int(value));

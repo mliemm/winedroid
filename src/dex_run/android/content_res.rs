@@ -1696,6 +1696,62 @@ impl DexProgram {
         Some(reference)
     }
 
+    pub(in crate::dex_run) fn open_asset(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        // cite: frameworks-base AssetManager.java#open
+        // cite: frameworks-base AssetManager2.cpp#AssetManager2::Open, AssetManager2::OpenNonAsset
+        // cite: frameworks-base AssetsProvider.cpp#ZipAssetsProvider::OpenInternal
+        let [_receiver, file_name] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        let file_name = match file_name {
+            DexValue::Null => {
+                return Some(DexExecutionResult::Throw(
+                    self.allocate_generated_exception(DexGeneratedException {
+                        class_descriptor: "Ljava/lang/NullPointerException;".to_owned(),
+                        detail_message: Some("fileName".to_owned()),
+                    }),
+                ))
+            }
+            DexValue::String(file_name) => file_name.as_ref(),
+            _ => return None,
+        };
+
+        let mut apk = ApkArchive::open(self.apk_path.as_ref()?).ok()?;
+        let Some(bytes) = apk
+            .read_optional_file(&format!("assets/{file_name}"))
+            .ok()?
+        else {
+            return Some(DexExecutionResult::Throw(
+                self.allocate_generated_exception(DexGeneratedException {
+                    class_descriptor: "Ljava/io/FileNotFoundException;".to_owned(),
+                    detail_message: Some(format!("Asset file: {file_name}")),
+                }),
+            ));
+        };
+        let id = {
+            let mut runtime = self.runtime.borrow_mut();
+            let id = runtime.next_object_id;
+            runtime.next_object_id += 1;
+            id
+        };
+        let reference = DexValue::Reference(std::rc::Rc::from(format!(
+            "Ljava/io/InputStream;:asset/{id}"
+        )));
+        self.runtime.borrow_mut().input_stream_values.insert(
+            map_identity_key(&reference),
+            InputStreamState {
+                bytes,
+                position: 0,
+                pending_low_surrogate: None,
+            },
+        );
+
+        Some(DexExecutionResult::Value(reference))
+    }
+
     fn read_raw_resource_bytes(&self, resource_id: i32) -> Result<Vec<u8>> {
         if resource_id <= 0 {
             return Err(WinedroidError::new(format!(

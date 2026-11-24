@@ -1,5 +1,11 @@
 use super::super::*;
 
+// cite: frameworks-base Context.java#MODE_WORLD_READABLE, MODE_WORLD_WRITEABLE
+const CONTEXT_MODE_WORLD_READABLE: i32 = 0x0001;
+const CONTEXT_MODE_WORLD_WRITEABLE: i32 = 0x0002;
+// cite: frameworks-base Build.java#N
+const ANDROID_SDK_N: i32 = 24;
+
 impl DexProgram {
     pub(super) fn invoke_android_content_storage_builtin(
         &self,
@@ -398,6 +404,17 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Landroid/content/Context;"
+            && method.name == "getDir"
+            && method
+                .proto
+                .descriptor_is("(Ljava/lang/String;I)Ljava/io/File;")
+        {
+            let invocation = invocation?;
+
+            return self.context_app_dir_file(invocation);
+        }
+
+        if method.class_descriptor == "Landroid/content/Context;"
             && method.name == "getFilesDir"
             && method.proto.descriptor_is("()Ljava/io/File;")
         {
@@ -583,6 +600,17 @@ impl DexProgram {
             let value = self.package_manager_check_permission(invocation)?;
 
             return Some(DexExecutionResult::Int(value));
+        }
+
+        if method.class_descriptor == "Landroid/content/pm/PackageManager;"
+            && method.name == "getApplicationInfo"
+            && method
+                .proto
+                .descriptor_is("(Ljava/lang/String;I)Landroid/content/pm/ApplicationInfo;")
+        {
+            let invocation = invocation?;
+
+            return self.package_manager_get_application_info(invocation);
         }
 
         if method.class_descriptor == "Landroid/content/pm/PackageManager;"
@@ -865,6 +893,92 @@ impl DexProgram {
             }
             format!("{database_dir}/{name}")
         };
+
+        Some(DexExecutionResult::Value(DexValue::Reference(
+            std::rc::Rc::from(format!("Ljava/io/File;:{path}")),
+        )))
+    }
+
+    fn package_manager_get_application_info(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        // cite: frameworks-base ApplicationPackageManager.java#getApplicationInfo, getApplicationInfoAsUser
+        // cite: frameworks-base PackageManager.java#getApplicationInfo
+        let [_receiver, package_name, DexValue::Int(_flags)] = invocation.arguments.as_slice()
+        else {
+            return None;
+        };
+        let installed = match package_name {
+            DexValue::String(name) => name.as_ref() == self.bootstrap_process_name(),
+            DexValue::Null => false,
+            _ => return None,
+        };
+        if installed {
+            return Some(DexExecutionResult::Value(DexValue::Reference(
+                std::rc::Rc::from("Landroid/content/pm/ApplicationInfo;.bootstrap"),
+            )));
+        }
+
+        let detail_message = match package_name {
+            DexValue::String(name) => Some(name.to_string()),
+            _ => None,
+        };
+
+        Some(DexExecutionResult::Throw(
+            self.allocate_generated_exception(DexGeneratedException {
+                class_descriptor: "Landroid/content/pm/PackageManager$NameNotFoundException;"
+                    .to_owned(),
+                detail_message,
+            }),
+        ))
+    }
+
+    fn context_app_dir_file(&self, invocation: &DexInvocation) -> Option<DexExecutionResult> {
+        // cite: frameworks-base ContextImpl.java#getDir, checkMode, makeFilename
+        let [context, name, DexValue::Int(mode)] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        if !dex_value_is_object_like(context) {
+            return None;
+        }
+        self.context_private_storage_kind(context)?;
+        if self.target_sdk_version >= ANDROID_SDK_N {
+            for (flag, message) in [
+                (
+                    CONTEXT_MODE_WORLD_READABLE,
+                    "MODE_WORLD_READABLE no longer supported",
+                ),
+                (
+                    CONTEXT_MODE_WORLD_WRITEABLE,
+                    "MODE_WORLD_WRITEABLE no longer supported",
+                ),
+            ] {
+                if mode & flag != 0 {
+                    return Some(DexExecutionResult::Throw(
+                        self.allocate_generated_exception(DexGeneratedException {
+                            class_descriptor: "Ljava/lang/SecurityException;".to_owned(),
+                            detail_message: Some(message.to_owned()),
+                        }),
+                    ));
+                }
+            }
+        }
+        let name = match name {
+            DexValue::String(name) => name.as_ref(),
+            DexValue::Null => "null",
+            _ => return None,
+        };
+        let prefixed = format!("app_{name}");
+        if prefixed.contains('/') {
+            return Some(DexExecutionResult::Throw(
+                self.allocate_generated_exception(DexGeneratedException {
+                    class_descriptor: "Ljava/lang/IllegalArgumentException;".to_owned(),
+                    detail_message: Some(format!("File {prefixed} contains a path separator")),
+                }),
+            ));
+        }
+        let path = self.ensure_context_private_directory(context, &prefixed)?;
 
         Some(DexExecutionResult::Value(DexValue::Reference(
             std::rc::Rc::from(format!("Ljava/io/File;:{path}")),

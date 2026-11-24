@@ -332,6 +332,17 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        if method.class_descriptor == "Ljava/util/LinkedList;"
+            && method.name == "<init>"
+            && method.proto.descriptor_is("()V")
+        {
+            // cite: libcore LinkedList.java#LinkedList
+            let invocation = invocation?;
+            self.initialize_empty_list(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
         if method.class_descriptor == "Ljava/util/concurrent/CopyOnWriteArrayList;"
             && method.name == "<init>"
             && method.proto.descriptor_is("()V")
@@ -379,6 +390,17 @@ impl DexProgram {
             && method.name == "add"
             && method.proto.descriptor_is("(Ljava/lang/Object;)Z")
         {
+            let invocation = invocation?;
+            self.add_array_list_value(invocation)?;
+
+            return Some(DexExecutionResult::Int(1));
+        }
+
+        if method.class_descriptor == "Ljava/util/LinkedList;"
+            && method.name == "add"
+            && method.proto.descriptor_is("(Ljava/lang/Object;)Z")
+        {
+            // cite: libcore LinkedList.java#add, linkLast
             let invocation = invocation?;
             self.add_array_list_value(invocation)?;
 

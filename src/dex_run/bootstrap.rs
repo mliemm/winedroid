@@ -206,6 +206,8 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         "Ljava/lang/Error;" => Some("Ljava/lang/Throwable;"),
         // cite: libcore LinkageError.java#LinkageError
         "Ljava/lang/LinkageError;" => Some("Ljava/lang/Error;"),
+        // cite: libcore UnsatisfiedLinkError.java#UnsatisfiedLinkError
+        "Ljava/lang/UnsatisfiedLinkError;" => Some("Ljava/lang/LinkageError;"),
         // cite: libcore NoClassDefFoundError.java#NoClassDefFoundError
         "Ljava/lang/NoClassDefFoundError;" => Some("Ljava/lang/LinkageError;"),
         // cite: libcore ReflectiveOperationException.java#ReflectiveOperationException
@@ -225,6 +227,20 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         "Ljava/lang/NullPointerException;" => Some("Ljava/lang/RuntimeException;"),
         "Ljava/lang/IllegalStateException;" => Some("Ljava/lang/RuntimeException;"),
         "Ljava/lang/IllegalArgumentException;" => Some("Ljava/lang/RuntimeException;"),
+        // cite: libcore SecurityException.java#SecurityException
+        "Ljava/lang/SecurityException;" => Some("Ljava/lang/RuntimeException;"),
+        // cite: libcore IndexOutOfBoundsException.java#IndexOutOfBoundsException
+        "Ljava/lang/IndexOutOfBoundsException;" => Some("Ljava/lang/RuntimeException;"),
+        // cite: libcore ArrayIndexOutOfBoundsException.java#ArrayIndexOutOfBoundsException
+        "Ljava/lang/ArrayIndexOutOfBoundsException;" => {
+            Some("Ljava/lang/IndexOutOfBoundsException;")
+        }
+        // cite: frameworks-base PackageManager.java#NameNotFoundException
+        "Landroid/content/pm/PackageManager$NameNotFoundException;" => {
+            Some("Landroid/util/AndroidException;")
+        }
+        // cite: frameworks-base AndroidException.java#AndroidException
+        "Landroid/util/AndroidException;" => Some("Ljava/lang/Exception;"),
         // cite: libcore UnsupportedOperationException.java#UnsupportedOperationException
         "Ljava/lang/UnsupportedOperationException;" => Some("Ljava/lang/RuntimeException;"),
         // cite: frameworks-base SQLiteException.java#SQLiteException
@@ -306,6 +322,10 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         "Ljava/util/ArrayList;" | "Ljava/util/Arrays$ArrayList;" => {
             Some("Ljava/util/AbstractList;")
         }
+        // cite: libcore LinkedList.java#LinkedList
+        "Ljava/util/LinkedList;" => Some("Ljava/util/AbstractSequentialList;"),
+        // cite: libcore AbstractSequentialList.java#AbstractSequentialList
+        "Ljava/util/AbstractSequentialList;" => Some("Ljava/util/AbstractList;"),
         "Ljava/util/AbstractList;" => Some("Ljava/util/AbstractCollection;"),
         "Ljava/util/PriorityQueue;"
         | "Ljava/util/concurrent/ConcurrentLinkedQueue;"
@@ -323,6 +343,12 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         | "Ljava/util/TreeSet;"
         | "Ljava/util/concurrent/CopyOnWriteArraySet;" => Some("Ljava/util/AbstractSet;"),
         "Ljava/util/AbstractSet;" => Some("Ljava/util/AbstractCollection;"),
+        // cite: libcore Properties.java#Properties
+        "Ljava/util/Properties;" => Some("Ljava/util/Hashtable;"),
+        // cite: libcore Hashtable.java#Hashtable
+        "Ljava/util/Hashtable;" => Some("Ljava/util/Dictionary;"),
+        // cite: libcore Dictionary.java#Dictionary
+        "Ljava/util/Dictionary;" => Some("Ljava/lang/Object;"),
         "Ljava/util/AbstractCollection;" | "Ljava/util/AbstractMap;" => Some("Ljava/lang/Object;"),
         "Ljava/lang/Integer;"
         | "Ljava/lang/Long;"
@@ -395,11 +421,26 @@ pub(super) fn bootstrap_direct_interface_descriptors(
         | "Ljava/util/concurrent/atomic/AtomicLongArray;" => &["Ljava/io/Serializable;"],
         "Ljava/util/Collection;" => &["Ljava/lang/Iterable;"],
         "Ljava/util/List;" | "Ljava/util/Queue;" | "Ljava/util/Set;" => &["Ljava/util/Collection;"],
+        // cite: libcore Deque.java#Deque
+        "Ljava/util/Deque;" => &["Ljava/util/Queue;"],
         // cite: libcore BlockingQueue.java#BlockingQueue
         "Ljava/util/concurrent/BlockingQueue;" => &["Ljava/util/Queue;"],
         "Ljava/util/ArrayList;" | "Ljava/util/Arrays$ArrayList;" => &[
             "Ljava/util/List;",
             "Ljava/util/RandomAccess;",
+            "Ljava/lang/Cloneable;",
+            "Ljava/io/Serializable;",
+        ],
+        // cite: libcore LinkedList.java#LinkedList
+        "Ljava/util/LinkedList;" => &[
+            "Ljava/util/List;",
+            "Ljava/util/Deque;",
+            "Ljava/lang/Cloneable;",
+            "Ljava/io/Serializable;",
+        ],
+        // cite: libcore Hashtable.java#Hashtable
+        "Ljava/util/Hashtable;" => &[
+            "Ljava/util/Map;",
             "Ljava/lang/Cloneable;",
             "Ljava/io/Serializable;",
         ],
@@ -466,6 +507,8 @@ pub(super) fn is_bootstrap_interface_descriptor(class_descriptor: &str) -> bool 
             | "Ljava/util/Map;"
             | "Ljava/util/Map$Entry;"
             | "Ljava/util/Queue;"
+            // cite: libcore Deque.java#Deque
+            | "Ljava/util/Deque;"
             // cite: libcore BlockingQueue.java#BlockingQueue
             | "Ljava/util/concurrent/BlockingQueue;"
             | "Ljava/util/RandomAccess;"

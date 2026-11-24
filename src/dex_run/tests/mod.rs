@@ -28,6 +28,7 @@ mod java_json_collection_extra;
 mod java_lists;
 mod java_maps;
 mod java_math_util;
+mod java_properties;
 mod java_reflection;
 mod java_regex_util;
 mod java_sets_collections;

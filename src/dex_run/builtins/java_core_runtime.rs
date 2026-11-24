@@ -216,6 +216,15 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Ljava/lang/System;"
+            && method.name == "loadLibrary"
+            && method.proto.descriptor_is("(Ljava/lang/String;)V")
+        {
+            let invocation = invocation?;
+
+            return self.system_load_library(invocation);
+        }
+
+        if method.class_descriptor == "Ljava/lang/System;"
             && method.name == "getSecurityManager"
             && method.proto.descriptor_is("()Ljava/lang/SecurityManager;")
         {

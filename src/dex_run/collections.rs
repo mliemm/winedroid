@@ -5736,6 +5736,20 @@ impl DexProgram {
         if uses_key_eq
             && method.name == "containsKey"
             && method.proto.descriptor_is("(Ljava/lang/Object;)Z")
+            && invocation.arguments.get(1) == Some(&DexValue::Null)
+            && invocation
+                .arguments
+                .first()
+                .and_then(value_class_descriptor)
+                .is_some_and(is_hashtable_class)
+        {
+            // cite: libcore Hashtable.java#containsKey
+            return Ok(Some(self.null_pointer_exception_result()));
+        }
+
+        if uses_key_eq
+            && method.name == "containsKey"
+            && method.proto.descriptor_is("(Ljava/lang/Object;)Z")
         {
             let value = self.java_hash_map_contains_key(invocation, depth + 1)?;
             return Ok(Some(DexExecutionResult::Int(value)));
@@ -5972,6 +5986,8 @@ pub(super) fn is_supported_map_class(class_descriptor: &str) -> bool {
             | "Ljava/util/LinkedHashMap;"
             | "Ljava/util/TreeMap;"
             | "Ljava/util/WeakHashMap;"
+            | "Ljava/util/Hashtable;"
+            | "Ljava/util/Properties;"
             | "Ljava/util/concurrent/ConcurrentHashMap;"
     )
 }
@@ -5984,6 +6000,8 @@ pub(super) fn is_supported_map_implementation_class(class_descriptor: &str) -> b
             | "Ljava/util/LinkedHashMap;"
             | "Ljava/util/TreeMap;"
             | "Ljava/util/WeakHashMap;"
+            | "Ljava/util/Hashtable;"
+            | "Ljava/util/Properties;"
             | "Ljava/util/concurrent/ConcurrentHashMap;"
     )
 }
@@ -5996,7 +6014,16 @@ fn is_java_key_equality_map_class(class_descriptor: &str) -> bool {
             | "Ljava/util/HashMap;"
             | "Ljava/util/LinkedHashMap;"
             | "Ljava/util/WeakHashMap;"
+            | "Ljava/util/Hashtable;"
+            | "Ljava/util/Properties;"
             | "Ljava/util/concurrent/ConcurrentHashMap;"
+    )
+}
+
+fn is_hashtable_class(class_descriptor: &str) -> bool {
+    matches!(
+        class_descriptor,
+        "Ljava/util/Hashtable;" | "Ljava/util/Properties;"
     )
 }
 
@@ -6017,6 +6044,7 @@ fn is_managed_concrete_list_descriptor(class_descriptor: &str) -> bool {
         class_descriptor,
         "Ljava/util/ArrayList;"
             | "Ljava/util/Arrays$ArrayList;"
+            | "Ljava/util/LinkedList;"
             | "Ljava/util/PriorityQueue;"
             | "Ljava/util/concurrent/CopyOnWriteArrayList;"
     )

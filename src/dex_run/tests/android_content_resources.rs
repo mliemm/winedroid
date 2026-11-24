@@ -4183,3 +4183,131 @@ fn typed_value_test_char_sequence_field(name: &str) -> DexFieldId {
         name: name.to_owned(),
     }
 }
+
+fn asset_test_program(entries: &[(&str, &[u8])]) -> (DexProgram, std::path::PathBuf) {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+    let apk_path = std::env::temp_dir().join(format!(
+        "winedroid-assets-{}-{}.apk",
+        std::process::id(),
+        NEXT_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&apk_path).expect("test APK"));
+    for (name, bytes) in entries {
+        zip.start_file(*name, zip::write::SimpleFileOptions::default())
+            .expect("zip entry should start");
+        zip.write_all(bytes).expect("zip entry should be written");
+    }
+    zip.finish().expect("test APK should finish");
+    let mut program = DexProgram::new(Vec::new());
+    program.apk_path = Some(apk_path.clone());
+
+    (program, apk_path)
+}
+
+fn open_asset(program: &DexProgram, file_name: DexValue) -> Option<DexExecutionResult> {
+    let open = builtin_method(
+        "Landroid/content/res/AssetManager;",
+        "open",
+        "Ljava/io/InputStream;",
+        &["Ljava/lang/String;"],
+    );
+    let manager = DexValue::Reference(std::rc::Rc::from(
+        "Landroid/content/res/AssetManager;.bootstrap",
+    ));
+
+    program.invoke_builtin_method(&open, Some(&test_invocation(vec![manager, file_name])))
+}
+
+#[test]
+fn builtin_resources_and_context_get_assets_return_bootstrap_asset_manager() {
+    // cite: frameworks-base Resources.java#getAssets
+    // cite: frameworks-base ResourcesImpl.java#getAssets
+    // cite: frameworks-base ContextImpl.java#getAssets
+    let program = DexProgram::new(Vec::new());
+
+    for class_descriptor in ["Landroid/content/res/Resources;", "Landroid/content/Context;"] {
+        let get_assets = builtin_method(
+            class_descriptor,
+            "getAssets",
+            "Landroid/content/res/AssetManager;",
+            &[],
+        );
+
+        assert_eq!(
+            program.invoke_builtin_method(&get_assets, None),
+            Some(DexExecutionResult::Value(DexValue::Reference(
+                std::rc::Rc::from("Landroid/content/res/AssetManager;.bootstrap")
+            )))
+        );
+    }
+}
+
+#[test]
+fn frameworks_base_asset_manager_open_reads_assets_prefixed_zip_entry() {
+    // cite: frameworks-base AssetManager2.cpp#AssetManager2::Open
+    // cite: frameworks-base AssetsProvider.cpp#ZipAssetsProvider::OpenInternal
+    let (program, apk_path) = asset_test_program(&[
+        ("assets/dir/a.json", b"{\"k\":1}"),
+        ("dir/b.json", b"wrong prefix"),
+    ]);
+
+    let Some(DexExecutionResult::Value(stream)) =
+        open_asset(&program, DexValue::String(std::rc::Rc::from("dir/a.json")))
+    else {
+        panic!("present asset should open");
+    };
+    let runtime = program.runtime.borrow();
+    let state = &runtime.input_stream_values[&map_identity_key(&stream)];
+
+    assert_eq!(state.bytes, b"{\"k\":1}");
+    assert_eq!(state.position, 0);
+    drop(runtime);
+    assert!(matches!(
+        open_asset(&program, DexValue::String(std::rc::Rc::from("b.json"))),
+        Some(DexExecutionResult::Throw(_))
+    ));
+    std::fs::remove_file(apk_path).ok();
+}
+
+#[test]
+fn frameworks_base_asset_manager_open_missing_asset_throws_file_not_found() {
+    // cite: frameworks-base AssetManager.java#open
+    let (program, apk_path) = asset_test_program(&[("assets/present.txt", b"x"), ("other", b"")]);
+
+    let exception = thrown_exception(open_asset(
+        &program,
+        DexValue::String(std::rc::Rc::from("nope.txt")),
+    ));
+
+    assert!(program.value_matches_type(&exception, "Ljava/io/FileNotFoundException;"));
+    assert_eq!(
+        thrown_detail_message(&program, &exception).as_deref(),
+        Some("Asset file: nope.txt")
+    );
+    std::fs::remove_file(apk_path).ok();
+}
+
+#[test]
+fn frameworks_base_asset_manager_open_null_name_throws_and_missing_apk_is_missing_primitive() {
+    // cite: frameworks-base AssetManager.java#open
+    let (program, apk_path) = asset_test_program(&[]);
+
+    let exception = thrown_exception(open_asset(&program, DexValue::Null));
+
+    assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
+    assert_eq!(
+        thrown_detail_message(&program, &exception).as_deref(),
+        Some("fileName")
+    );
+    std::fs::remove_file(apk_path).ok();
+    assert_eq!(
+        open_asset(
+            &DexProgram::new(Vec::new()),
+            DexValue::String(std::rc::Rc::from("a"))
+        ),
+        None
+    );
+}

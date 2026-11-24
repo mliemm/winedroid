@@ -1529,6 +1529,15 @@ impl DexProgram {
         .then_some(())
     }
 
+    pub(super) fn drain_input_stream_bytes(&self, stream: &DexValue) -> Option<Vec<u8>> {
+        let key = self.resolve_input_stream_key(stream)?;
+        let mut runtime = self.runtime.borrow_mut();
+        let state = runtime.input_stream_values.get_mut(&key)?;
+        let start = state.position.min(state.bytes.len());
+        state.position = state.bytes.len();
+        Some(state.bytes[start..].to_vec())
+    }
+
     fn resolve_input_stream_key(&self, value: &DexValue) -> Option<String> {
         if dex_value_is_object_like(value) {
             let key = map_identity_key(value);

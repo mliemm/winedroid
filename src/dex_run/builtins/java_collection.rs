@@ -927,6 +927,39 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        if method.class_descriptor == "Ljava/util/Properties;"
+            && method.name == "<init>"
+            && method.proto.descriptor_is("()V")
+        {
+            // cite: libcore Properties.java#Properties
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.class_descriptor == "Ljava/util/Properties;"
+            && method.name == "load"
+            && method.proto.descriptor_is("(Ljava/io/InputStream;)V")
+        {
+            let invocation = invocation?;
+
+            return self.properties_load_from_stream(invocation);
+        }
+
+        if method.class_descriptor == "Ljava/util/Hashtable;"
+            && method.name == "<init>"
+            && method.proto.descriptor_is("()V")
+        {
+            // cite: libcore Hashtable.java#Hashtable
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.class_descriptor == "Ljava/util/Dictionary;"
+            && method.name == "<init>"
+            && method.proto.descriptor_is("()V")
+        {
+            // cite: libcore Dictionary.java#Dictionary
+            return Some(DexExecutionResult::Void);
+        }
+
         if is_supported_map_implementation_class(&method.class_descriptor)
             && method.name == "<init>"
             && method.proto.descriptor_is("(I)V")

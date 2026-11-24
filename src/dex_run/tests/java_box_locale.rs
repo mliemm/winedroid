@@ -907,3 +907,27 @@ fn builtin_locale_get_display_language_returns_bootstrap_language() {
         )))
     );
 }
+
+#[test]
+fn art_integer_int_value_on_null_receiver_throws_null_pointer_exception() {
+    // cite: art common_throws.cc#ThrowNullPointerExceptionForMethodAccess
+    // cite: art interpreter_common.h#DoInvoke
+    let program = DexProgram::new(Vec::new());
+
+    for class_descriptor in ["Ljava/lang/Integer;", "Ljava/lang/Number;"] {
+        let int_value = builtin_method(class_descriptor, "intValue", "I", &[]);
+
+        let exception = thrown_exception(
+            program.invoke_builtin_method(&int_value, Some(&test_invocation(vec![DexValue::Null]))),
+        );
+
+        assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
+        assert_eq!(
+            program.invoke_builtin_method(
+                &int_value,
+                Some(&test_invocation(vec![DexValue::Int(0)]))
+            ),
+            Some(DexExecutionResult::Int(0))
+        );
+    }
+}

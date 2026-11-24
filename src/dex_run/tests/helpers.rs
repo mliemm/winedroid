@@ -1141,3 +1141,40 @@ pub(super) fn minimal_annotated_class_dex() -> Vec<u8> {
 
     data
 }
+
+pub(super) fn thrown_exception(result: Option<DexExecutionResult>) -> DexValue {
+    let Some(DexExecutionResult::Throw(exception)) = result else {
+        panic!("expected a thrown exception, got {result:?}");
+    };
+
+    exception
+}
+
+pub(super) fn thrown_detail_message(program: &DexProgram, exception: &DexValue) -> Option<String> {
+    let field = DexFieldId {
+        class_descriptor: "Ljava/lang/Throwable;".to_owned(),
+        type_descriptor: "Ljava/lang/String;".to_owned(),
+        name: "detailMessage".to_owned(),
+    };
+    match program.read_stored_instance_field(exception, &field) {
+        Some(DexValue::String(message)) => Some(message.to_string()),
+        _ => None,
+    }
+}
+
+pub(super) fn builtin_method(
+    class_descriptor: &str,
+    name: &str,
+    return_type: &str,
+    parameters: &[&str],
+) -> DexMethodId {
+    DexMethodId {
+        class_descriptor: class_descriptor.to_owned(),
+        name: name.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: String::new(),
+            return_type: return_type.to_owned(),
+            parameters: parameters.iter().map(|value| (*value).to_owned()).collect(),
+        },
+    }
+}
