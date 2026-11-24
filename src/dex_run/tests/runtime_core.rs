@@ -3269,15 +3269,14 @@ fn art_new_instance_of_nested_class_without_class_def_throws_no_class_def_found_
 
 // cite: art class_linker.cc#DoResolveType
 #[test]
-fn art_new_instance_allocates_defined_and_framework_classes() {
+fn art_new_instance_allocates_resolvable_classes_and_throws_for_unresolved_ones() {
     let (_, defined) = run_new_instance_of_type("Lcom/example/Outer;", "Lcom/example/Outer$2;", 0);
     let (_, framework) = run_new_instance_of_type("Lcom/example/Outer;", "Landroid/os/Handler;", 1);
-    let (_, unknown_outer) =
-        run_new_instance_of_type("Lcom/example/Outer;", "Lcom/example/Other$1;", 1);
+    let (_, unknown) = run_new_instance_of_type("Lcom/example/Outer;", "Lcom/example/Other;", 1);
 
     assert!(matches!(defined, DexExecutionResult::Value(DexValue::Object(_))));
     assert!(matches!(framework, DexExecutionResult::Value(DexValue::Object(_))));
-    assert!(matches!(unknown_outer, DexExecutionResult::Value(DexValue::Object(_))));
+    assert!(matches!(unknown, DexExecutionResult::Throw(_)));
 }
 
 // cite: libcore ClassLoader.java#loadClass

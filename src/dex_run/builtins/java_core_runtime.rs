@@ -3445,6 +3445,7 @@ fn thread_started_field() -> DexFieldId {
     }
 }
 
+// cite: libcore Thread.java#getState
 fn thread_terminated_field() -> DexFieldId {
     DexFieldId {
         class_descriptor: "Ljava/lang/Thread;".to_owned(),

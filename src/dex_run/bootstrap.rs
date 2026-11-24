@@ -202,6 +202,7 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         "Ljava/io/Writer;" => Some("Ljava/lang/Object;"),
         "Ljava/lang/Throwable;" => Some("Ljava/lang/Object;"),
         "Ljava/lang/Exception;" => Some("Ljava/lang/Throwable;"),
+        // cite: libcore Error.java#Error
         "Ljava/lang/Error;" => Some("Ljava/lang/Throwable;"),
         // cite: libcore LinkageError.java#LinkageError
         "Ljava/lang/LinkageError;" => Some("Ljava/lang/Error;"),

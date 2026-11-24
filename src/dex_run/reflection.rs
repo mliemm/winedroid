@@ -242,15 +242,10 @@ impl DexProgram {
     }
 
     pub(in crate::dex_run) fn class_resolvable_for_new_instance(&self, descriptor: &str) -> bool {
-        // cite: art class_linker.cc#DoResolveType
-        if self.load_class(descriptor).is_some() || is_bootstrap_class_descriptor(descriptor) {
-            return true;
-        }
-        let Some(outer) = outer_class_descriptor(descriptor) else {
-            return true;
-        };
-
-        self.load_class(&outer).is_none()
+        // cite: art class_linker.cc#DoResolveType, FindClass
+        self.load_class(descriptor).is_some()
+            || is_bootstrap_class_descriptor(descriptor)
+            || is_boot_class_path_package_descriptor(descriptor)
     }
 
     fn class_descriptor_uses_bootstrap_loader(&self, descriptor: &str) -> Option<bool> {
@@ -2227,12 +2222,20 @@ pub(super) fn object_hash_code(invocation: &DexInvocation) -> Option<i32> {
     Some(stable_hash_i32(&map_identity_key(&invocation.arguments[0])))
 }
 
-fn outer_class_descriptor(descriptor: &str) -> Option<String> {
-    let simple_start = descriptor.rfind('/').map_or(1, |index| index + 1);
-    let dollar = descriptor[simple_start..].find('$')?;
-    if dollar == 0 {
-        return None;
-    }
-
-    Some(format!("{};", &descriptor[..simple_start + dollar]))
+fn is_boot_class_path_package_descriptor(descriptor: &str) -> bool {
+    // cite: art class_linker.cc#FindClass
+    [
+        "Ljava/",
+        "Ljavax/",
+        "Landroid/",
+        "Ldalvik/",
+        "Llibcore/",
+        "Lsun/",
+        "Lorg/json/",
+        "Lorg/xml/",
+        "Lorg/w3c/",
+        "Lcom/android/",
+    ]
+    .iter()
+    .any(|prefix| descriptor.starts_with(prefix))
 }
