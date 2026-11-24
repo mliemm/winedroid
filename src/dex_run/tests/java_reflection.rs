@@ -2434,5 +2434,10 @@ fn art_class_get_declared_field_follows_own_fields_and_throws_no_such_field() {
         Some(name("name == null"))
     );
 
-    assert_eq!(declared("android.app.ContextImpl", name("mBase")), None);
+    let Some(DexExecutionResult::Throw(exception)) =
+        declared("android.app.ContextImpl", name("mBase"))
+    else {
+        panic!("ContextImpl has no mBase field and should throw NoSuchFieldException");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/lang/NoSuchFieldException;"));
 }
