@@ -24,6 +24,22 @@ const ENV_CALLS: [&str; 11] = [
     "ThrowNew",
 ];
 const VM_CALLS: [&str; 1] = ["GetEnv"];
+// cite: art jni_internal.cc#gJniNativeInterface
+const ART_ENV_SLOTS: [(&str, u64); 11] = [
+    ("CallIntMethod", 49),
+    ("CallStaticVoidMethod", 141),
+    ("FindClass", 6),
+    ("GetArrayLength", 171),
+    ("GetMethodID", 33),
+    ("GetStaticMethodID", 113),
+    ("GetStringUTFChars", 169),
+    ("NewStringUTF", 167),
+    ("RegisterNatives", 215),
+    ("ReleaseStringUTFChars", 170),
+    ("ThrowNew", 14),
+];
+// cite: art java_vm_ext.cc#gJniInvokeInterface
+const ART_VM_SLOTS: [(&str, u64); 1] = [("GetEnv", 6)];
 const SLOT_SIZE: u64 = 8;
 const PLT_BASE_REGISTER: u32 = 16;
 const LOOKBACK_WORDS: usize = 6;
@@ -97,4 +113,25 @@ fn llvm_mc_aarch64_encodings_scanner_reports_the_slot_of_a_load_followed_by_blr_
     let binary: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
 
     assert_eq!(called_table_offsets(&binary), BTreeSet::from([14 * SLOT_SIZE]));
+}
+
+fn header_index(header: &str, struct_name: &str, name: &str) -> u64 {
+    header_slots(header, struct_name).iter().position(|slot| slot.name == name).unwrap() as u64
+}
+
+#[test]
+fn art_jni_internal_cc_gjninativeinterface_called_slots_sit_at_the_art_indices_in_header_and_binary() {
+    let header = read_header();
+    for (name, index) in ART_ENV_SLOTS {
+        assert_eq!(header_index(&header, "JNINativeInterface", name), index, "{name} header slot");
+    }
+    for (name, index) in ART_VM_SLOTS {
+        assert_eq!(header_index(&header, "JNIInvokeInterface", name), index, "{name} header slot");
+    }
+    let expected: BTreeSet<u64> = ART_ENV_SLOTS.iter().chain(&ART_VM_SLOTS).map(|(_, index)| index * SLOT_SIZE).collect();
+    for directory in VARIANT_DIRECTORIES {
+        let binary = fs::read(manifest_path("tests/native_fixtures/bin").join(directory).join("libfx_jni.so")).unwrap();
+
+        assert_eq!(called_table_offsets(&binary), expected, "{directory} JNI table offsets called");
+    }
 }
