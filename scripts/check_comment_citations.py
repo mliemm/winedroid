@@ -23,6 +23,8 @@ ALLOWED_REPOSITORIES = (
 )
 
 C_LIKE_LANGUAGES = {
+    ".c": "c",
+    ".h": "c",
     ".java": "java",
     ".rs": "rust",
 }
@@ -30,6 +32,7 @@ C_LIKE_LANGUAGES = {
 BINARY_SUFFIXES = {
     ".dex",
     ".png",
+    ".so",
     ".ttf",
 }
 

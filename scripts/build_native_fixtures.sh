@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+REF_ROOT="${ANDROID_REF_ROOT:-$HOME/Dev/android-ref}"
+FIXTURES="$REPO_ROOT/tests/native_fixtures"
+BIONIC="$REF_ROOT/bionic/libc"
+CLANG="${CLANG:-clang}"
+TARGET="aarch64-linux-android29"
+
+find_lld() {
+    if [ -n "${LD_LLD:-}" ]; then
+        printf '%s\n' "$LD_LLD"
+        return
+    fi
+    if command -v ld.lld >/dev/null 2>&1; then
+        command -v ld.lld
+        return
+    fi
+    local sysroot
+    sysroot="$(rustc --print sysroot)"
+    local candidate
+    for candidate in "$sysroot"/lib/rustlib/*/bin/gcc-ld/ld.lld; do
+        if [ -x "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return
+        fi
+    done
+    echo "ld.lld not found: set LD_LLD" >&2
+    exit 1
+}
+
+LLD="$(find_lld)"
+RESOURCE_INCLUDE="$("$CLANG" -print-resource-dir)/include"
+
+COMPILE_FLAGS=(
+    "--target=$TARGET"
+    -ffreestanding -nostdinc -fPIC -O1 -fno-builtin
+    -fstack-protector-strong -fno-emulated-tls
+    -fasynchronous-unwind-tables -fno-ident
+    -I "$FIXTURES/include"
+    -isystem "$RESOURCE_INCLUDE"
+    -isystem "$BIONIC/include"
+    -isystem "$BIONIC/kernel/uapi"
+    -isystem "$BIONIC/kernel/uapi/asm-arm64"
+    -isystem "$BIONIC/kernel/android/uapi"
+)
+
+link_flags() {
+    printf '%s\n' --eh-frame-hdr -shared -z noexecstack -z relro -z now \
+        --hash-style=gnu --build-id=none --as-needed -z "max-page-size=$1"
+}
+
+make_stub() {
+    local soname="$1" out_dir="$2"
+    shift 2
+    local source="$out_dir/${soname%.so}.c"
+    : >"$source"
+    local name
+    for name in "$@"; do
+        printf 'void %s(void) {}\n' "$name" >>"$source"
+    done
+    "$CLANG" "--target=$TARGET" -ffreestanding -nostdinc -fPIC -O1 -c "$source" -o "$source.o"
+    "$LLD" -shared --build-id=none -soname "$soname" -o "$out_dir/$soname" "$source.o"
+}
+
+compile() {
+    local name="$1" work="$2"
+    shift 2
+    "$CLANG" "${COMPILE_FLAGS[@]}" "$@" -c "$FIXTURES/src/$name.c" -o "$work/$name.o"
+}
+
+link() {
+    local name="$1" page="$2" work="$3" out="$4"
+    shift 4
+    local flags=()
+    while IFS= read -r flag; do
+        flags+=("$flag")
+    done < <(link_flags "$page")
+    "$LLD" "${flags[@]}" -soname "lib$name.so" -L "$work/stubs" -L "$out" "$@" \
+        -o "$out/lib$name.so" "$work/$name.o"
+}
+
+build_variant() {
+    local page="$1" label="$2"
+    local out="$FIXTURES/bin/$label"
+    local work
+    work="$(mktemp -d)"
+    mkdir -p "$out" "$work/stubs"
+    rm -f "$out"/*.so
+
+    make_stub libc.so "$work/stubs" strlen memcpy malloc free snprintf \
+        pthread_mutex_lock pthread_mutex_unlock __cxa_atexit __stack_chk_fail __tls_get_addr
+    make_stub libdl.so "$work/stubs" dlopen dlsym dlclose dlerror
+    make_stub liblog.so "$work/stubs" __android_log_print
+
+    compile fx_add "$work"
+    link fx_add "$page" "$work" "$out"
+
+    compile fx_reloc "$work"
+    link fx_reloc "$page" "$work" "$out" -lc -llog
+
+    compile fx_dep "$work"
+    link fx_dep "$page" "$work" "$out" -lfx_add -ldl
+
+    compile fx_jni "$work"
+    link fx_jni "$page" "$work" "$out" -lc
+
+    rm -rf "$work"
+}
+
+build_variant 16384 16k
+build_variant 4096 4k

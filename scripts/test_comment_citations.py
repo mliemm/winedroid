@@ -320,6 +320,24 @@ def test_unknown_file_type(work: Path, reference: Path) -> None:
     )
 
 
+def test_c_sources_and_shared_objects(work: Path, reference: Path) -> None:
+    write(
+        work / "src" / "clean.c",
+        '// cite: frameworks-base Framework.java#method\nconst char *url = "http://example.com";\nchar quote = \'"\';\n',
+    )
+    write(work / "src" / "clean.h", "#pragma once\n")
+    (work / "src" / "libfixture.so").write_bytes(b"\x7fELF// binary")
+    violations, _ = checker.scan_paths([work / "src"], reference)
+    require(not violations, f"clean C inputs failed: {reasons(violations)}")
+    write(work / "src" / "bad.c", "/* block */\nint value; // narration\n")
+    violations, _ = checker.scan_paths([work / "src"], reference)
+    require(
+        reasons(violations).count("block comments are not allowed") == 1
+        and "comments must be standalone citation lines" in reasons(violations),
+        "C comment violations were not reported",
+    )
+
+
 def test_failure_guidance() -> None:
     violation = checker.Violation(Path("src/example.rs"), 3, 1, "bad comment", "// bad")
     output = io.StringIO()
@@ -350,6 +368,7 @@ def main() -> None:
         test_css_block_comments_and_strings(root / "css", reference)
         test_repository_file_selection_and_data_exemptions(root / "repository", reference)
         test_unknown_file_type(root / "unknown", reference)
+        test_c_sources_and_shared_objects(root / "c-sources", reference)
     test_failure_guidance()
     print("comment citation checker self-test passed")
 
