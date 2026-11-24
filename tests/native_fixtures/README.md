@@ -6,7 +6,8 @@ from the matching file in `src/`; nothing is hand edited.
 
 ## Provenance
 
-- Sources: `src/fx_add.c`, `src/fx_reloc.c`, `src/fx_dep.c`, `src/fx_jni.c`.
+- Sources: `src/fx_add.c`, `src/fx_reloc.c`, `src/fx_dep.c`, `src/fx_jni.c`,
+  `src/fx_order_child.c`, `src/fx_order_parent.c`.
 - Headers: Bionic from the android-ref checkout (`bionic/libc/include` and the
   kernel uapi directories) plus `include/jni.h`. No Android NDK is installed.
 - `include/jni.h` is written from ART's `JNINativeInterface` table in
@@ -73,3 +74,11 @@ checked in binaries byte for byte.
   natives that call `GetStringUTFChars`, `ReleaseStringUTFChars`,
   `NewStringUTF`, `FindClass`, `GetMethodID`, `GetStaticMethodID`,
   `CallIntMethod`, `CallStaticVoidMethod`, `GetArrayLength` and `ThrowNew`.
+- `libfx_order_child.so`: constructors and destructors with explicit priorities
+  101 and 102 that call the imported `__fx_record`, a read only literal pool
+  of `mrs tpidr_el0` and shadow stack words in an executable section without
+  an FDE (`fx_pool_words`), and a function containing `mov x18, x0`.
+- `libfx_order_parent.so`: `DT_NEEDED` on `libfx_order_child.so`, `DT_RUNPATH`
+  `$ORIGIN/dep`, priority 101 and 102 constructors and destructors, and a
+  constructor that calls `dlopen`, `dlsym` and `dlclose` while the loader
+  holds its lock.

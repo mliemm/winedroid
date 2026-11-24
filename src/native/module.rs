@@ -6,7 +6,7 @@ use super::elf_image::ElfImage;
 use super::image_map::MappedImage;
 use super::symbol_table::SymbolTable;
 use super::system_libraries::{system_library_path, SYSTEM_SONAMES};
-use super::tls_modules::TlsDescArg;
+use super::tls_modules::{self, TlsDescArg};
 
 pub const RTLD_NOW: i32 = 2;
 pub const RTLD_NOLOAD: i32 = 4;
@@ -57,7 +57,6 @@ impl Module {
 pub struct State {
     pub modules: BTreeMap<ModuleId, Module>,
     pub handles: HashMap<u64, ModuleId>,
-    pub retained: Vec<Module>,
     pub next_id: ModuleId,
     pub load_counter: u64,
     pub unload_counter: u64,
@@ -165,13 +164,12 @@ impl State {
     }
 
     pub fn remove_modules(&mut self, ids: &[ModuleId]) {
+        // cite: bionic linker.cpp#soinfo_unload_impl
         for id in ids {
             if let Some(module) = self.modules.remove(id) {
                 self.handles.remove(&module.handle);
-                if let Some(guest) = &module.guest {
-                    if guest.tls_module != 0 {
-                        self.retained.push(module);
-                    }
+                if let Some(guest) = module.guest.as_ref().filter(|guest| guest.tls_module != 0) {
+                    tls_modules::unregister(guest.tls_module);
                 }
             }
         }

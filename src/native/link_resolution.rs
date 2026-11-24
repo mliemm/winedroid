@@ -31,6 +31,7 @@ pub struct MissingDependency {
 pub struct LoadReport {
     pub missing_dependencies: Vec<MissingDependency>,
     pub unresolved_imports: BTreeSet<(String, String)>,
+    pub x18_writes: Vec<(String, usize)>,
 }
 
 pub fn lookup_in_module(state: &State, provider: &dyn SystemLibraryProvider, id: ModuleId, name: &str) -> Result<Option<Resolved>> {
@@ -86,5 +87,69 @@ impl SymbolResolution for LinkResolution<'_> {
             value: 0,
             tls_module: 0,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::native::loader_test_support::{host_function_address, unresolved_import_address, TestProvider};
+
+    const IMPORTER: &str = "/guest/libimporter.so";
+    const STB_GLOBAL: u8 = 1;
+
+    fn symbol(bind: u8, kind: u8) -> Sym {
+        Sym { name: 0, info: (bind << 4) | kind, shndx: 0, value: 0, size: 0 }
+    }
+
+    fn resolve(provider: &TestProvider, name: &str, sym: &Sym) -> (Option<Resolved>, LoadReport) {
+        let mut state = State::with_system_modules();
+        let importer = state.allocate(IMPORTER.to_string(), "libimporter.so".to_string(), 0, None, None);
+        let report = Mutex::new(LoadReport::default());
+        let group = [importer];
+        let resolution = LinkResolution { state: &state, provider, importer, group: &group, report: &report };
+        let resolved = resolution.resolve(name, sym).unwrap();
+        (resolved, report.into_inner().unwrap())
+    }
+
+    #[test]
+    fn bionic_lookup_symbol_failure_hands_an_unresolved_function_import_to_the_provider() {
+        let provider = TestProvider::new();
+        let (resolved, report) = resolve(&provider, "absent_function", &symbol(STB_GLOBAL, STT_FUNC));
+
+        let resolved = resolved.unwrap();
+        assert_eq!(resolved.address, unresolved_import_address());
+        assert_eq!(resolved.kind, STT_FUNC);
+        assert_eq!(*provider.unresolved_calls.lock().unwrap(), vec![(IMPORTER.to_string(), "absent_function".to_string(), ImportKind::Function)]);
+        assert!(report.unresolved_imports.contains(&(IMPORTER.to_string(), "absent_function".to_string())));
+    }
+
+    #[test]
+    fn bionic_lookup_symbol_failure_hands_an_unresolved_data_import_to_the_provider_as_data() {
+        let provider = TestProvider::new();
+        let (resolved, _) = resolve(&provider, "absent_object", &symbol(STB_GLOBAL, STT_OBJECT));
+
+        assert_eq!(resolved.unwrap().kind, STT_OBJECT);
+        assert_eq!(provider.unresolved_calls.lock().unwrap()[0].2, ImportKind::Data);
+    }
+
+    #[test]
+    fn bionic_process_relocation_general_leaves_an_unresolved_weak_import_null_without_asking_the_provider() {
+        let provider = TestProvider::new();
+        let (resolved, report) = resolve(&provider, "absent_weak", &symbol(STB_WEAK, STT_FUNC));
+
+        assert!(resolved.is_none());
+        assert!(provider.unresolved_calls.lock().unwrap().is_empty());
+        assert!(report.unresolved_imports.is_empty());
+    }
+
+    #[test]
+    fn bionic_global_group_serves_a_symbol_from_the_system_module_without_the_unresolved_path() {
+        let provider = TestProvider::new();
+        let (resolved, report) = resolve(&provider, "strlen", &symbol(STB_GLOBAL, STT_FUNC));
+
+        assert_eq!(resolved.unwrap().address, host_function_address("strlen"));
+        assert!(provider.unresolved_calls.lock().unwrap().is_empty());
+        assert!(report.unresolved_imports.is_empty());
     }
 }

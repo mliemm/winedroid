@@ -4,16 +4,37 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use super::dl_api::DlHandle;
+use crate::error::Result;
+
+use super::dl_api::{set_dl_error, DlHandle};
 use super::link_resolution::{ImportKind, SystemLibraryProvider};
 use super::loader::Loader;
 
 thread_local! {
     static CURRENT: RefCell<Option<Arc<Loader>>> = const { RefCell::new(None) };
+    static RECORDED: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
+    static ATEXIT: RefCell<Vec<(usize, usize, usize)>> = const { RefCell::new(Vec::new()) };
+}
+
+pub fn take_atexit() -> Vec<(usize, usize, usize)> {
+    ATEXIT.with(|registered| std::mem::take(&mut *registered.borrow_mut()))
+}
+
+extern "C" fn record_stub(value: i32) {
+    RECORDED.with(|recorded| recorded.borrow_mut().push(value));
+}
+
+pub fn take_recorded() -> Vec<i32> {
+    RECORDED.with(|recorded| std::mem::take(&mut *recorded.borrow_mut()))
+}
+
+pub fn dlopen_without_constructors(loader: &Loader, name: &str) -> Result<u64> {
+    let guard = loader.lock.lock();
+    let result = loader.find_libraries(&guard, name, 2).map(|root| guard.borrow().module(root).handle);
+    set_dl_error("dlopen failed: ", result)
 }
 
 pub static MUTEX_CALLS: AtomicUsize = AtomicUsize::new(0);
-pub static ATEXIT: Mutex<Vec<(usize, usize, usize)>> = Mutex::new(Vec::new());
 
 pub fn fixture_dir(variant: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/native_fixtures/bin").join(variant)
@@ -29,7 +50,7 @@ extern "C" fn mutex_stub(_mutex: *mut u8) -> i32 {
 }
 
 extern "C" fn atexit_stub(function: usize, argument: usize, dso: usize) -> i32 {
-    ATEXIT.lock().unwrap().push((function, argument, dso));
+    ATEXIT.with(|registered| registered.borrow_mut().push((function, argument, dso)));
     0
 }
 
@@ -78,6 +99,7 @@ impl SystemLibraryProvider for TestProvider {
             "pthread_mutex_lock" | "pthread_mutex_unlock" => mutex_stub as *const () as usize,
             "__cxa_atexit" => atexit_stub as *const () as usize,
             "__stack_chk_fail" => stack_chk_fail as *const () as usize,
+            "__fx_record" => record_stub as *const () as usize,
             "dlopen" => dlopen_shim as *const () as usize,
             "dlsym" => dlsym_shim as *const () as usize,
             "dlclose" => dlclose_shim as *const () as usize,

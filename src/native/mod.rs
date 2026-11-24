@@ -13,6 +13,8 @@ pub mod image_layout;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod image_map;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod init_fini;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod library_search;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod link_resolution;
@@ -30,6 +32,8 @@ pub mod symbol_table;
 pub mod system_libraries;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod text_patch;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod unload;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod tls_modules;
 #[cfg(test)]
@@ -56,5 +60,7 @@ mod loader_test_support;
 mod loader_tests;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
 mod loader_corpus_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod loader_link_tests;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
 mod image_tests;

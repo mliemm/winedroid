@@ -236,7 +236,7 @@ impl ElfImage {
     }
 
     pub fn eh_frame_hdr(&self) -> Option<&Phdr> {
-        self.phdrs.iter().find(|phdr| phdr.kind == PT_GNU_EH_FRAME)
+        self.phdrs.iter().find(|phdr| phdr.kind == PT_GNU_EH_FRAME && phdr.memsz != 0)
     }
 
     pub fn image_bounds(&self) -> (u64, u64) {

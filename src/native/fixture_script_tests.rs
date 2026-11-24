@@ -7,8 +7,8 @@ use std::sync::OnceLock;
 use super::fixture_header::manifest_path;
 
 const VARIANTS: [(&str, u32); 2] = [("16k", 16384), ("4k", 4096)];
-const LIBRARIES: [&str; 6] = ["fx_add", "fx_aps2", "fx_dep", "fx_jni", "fx_reloc", "fx_relr"];
-const SOURCES: [&str; 4] = ["fx_add", "fx_dep", "fx_jni", "fx_reloc"];
+const LIBRARIES: [&str; 8] = ["fx_add", "fx_aps2", "fx_dep", "fx_jni", "fx_order_child", "fx_order_parent", "fx_reloc", "fx_relr"];
+const SOURCES: [&str; 6] = ["fx_add", "fx_dep", "fx_jni", "fx_order_child", "fx_order_parent", "fx_reloc"];
 const FAKE_CLANG: &str = r#"#!/bin/sh
 printf 'clang %s\n' "$*" >>"$FAKE_LOG"
 case "$1" in
@@ -155,6 +155,9 @@ fn fixture_build_script_links_the_dependency_fixtures_against_their_imports() {
         assert!(find("fx_dep").split(' ').any(|word| word == "-ldl"));
         assert!(find("fx_reloc").split(' ').any(|word| word == "-llog"));
         assert!(find("fx_add").split(' ').all(|word| word != "-lc"));
+        assert!(find("fx_order_parent").split(' ').any(|word| word == "-lfx_order_child"));
+        assert!(find("fx_order_parent").contains("-rpath $ORIGIN/dep"));
+        assert!(find("fx_order_child").split(' ').all(|word| word != "-rpath"));
     }
 }
 

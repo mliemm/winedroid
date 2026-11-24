@@ -11,11 +11,16 @@ const REGISTER_MASK: u32 = 0xFFFF_FFE0;
 const SHADOW_STACK_PUSH: u32 = 0xF800_865E;
 const SHADOW_STACK_POP: u32 = 0xF85F_8E5E;
 const NOP: u32 = 0xD503_201F;
+const MOV_X18_REGISTER: u32 = 0xAA00_03F2;
+const MOV_X18_REGISTER_MASK: u32 = 0xFFE0_FFFF;
+const MOVZ_X18: u32 = 0xD280_0012;
+const MOVZ_X18_MASK: u32 = 0xFF80_001F;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PatchCounts {
     pub thread_pointer_reads: usize,
     pub shadow_stack_ops: usize,
+    pub x18_writes: usize,
 }
 
 pub struct TextPatcher;
@@ -33,6 +38,9 @@ pub fn patch_words(code: &mut [u8]) -> Result<PatchCounts> {
             counts.shadow_stack_ops += 1;
             NOP
         } else {
+            if word & MOV_X18_REGISTER_MASK == MOV_X18_REGISTER || word & MOVZ_X18_MASK == MOVZ_X18 {
+                counts.x18_writes += 1;
+            }
             continue;
         };
         chunk.copy_from_slice(&replacement.to_le_bytes());
@@ -133,8 +141,9 @@ fn function_ranges(image: &MappedImage, elf: &ElfImage) -> Result<Option<Vec<(u6
 }
 
 impl ImagePatcher for TextPatcher {
-    fn patch(&self, image: &MappedImage, elf: &ElfImage) -> Result<()> {
-            let functions = function_ranges(image, elf)?;
+    fn patch(&self, image: &MappedImage, elf: &ElfImage) -> Result<PatchCounts> {
+        let functions = function_ranges(image, elf)?;
+        let mut total = PatchCounts::default();
         for load in elf.loads().filter(|load| load.flags & PF_X != 0) {
             let segment = (load.vaddr, load.vaddr + load.filesz);
             let spans: Vec<(u64, u64)> = match &functions {
@@ -142,10 +151,13 @@ impl ImagePatcher for TextPatcher {
                 None => vec![segment],
             };
             for (start, end) in spans {
-                patch_words(image.bytes_mut(start, (end - start) & !3)?)?;
+                let counts = patch_words(image.bytes_mut(start, (end - start) & !3)?)?;
+                total.thread_pointer_reads += counts.thread_pointer_reads;
+                total.shadow_stack_ops += counts.shadow_stack_ops;
+                total.x18_writes += counts.x18_writes;
             }
         }
-        Ok(())
+        Ok(total)
     }
 }
 
@@ -180,5 +192,36 @@ mod tests {
         let error = patch_words(&mut words(&[0xD51BD041])).unwrap_err().to_string();
 
         assert!(error.contains("next missing primitive: msr tpidr_el0"));
+    }
+
+    #[test]
+    fn aarch64_mov_into_x18_is_counted_and_left_in_place() {
+        let mut code = words(&[0xAA0003F2, 0xAA0103F2, 0xD2800012, 0xAA0003F3, 0xD2800013]);
+        let before = code.clone();
+        let counts = patch_words(&mut code).unwrap();
+
+        assert_eq!(counts.x18_writes, 3);
+        assert_eq!(code, before);
+    }
+
+    #[test]
+    fn bionic_eh_frame_hdr_function_ranges_exclude_the_literal_pool_of_the_order_fixture() {
+        use crate::native::fixture_elf::FixtureElf;
+        use crate::native::loader_test_support::fixture_dir;
+
+        for variant in ["16k", "4k"] {
+            let path = fixture_dir(variant).join("libfx_order_child.so");
+            let data = std::fs::read(&path).unwrap();
+            let elf = ElfImage::parse("libfx_order_child.so", &data).unwrap();
+            let image = MappedImage::map("libfx_order_child.so", &data, &elf).unwrap();
+            let ranges = function_ranges(&image, &elf).unwrap().expect("fixture has PT_GNU_EH_FRAME");
+            let exports = FixtureElf::parse(&data).export_addresses;
+            let covered = |name: &str| ranges.iter().any(|(start, end)| exports[name] >= *start && exports[name] < *end);
+
+            assert!(ranges.iter().all(|(start, end)| start < end), "{variant}");
+            assert!(covered("fx_pool_word"), "{variant}");
+            assert!(covered("fx_write_x18"), "{variant}");
+            assert!(!covered("fx_pool_words"), "{variant} literal pool must not be inside an FDE");
+        }
     }
 }

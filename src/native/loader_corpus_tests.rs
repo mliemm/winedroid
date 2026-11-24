@@ -5,7 +5,7 @@ use std::time::Instant;
 use super::dl_api::DlHandle;
 use super::elf_image::is_arm64_elf;
 use super::loader::Loader;
-use super::loader_test_support::{corpus_dir, TestProvider};
+use super::loader_test_support::{corpus_dir, dlopen_without_constructors, TestProvider};
 use super::reloc_stream::{decode_aps2, decode_rela};
 use super::symbol_table::gnu_hash;
 
@@ -141,7 +141,7 @@ fn measured_tiktok_single_hash_libraries_resolve_exports() {
 fn measured_libkeva_closure_loads_with_libc_plus_plus_shared_and_relocates_every_import() {
     let Some(_) = corpus_libraries() else { return };
     let loader = new_loader();
-    let handle = loader.dlopen_without_constructors("libkeva.so").unwrap();
+    let handle = dlopen_without_constructors(&loader, "libkeva.so").unwrap();
     let info = loader.module_info(handle).unwrap();
 
     assert!(info.children.contains(&"libc++_shared.so".to_string()));
@@ -161,7 +161,7 @@ fn measured_tiktok_every_library_maps_and_relocates_and_absent_dependencies_are_
     for path in paths.iter().filter(|path| is_elf(path)) {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         let loader = new_loader();
-        match loader.dlopen_without_constructors(&name) {
+        match dlopen_without_constructors(&loader, &name) {
             Ok(_) => loaded += 1,
             Err(error) => assert!(error.to_string().contains("PIE executable"), "{name}: {error}"),
         }
@@ -181,12 +181,12 @@ fn measured_tiktok_every_library_maps_and_relocates_and_absent_dependencies_are_
 fn bionic_find_loaded_library_by_soname_satisfies_dt_needed_from_a_plugin_file() {
     let Some(_) = corpus_libraries() else { return };
     let direct = new_loader();
-    direct.dlopen_without_constructors("libEffectCreatorJni.so").unwrap();
+    dlopen_without_constructors(&direct, "libEffectCreatorJni.so").unwrap();
     assert!(direct.report().missing_dependencies.iter().any(|dependency| dependency.library == "libeffect.so"));
 
     let preloaded = new_loader();
-    preloaded.dlopen_without_constructors("libeffect_plugin.so").unwrap();
-    preloaded.dlopen_without_constructors("libEffectCreatorJni.so").unwrap();
+    dlopen_without_constructors(&preloaded, "libeffect_plugin.so").unwrap();
+    dlopen_without_constructors(&preloaded, "libEffectCreatorJni.so").unwrap();
     assert!(!preloaded.report().missing_dependencies.iter().any(|dependency| dependency.library == "libeffect.so"));
 }
 
@@ -201,7 +201,7 @@ fn glibc_documented_hash_values_match_gnu_and_sysv_hash_functions() {
 fn bionic_process_relocation_general_resolves_weak_undefined_imports_to_zero_without_a_stub() {
     let Some(_) = corpus_libraries() else { return };
     let loader = new_loader();
-    loader.dlopen_without_constructors("libc++_shared.so").unwrap();
+    dlopen_without_constructors(&loader, "libc++_shared.so").unwrap();
     let imports = loader.report().unresolved_imports;
 
     assert!(imports.iter().any(|(_, name)| name == "__sF"), "non weak imports are reported");

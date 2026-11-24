@@ -51,3 +51,65 @@ impl<T> Drop for RecursiveGuard<'_, T> {
 
 unsafe impl<T: Send> Sync for RecursiveLock<T> {}
 unsafe impl<T: Send> Send for RecursiveLock<T> {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    #[test]
+    fn bionic_g_dl_mutex_is_recursive_on_one_thread() {
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let lock = RecursiveLock::new(());
+            let outer = lock.lock();
+            let inner = lock.lock();
+            drop(inner);
+            drop(outer);
+            let _ = sender.send(());
+        });
+
+        assert!(receiver.recv_timeout(Duration::from_secs(10)).is_ok(), "nested lock on the same thread deadlocked");
+    }
+
+    #[test]
+    fn bionic_g_dl_mutex_excludes_other_threads_until_the_last_nested_guard_drops() {
+        let lock = Arc::new(RecursiveLock::new(()));
+        let entered = Arc::new(AtomicBool::new(false));
+        let (held, held_receiver) = mpsc::channel();
+        let (release_inner, inner_gate) = mpsc::channel::<()>();
+        let (release_outer, outer_gate) = mpsc::channel::<()>();
+        let holder = {
+            let lock = lock.clone();
+            thread::spawn(move || {
+                let outer = lock.lock();
+                let inner = lock.lock();
+                let _ = held.send(());
+                let _ = inner_gate.recv();
+                drop(inner);
+                let _ = outer_gate.recv();
+                drop(outer);
+            })
+        };
+        assert!(held_receiver.recv_timeout(Duration::from_secs(10)).is_ok(), "nested lock on the holder thread deadlocked");
+        let contender = {
+            let (lock, entered) = (lock.clone(), entered.clone());
+            thread::spawn(move || {
+                let _guard = lock.lock();
+                entered.store(true, Ordering::SeqCst);
+            })
+        };
+
+        thread::sleep(Duration::from_millis(100));
+        assert!(!entered.load(Ordering::SeqCst), "contender entered while both guards were held");
+        release_inner.send(()).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        assert!(!entered.load(Ordering::SeqCst), "contender entered while the outer guard was held");
+        release_outer.send(()).unwrap();
+        holder.join().unwrap();
+        contender.join().unwrap();
+        assert!(entered.load(Ordering::SeqCst));
+    }
+}

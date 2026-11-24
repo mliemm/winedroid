@@ -48,6 +48,8 @@ pub struct Segment {
 
 pub struct Relocation {
     pub kind: u32,
+    pub vaddr: u64,
+    pub file_offset: usize,
     pub symbol: Option<String>,
 }
 
@@ -149,6 +151,8 @@ fn read_relocations(data: &[u8], segments: &[Segment], symbols: &[Symbol], dynam
             let symbol_index = (info >> 32) as usize;
             relocations.push(Relocation {
                 kind: info as u32,
+                vaddr: u64_at(data, entry),
+                file_offset: entry,
                 symbol: (symbol_index != 0).then(|| symbols[symbol_index].name.clone()),
             });
         }

@@ -26,11 +26,13 @@ const VARIANTS: [Variant; 2] = [
     },
 ];
 
-const FIXTURES: [(&str, &[&str]); 4] = [
+const FIXTURES: [(&str, &[&str]); 6] = [
     ("libfx_add.so", &[]),
     ("libfx_reloc.so", &["libc.so", "liblog.so"]),
     ("libfx_dep.so", &["libfx_add.so", "libdl.so"]),
     ("libfx_jni.so", &["libc.so"]),
+    ("libfx_order_child.so", &["libc.so"]),
+    ("libfx_order_parent.so", &["libfx_order_child.so", "libc.so", "libdl.so"]),
 ];
 
 fn fixture_path(variant: &Variant, name: &str) -> PathBuf {

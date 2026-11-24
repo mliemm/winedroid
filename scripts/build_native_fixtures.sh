@@ -103,7 +103,7 @@ build_variant() {
     rm -f "$out"/*.so
 
     make_stub libc.so "$work/stubs" strlen memcpy malloc free snprintf \
-        pthread_mutex_lock pthread_mutex_unlock __cxa_atexit __stack_chk_fail __tls_get_addr
+        pthread_mutex_lock pthread_mutex_unlock __cxa_atexit __stack_chk_fail __tls_get_addr __fx_record
     make_stub libdl.so "$work/stubs" dlopen dlsym dlclose dlerror
     make_stub liblog.so "$work/stubs" __android_log_print
 
@@ -118,6 +118,12 @@ build_variant() {
 
     compile fx_dep "$work"
     link fx_dep "$page" "$work" "$out" -lfx_add -ldl
+
+    compile fx_order_child "$work"
+    link fx_order_child "$page" "$work" "$out" -lc
+
+    compile fx_order_parent "$work"
+    link fx_order_parent "$page" "$work" "$out" -lfx_order_child -lc -ldl -rpath '$ORIGIN/dep'
 
     compile fx_jni "$work"
     link fx_jni "$page" "$work" "$out" -lc

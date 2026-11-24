@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
 use super::dl_api::{dlerror, DlHandle};
-use super::loader_test_support::{fixture_dir, host_function_address, loader_for, ATEXIT, MUTEX_CALLS};
+use super::loader_test_support::{fixture_dir, host_function_address, loader_for, take_atexit, take_recorded, MUTEX_CALLS};
 
 const VARIANTS: [&str; 2] = ["16k", "4k"];
 const RELOCATING: [&str; 3] = ["libfx_reloc.so", "libfx_aps2.so", "libfx_relr.so"];
@@ -33,7 +33,7 @@ fn fixture_source_fx_reloc_variants_run_constructors_and_resolve_every_relocatio
     for variant in VARIANTS {
         for library in RELOCATING {
             let loader = loader_for(vec![fixture_dir(variant)]);
-            ATEXIT.lock().unwrap().clear();
+            take_atexit();
             let handle = loader.dlopen(Some(library), 2, None).unwrap();
             let label = format!("{variant}/{library}");
             let call_int = |name: &str| -> i32 {
@@ -62,7 +62,7 @@ fn fixture_source_fx_reloc_variants_run_constructors_and_resolve_every_relocatio
             assert_eq!(call_int("fx_lock_roundtrip"), 0);
             assert_eq!(MUTEX_CALLS.load(Ordering::SeqCst) - before, 2, "{label} mutex imports");
 
-            let registered = ATEXIT.lock().unwrap().clone();
+            let registered = take_atexit();
             assert_eq!(registered.len(), 1, "{label} __cxa_atexit registrations");
             assert_eq!(registered[0].1, exported_value, "{label} atexit argument");
             let handler: extern "C" fn(usize) = unsafe { std::mem::transmute(registered[0].0) };
@@ -86,18 +86,19 @@ fn fixture_source_fx_reloc_variants_run_constructors_and_resolve_every_relocatio
 #[test]
 fn bionic_soinfo_unload_runs_fini_array_when_the_last_reference_is_closed() {
     let loader = loader_for(vec![fixture_dir("16k")]);
-    let handle = loader.dlopen(Some("libfx_reloc.so"), 2, None).unwrap();
-    assert_eq!(loader.dlopen(Some("libfx_reloc.so"), 2, None).unwrap(), handle);
+    take_recorded();
+    let handle = loader.dlopen(Some("libfx_order_child.so"), 2, None).unwrap();
+    assert_eq!(loader.dlopen(Some("libfx_order_child.so"), 2, None).unwrap(), handle);
     assert_eq!(loader.module_info(handle).unwrap().ref_count, 2);
-    let marker = symbol(&loader, handle, "fx_fini_marker") as *const i32;
+    assert_eq!(take_recorded(), vec![1, 2], "constructors ran once");
     let count = loader.loaded_module_count();
 
     loader.dlclose(handle).unwrap();
-    assert_eq!(unsafe { *marker }, 0, "one reference left");
+    assert_eq!(take_recorded(), Vec::<i32>::new(), "one reference left");
     assert_eq!(loader.loaded_module_count(), count);
     loader.dlclose(handle).unwrap();
 
-    assert_eq!(unsafe { *marker }, 0xDEAD, "destructor ran");
+    assert_eq!(take_recorded(), vec![-2, -1], "destructors ran in reverse fini_array order");
     assert_eq!(loader.loaded_module_count(), count - 1);
     assert!(loader.dlclose(handle).is_err());
     assert!(dlerror().unwrap().starts_with("dlclose failed: invalid handle: 0x"));
@@ -269,18 +270,11 @@ fn bionic_process_relocation_general_rejects_ifunc_copy_tpoff_and_unknown_types(
     assert!(load_with_first_rela_type(999).contains("unknown reloc type 999"));
 }
 
-fn patched_loader(variant: &str) -> std::sync::Arc<super::loader::Loader> {
-    let loader = super::loader::Loader::new(vec![fixture_dir(variant)], Box::new(super::loader_test_support::TestProvider::new()))
-        .with_patcher(Box::new(super::text_patch::TextPatcher))
-        .with_strict(false);
-    std::sync::Arc::new(loader)
-}
-
 #[test]
 fn bionic_tlsdesc_resolver_gives_each_thread_its_own_copy_of_the_tls_template() {
     for variant in VARIANTS {
         for library in RELOCATING {
-            let loader = patched_loader(variant);
+            let loader = loader_for(vec![fixture_dir(variant)]);
             let handle = loader.dlopen(Some(library), 2, None).unwrap();
             let next: extern "C" fn() -> i32 = unsafe { std::mem::transmute(symbol(&loader, handle, "fx_tls_next")) };
             let label = format!("{variant}/{library}");

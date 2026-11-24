@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use super::elf_image::TlsSegment;
@@ -15,14 +16,17 @@ pub struct TlsDescArg {
 struct TlsModule {
     segment: TlsSegment,
     init_address: usize,
+    generation: u64,
 }
 
 static REGISTRY: Mutex<Vec<Option<TlsModule>>> = Mutex::new(Vec::new());
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+static EPOCH: AtomicU64 = AtomicU64::new(0);
 
 pub fn register(segment: TlsSegment, init_address: usize) -> u32 {
     // cite: bionic linker_tls.cpp#register_soinfo_tls
     let mut registry = REGISTRY.lock().expect("tls registry");
-    let module = Some(TlsModule { segment, init_address });
+    let module = Some(TlsModule { segment, init_address, generation: GENERATION.fetch_add(1, Ordering::SeqCst) + 1 });
     match registry.iter().position(Option::is_none) {
         Some(index) => {
             registry[index] = module;
@@ -37,13 +41,43 @@ pub fn register(segment: TlsSegment, init_address: usize) -> u32 {
 
 pub fn unregister(module_id: u32) {
     // cite: bionic linker_tls.cpp#unregister_soinfo_tls
-    if let Some(slot) = REGISTRY.lock().expect("tls registry").get_mut(module_id as usize - 1) {
+    let mut registry = REGISTRY.lock().expect("tls registry");
+    if let Some(slot) = registry.get_mut(module_id as usize - 1) {
         *slot = None;
     }
+    EPOCH.fetch_add(1, Ordering::SeqCst);
+}
+
+pub fn generation_of(module_id: u32) -> Option<u64> {
+    REGISTRY.lock().expect("tls registry").get(module_id as usize - 1).and_then(|slot| slot.as_ref().map(|module| module.generation))
 }
 
 struct Block {
     pointer: *mut u8,
+    generation: u64,
+}
+
+#[derive(Default)]
+struct Blocks {
+    epoch: u64,
+    entries: Vec<Option<Block>>,
+}
+
+impl Blocks {
+    fn drop_stale(&mut self) {
+        let epoch = EPOCH.load(Ordering::SeqCst);
+        if self.epoch == epoch {
+            return;
+        }
+        let registry = REGISTRY.lock().expect("tls registry");
+        for (index, slot) in self.entries.iter_mut().enumerate() {
+            let live = registry.get(index).and_then(|module| module.as_ref()).map(|module| module.generation);
+            if slot.as_ref().is_some_and(|block| Some(block.generation) != live) {
+                *slot = None;
+            }
+        }
+        self.epoch = epoch;
+    }
 }
 
 impl Drop for Block {
@@ -53,12 +87,16 @@ impl Drop for Block {
 }
 
 thread_local! {
-    static BLOCKS: RefCell<Vec<Option<Block>>> = const { RefCell::new(Vec::new()) };
+    static BLOCKS: RefCell<Blocks> = RefCell::new(Blocks::default());
 }
 
 pub fn existing_block_address(module_id: u32) -> Option<usize> {
     BLOCKS
-        .try_with(|blocks| blocks.borrow().get(module_id as usize - 1).and_then(|block| block.as_ref().map(|block| block.pointer as usize)))
+        .try_with(|blocks| {
+            let mut blocks = blocks.borrow_mut();
+            blocks.drop_stale();
+            blocks.entries.get(module_id as usize - 1).and_then(|block| block.as_ref().map(|block| block.pointer as usize))
+        })
         .ok()
         .flatten()
 }
@@ -86,10 +124,10 @@ pub fn block_address(module_id: u32) -> usize {
     }
     BLOCKS.with(|blocks| {
         let mut blocks = blocks.borrow_mut();
-        if blocks.len() < module_id as usize {
-            blocks.resize_with(module_id as usize, || None);
+        if blocks.entries.len() < module_id as usize {
+            blocks.entries.resize_with(module_id as usize, || None);
         }
-        blocks[module_id as usize - 1] = Some(Block { pointer: pointer as *mut u8 });
+        blocks.entries[module_id as usize - 1] = Some(Block { pointer: pointer as *mut u8, generation: module.generation });
     });
     pointer as usize
 }
@@ -213,5 +251,21 @@ mod tests {
 
         assert_eq!(register(segment, 0), first);
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn bionic_unregister_soinfo_tls_drops_the_blocks_other_modules_ids_would_reuse() {
+        static TEMPLATE: [u8; 4] = [7, 7, 7, 7];
+        let segment = TlsSegment { size: 4, alignment: 4, init_vaddr: 0, init_size: 4 };
+        let module = register(segment, TEMPLATE.as_ptr() as usize);
+        let block = block_address(module);
+        assert_eq!(unsafe { *(block as *const u8) }, 7);
+        assert_eq!(existing_block_address(module), Some(block));
+        let generation = generation_of(module).unwrap();
+
+        unregister(module);
+
+        assert_eq!(existing_block_address(module), None);
+        assert_ne!(generation_of(module), Some(generation));
     }
 }
