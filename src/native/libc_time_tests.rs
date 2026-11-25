@@ -22,20 +22,16 @@ fn use_zone<'a>(bridged: &'a Bridged, name: &str) -> Zone<'a> {
     let guard = TIME_ZONE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let text = CString::new(name).unwrap();
     bridged.call("fx_set_time_zone").ptr(text.as_ptr() as usize).invoke().unwrap();
-    unsafe {
-        libc::setenv(c"TZ".as_ptr(), text.as_ptr(), 1);
-        host_tzset();
-    }
+    std::env::set_var("TZ", name);
+    host_tzset();
     Zone { bridged, _guard: guard }
 }
 
 impl Drop for Zone<'_> {
     fn drop(&mut self) {
         self.bridged.call("fx_set_time_zone").ptr(0).invoke().unwrap();
-        unsafe {
-            libc::unsetenv(c"TZ".as_ptr());
-            host_tzset();
-        }
+        std::env::remove_var("TZ");
+        host_tzset();
     }
 }
 

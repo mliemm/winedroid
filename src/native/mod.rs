@@ -53,6 +53,8 @@ pub mod call_assign;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod guest_regs;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod fork_gate;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod futex;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod futex_syscall;
@@ -130,6 +132,10 @@ mod bridge_va_tests;
 mod guest_thread_tests;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
 mod guest_call_tests;
+#[cfg(test)]
+mod test_deadline;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod fork_gate_tests;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
 mod signal_tests;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]

@@ -41,33 +41,35 @@ pub fn unlock(lock: usize) {
 mod tests {
     use std::sync::Arc;
 
+    use crate::native::test_deadline::bounded_test;
     use super::*;
 
-    #[test]
-    fn the_lock_serialises_increments_from_several_threads() {
-        // cite: bionic bionic_lock.h#Lock
-        let words = Arc::new(([0u64; 2], std::cell::UnsafeCell::new(0u64)));
-        struct Shared(Arc<([u64; 2], std::cell::UnsafeCell<u64>)>);
-        unsafe impl Send for Shared {}
-        let handles: Vec<_> = (0..4)
-            .map(|_| {
-                let shared = Shared(words.clone());
-                std::thread::spawn(move || {
-                    let shared = shared;
-                    let address = shared.0 .0.as_ptr() as usize;
-                    for _ in 0..2000 {
-                        lock(address);
-                        unsafe { *shared.0 .1.get() += 1 };
-                        unlock(address);
-                    }
+    bounded_test! {
+        fn the_lock_serialises_increments_from_several_threads() {
+            // cite: bionic bionic_lock.h#Lock
+            let words = Arc::new(([0u64; 2], std::cell::UnsafeCell::new(0u64)));
+            struct Shared(Arc<([u64; 2], std::cell::UnsafeCell<u64>)>);
+            unsafe impl Send for Shared {}
+            let handles: Vec<_> = (0..4)
+                .map(|_| {
+                    let shared = Shared(words.clone());
+                    std::thread::spawn(move || {
+                        let shared = shared;
+                        let address = shared.0 .0.as_ptr() as usize;
+                        for _ in 0..2000 {
+                            lock(address);
+                            unsafe { *shared.0 .1.get() += 1 };
+                            unlock(address);
+                        }
+                    })
                 })
-            })
-            .collect();
-        for handle in handles {
-            handle.join().unwrap();
+                .collect();
+            for handle in handles {
+                handle.join().unwrap();
+            }
+            assert_eq!(unsafe { *words.1.get() }, 8000);
+            assert!(try_lock(words.0.as_ptr() as usize));
+            assert!(!try_lock(words.0.as_ptr() as usize));
         }
-        assert_eq!(unsafe { *words.1.get() }, 8000);
-        assert!(try_lock(words.0.as_ptr() as usize));
-        assert!(!try_lock(words.0.as_ptr() as usize));
     }
 }

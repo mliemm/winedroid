@@ -18,6 +18,8 @@ const ESRCH: i32 = 3;
 const EPERM: i32 = 1;
 const ENOMEM: i32 = 12;
 const ENOSYS: i32 = 38;
+const EFAULT: i32 = 14;
+const EINTR: i32 = 4;
 const MIN_ALTERNATE_STACK: u64 = 5120;
 const SIG_BLOCK: i32 = 0;
 const SIG_UNBLOCK: i32 = 1;
@@ -87,6 +89,19 @@ fn process_mask(how: i32, new: Option<u64>, old: Option<usize>) -> Result<(), i3
     set_mask(result);
     signal_router::apply_darwin_mask(signal_state::mask());
     Ok(())
+}
+
+fn suspend(temporary: u64) {
+    // cite: bionic signal.cpp#sigsuspend64
+    let previous = signal_state::mask();
+    set_mask(temporary);
+    let host: libc::sigset_t = to_darwin_mask(signal_state::mask());
+    while signal_state::pending() & !signal_state::mask() == 0 {
+        unsafe { libc::sigsuspend(&host) };
+    }
+    signal_router::deliver_pending();
+    set_mask(previous);
+    signal_router::apply_darwin_mask(signal_state::mask());
 }
 
 fn tid_to_record(tid: i32) -> Option<usize> {
@@ -271,6 +286,17 @@ fn register_masks() {
             unsafe { libc::sigpending(&mut host) };
             write_value::<u64>(context.arg_ptr(0), to_linux_mask(host) | (signal_state::pending() & signal_state::mask()));
             context.ret_i32(0);
+        });
+    }
+    for name in ["sigsuspend", "sigsuspend64"] {
+        in_libc(name, |context| {
+            // cite: bionic signal.cpp#sigsuspend64
+            let set = context.arg_ptr(0);
+            if set == 0 {
+                return fail(context, EFAULT);
+            }
+            suspend(filter_reserved(read_value(set), SIG_SETMASK));
+            fail(context, EINTR);
         });
     }
     in_libc("sigwait", |context| {

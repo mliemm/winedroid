@@ -1,11 +1,13 @@
+use std::any::Any;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use crate::error::{Result, WinedroidError};
 
 use super::data_fault::ensure_alternate_stack;
 use super::bionic::pthread_key;
+use super::fork_gate;
 use super::host_log;
 use super::pthread_internal::{PthreadInternal, ATTR_FLAG_DETACHED, ATTR_FLAG_INHERIT, JOIN_DETACHED};
 use super::thread_exit;
@@ -26,14 +28,25 @@ static NEXT_TID: AtomicI32 = AtomicI32::new(0);
 extern "C" fn free_record(record: *mut libc::c_void) {
     let address = record as usize;
     if thread_exit::has_pending_guest_storage(address) {
-        host_log::line("FIXME: guest thread storage destructors skipped for a host created thread; next missing primitive: guest thread exit for host created threads");
+        if let Err(message) = thread_exit::run_guest_storage(address, 0) {
+            host_log::line(&format!("FIXME: guest thread storage destructor failed on a host created thread: {message}; next missing primitive: guest destructor failure"));
+        }
     }
+    thread_exit::clear_child_tid(address);
     set_slot(SLOT_THREAD_ID, 0);
-    let mut registry = REGISTRY.lock().expect("guest thread registry");
+    let mut registry = registry();
     release(&mut registry, address);
     drop(registry);
     thread_list::forget(address);
     free_memory(address);
+}
+
+fn registry() -> MutexGuard<'static, Registry> {
+    REGISTRY.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+pub(super) fn hold_for_fork(held: &mut Vec<Box<dyn Any>>) {
+    held.push(Box::new(registry()));
 }
 
 pub(super) fn free_memory(address: usize) {
@@ -45,23 +58,23 @@ pub(super) fn free_memory(address: usize) {
 }
 
 pub(super) fn unregister(address: usize) {
-    release(&mut REGISTRY.lock().expect("guest thread registry"), address);
+    release(&mut registry(), address);
 }
 
 pub(super) fn register_created(address: usize, tid: i32) {
-    REGISTRY.lock().expect("guest thread registry").records.insert(address, tid);
+    registry().records.insert(address, tid);
 }
 
 pub fn is_live_address(address: usize) -> bool {
-    REGISTRY.lock().expect("guest thread registry").records.contains_key(&address)
+    registry().records.contains_key(&address)
 }
 
 pub fn tid_of(address: usize) -> Option<i32> {
-    REGISTRY.lock().expect("guest thread registry").records.get(&address).copied()
+    registry().records.get(&address).copied()
 }
 
 pub fn live_records() -> Vec<(usize, i32)> {
-    REGISTRY.lock().expect("guest thread registry").records.iter().map(|(address, tid)| (*address, *tid)).collect()
+    registry().records.iter().map(|(address, tid)| (*address, *tid)).collect()
 }
 
 pub fn detach_current() -> Result<()> {
@@ -111,7 +124,7 @@ pub fn current_record() -> Option<*mut PthreadInternal> {
 }
 
 pub fn is_record_live(address: usize, tid: i32) -> bool {
-    REGISTRY.lock().expect("guest thread registry").records.get(&address) == Some(&tid)
+    registry().records.get(&address) == Some(&tid)
 }
 
 pub(super) fn next_tid() -> i32 {
@@ -161,12 +174,12 @@ pub fn attach_current() -> Result<*mut PthreadInternal> {
     if let Some(record) = current_record() {
         return Ok(record);
     }
+    fork_gate::install();
     let record = unsafe { std::alloc::alloc_zeroed(record_layout()) } as *mut PthreadInternal;
     assert!(!record.is_null(), "thread record allocation failed");
     let pid = unsafe { libc::getpid() };
     let address = record as usize;
-    let mut registry = REGISTRY.lock().expect("guest thread registry");
-    let primary = claim_primary(&mut registry, address);
+    let primary = claim_primary(&mut registry(), address);
     let tid = if primary { pid } else { next_tid() };
     unsafe {
         (*record).tid = tid;
@@ -177,7 +190,7 @@ pub fn attach_current() -> Result<*mut PthreadInternal> {
     }
     install_slots(record, None);
     thread_list::remember(address, unsafe { libc::pthread_self() }, false);
-    registry.records.insert(address, tid);
+    registry().records.insert(address, tid);
     Ok(record)
 }
 
@@ -187,7 +200,7 @@ pub(super) fn install_created(record: *mut PthreadInternal) {
 
 pub fn set_primary() -> Result<()> {
     let record = attach_current()? as usize;
-    let registry = REGISTRY.lock().expect("guest thread registry");
+    let registry = registry();
     match registry.primary {
         Some(primary) if primary == record => Ok(()),
         _ => Err(WinedroidError::new("another thread is the primary guest thread; next missing primitive: reassigning the primary guest thread")),
@@ -195,7 +208,7 @@ pub fn set_primary() -> Result<()> {
 }
 
 pub fn is_primary(record: *mut PthreadInternal) -> bool {
-    REGISTRY.lock().expect("guest thread registry").primary == Some(record as usize)
+    registry().primary == Some(record as usize)
 }
 
 pub fn art_thread_slot_is_null() -> bool {

@@ -174,10 +174,12 @@ fn upstream_openbsd_setenv_rules_for_overwrite_invalid_names_and_unsetenv() {
 #[test]
 fn upstream_openbsd_putenv_stores_the_callers_pointer_itself() {
     let bridged = libc_fixture();
-    let mut entry = *b"FX_PUT_VARIABLE=value\0";
+    let entry: &'static mut [u8; 22] = Box::leak(Box::new(*b"FX_PUT_VARIABLE=value\0"));
     let name = CString::new("FX_PUT_VARIABLE").unwrap();
 
-    assert_eq!(bridged.call("fx_putenv_identity").ptr(address_of(&mut entry)).ptr(name.as_ptr() as usize).invoke().unwrap().i32(), 1);
+    let identical = bridged.call("fx_putenv_identity").ptr(address_of(entry)).ptr(name.as_ptr() as usize).invoke().unwrap().i32();
+    assert_eq!(bridged.call("fx_unsetenv").ptr(name.as_ptr() as usize).invoke().unwrap().i32(), 0);
+    assert_eq!(identical, 1);
 }
 
 fn rand_values(seed: u32) -> Vec<i32> {

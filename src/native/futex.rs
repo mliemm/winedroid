@@ -1,11 +1,14 @@
+use std::any::Any;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::bionic::abs_timeout::Deadline;
+use super::{signal_router, signal_state};
 
 pub const MATCH_ANY: u32 = 0xFFFF_FFFF;
 pub const EAGAIN: i32 = 11;
+pub const EINTR: i32 = 4;
 pub const EINVAL: i32 = 22;
 pub const EDEADLK: i32 = 35;
 pub const EPERM: i32 = 1;
@@ -41,22 +44,39 @@ fn lock_bucket(index: usize) -> MutexGuard<'static, Vec<Arc<Waiter>>> {
     TABLE[index].lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+pub(super) fn hold_for_fork(held: &mut Vec<Box<dyn Any>>) {
+    held.extend((0..BUCKETS).map(|index| Box::new(lock_bucket(index)) as Box<dyn Any>));
+}
+
 fn word(address: usize) -> &'static AtomicU32 {
     unsafe { AtomicU32::from_ptr(address as *mut u32) }
 }
 
-fn park(waiter: &Waiter, deadline: Option<Deadline>) -> bool {
+enum Parked {
+    Woken,
+    Expired,
+    Interrupted,
+}
+
+fn interrupted_by_signal() -> bool {
+    signal_state::pending() != 0 && signal_state::pending() & !signal_state::mask() != 0
+}
+
+fn park(waiter: &Waiter, deadline: Option<Deadline>) -> Parked {
     let flag = &waiter.woken as *const AtomicU32 as *mut c_void;
     loop {
         if waiter.woken.load(Ordering::Acquire) == 1 {
-            return false;
+            return Parked::Woken;
+        }
+        if interrupted_by_signal() {
+            return Parked::Interrupted;
         }
         let status = match deadline {
             None => unsafe { os_sync_wait_on_address(flag, 0, 4, 0) },
             Some(deadline) => {
                 let remaining = deadline.remaining_ns();
                 if remaining <= 0 {
-                    return true;
+                    return Parked::Expired;
                 }
                 unsafe { os_sync_wait_on_address_with_timeout(flag, 0, 4, 0, MACH_ABSOLUTE_TIME_CLOCK, remaining.min(LONGEST_PARK_NS) as u64) }
             }
@@ -100,13 +120,14 @@ pub fn wait(address: usize, expected: u32, bitset: u32, deadline: Option<Deadlin
         }
         bucket.push(waiter.clone());
     }
-    if !park(&waiter, deadline) {
-        return 0;
-    }
-    if leave_queue(&waiter) {
-        -ETIMEDOUT
-    } else {
-        0
+    match park(&waiter, deadline) {
+        Parked::Woken => 0,
+        Parked::Expired if leave_queue(&waiter) => -ETIMEDOUT,
+        Parked::Interrupted if leave_queue(&waiter) => {
+            signal_router::deliver_pending();
+            -EINTR
+        }
+        Parked::Expired | Parked::Interrupted => 0,
     }
 }
 
@@ -311,6 +332,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
+    use crate::native::test_deadline::bounded_test;
     use super::*;
 
     fn address_of(cell: &AtomicU32) -> usize {
@@ -325,157 +347,168 @@ mod tests {
         Deadline::after_ns(1, milliseconds * 1_000_000)
     }
 
-    #[test]
-    fn futex_wait_returns_eagain_when_the_word_differs_from_the_expected_value() {
-        // cite: bionic bionic_futex.cpp#FutexWithTimeout
-        let cell = AtomicU32::new(5);
+    bounded_test! {
+        fn futex_wait_returns_eagain_when_the_word_differs_from_the_expected_value() {
+            // cite: bionic bionic_futex.cpp#FutexWithTimeout
+            let cell = AtomicU32::new(5);
 
-        assert_eq!(wait(address_of(&cell), 4, MATCH_ANY, None), -EAGAIN);
-    }
-
-    #[test]
-    fn futex_wait_rejects_unaligned_addresses_and_empty_bitsets() {
-        let cell = AtomicU32::new(0);
-
-        assert_eq!(wait(address_of(&cell) + 1, 0, MATCH_ANY, None), -EINVAL);
-        assert_eq!(wait(address_of(&cell), 0, 0, None), -EINVAL);
-        assert_eq!(wake(address_of(&cell), 1, 0), -EINVAL);
-        assert_eq!(wake(address_of(&cell), -1, MATCH_ANY), -EINVAL);
-    }
-
-    #[test]
-    fn futex_wait_times_out_after_the_requested_time_and_leaves_no_waiter_behind() {
-        let cell = AtomicU32::new(0);
-        let started = Instant::now();
-
-        let result = wait(address_of(&cell), 0, MATCH_ANY, Some(after(60)));
-
-        assert_eq!(result, -ETIMEDOUT);
-        assert!(started.elapsed() >= Duration::from_millis(55), "{:?}", started.elapsed());
-        assert_eq!(wake(address_of(&cell), i32::MAX, MATCH_ANY), 0);
-    }
-
-    #[test]
-    fn futex_wait_checks_the_value_before_an_expired_deadline() {
-        let cell = AtomicU32::new(7);
-
-        assert_eq!(wait(address_of(&cell), 0, MATCH_ANY, Some(after(-5))), -EAGAIN);
-        assert_eq!(wait(address_of(&cell), 7, MATCH_ANY, Some(after(-5))), -ETIMEDOUT);
-    }
-
-    #[test]
-    fn futex_wake_releases_a_blocked_waiter_and_counts_only_woken_waiters() {
-        let cell = Arc::new(AtomicU32::new(0));
-        let waiter = {
-            let cell = cell.clone();
-            std::thread::spawn(move || wait(address_of(&cell), 0, MATCH_ANY, None))
-        };
-        let mut woken = 0;
-        while woken == 0 {
-            std::thread::yield_now();
-            woken = wake(address_of(&cell), 1, MATCH_ANY);
+            assert_eq!(wait(address_of(&cell), 4, MATCH_ANY, None), -EAGAIN);
         }
-
-        assert_eq!(waiter.join().unwrap(), 0);
-        assert_eq!(woken, 1);
     }
 
-    #[test]
-    fn futex_wake_count_bounds_the_number_of_released_waiters() {
-        let cell = Arc::new(AtomicU32::new(0));
-        let waiters: Vec<_> = (0..3)
-            .map(|_| {
-                let cell = cell.clone();
-                std::thread::spawn(move || wait(address_of(&cell), 0, MATCH_ANY, Some(after(5000))))
-            })
-            .collect();
-        let queued = || queued_at(address_of(&cell));
-        while queued() < 3 {
-            std::thread::yield_now();
+    bounded_test! {
+        fn futex_wait_rejects_unaligned_addresses_and_empty_bitsets() {
+            let cell = AtomicU32::new(0);
+
+            assert_eq!(wait(address_of(&cell) + 1, 0, MATCH_ANY, None), -EINVAL);
+            assert_eq!(wait(address_of(&cell), 0, 0, None), -EINVAL);
+            assert_eq!(wake(address_of(&cell), 1, 0), -EINVAL);
+            assert_eq!(wake(address_of(&cell), -1, MATCH_ANY), -EINVAL);
         }
-
-        assert_eq!(wake(address_of(&cell), 1, MATCH_ANY), 1);
-        assert_eq!(queued(), 2);
-        assert_eq!(wake(address_of(&cell), i32::MAX, MATCH_ANY), 2);
-        assert!(waiters.into_iter().all(|waiter| waiter.join().unwrap() == 0));
     }
 
-    #[test]
-    fn futex_bitset_wake_skips_waiters_whose_mask_does_not_intersect() {
-        let cell = Arc::new(AtomicU32::new(0));
-        let waiter = {
-            let cell = cell.clone();
-            std::thread::spawn(move || wait(address_of(&cell), 0, 2, Some(after(300))))
-        };
-        while queued_at(address_of(&cell)) == 0 {
-            std::thread::yield_now();
+    bounded_test! {
+        fn futex_wait_times_out_after_the_requested_time_and_leaves_no_waiter_behind() {
+            let cell = AtomicU32::new(0);
+            let started = Instant::now();
+
+            let result = wait(address_of(&cell), 0, MATCH_ANY, Some(after(60)));
+
+            assert_eq!(result, -ETIMEDOUT);
+            assert!(started.elapsed() >= Duration::from_millis(55), "{:?}", started.elapsed());
+            assert_eq!(wake(address_of(&cell), i32::MAX, MATCH_ANY), 0);
         }
-
-        assert_eq!(wake(address_of(&cell), 1, 1), 0);
-        assert_eq!(waiter.join().unwrap(), -ETIMEDOUT);
     }
 
-    #[test]
-    fn futex_requeue_moves_a_waiter_to_the_second_word_where_a_wake_releases_it() {
-        // cite: bionic futex.h#FUTEX_CMP_REQUEUE
-        let first = Arc::new(AtomicU32::new(0));
-        let second = Arc::new(AtomicU32::new(0));
-        let waiter = {
-            let first = first.clone();
-            std::thread::spawn(move || wait(address_of(&first), 0, MATCH_ANY, Some(after(5000))))
-        };
-        while queued_at(address_of(&first)) == 0 {
-            std::thread::yield_now();
+    bounded_test! {
+        fn futex_wait_checks_the_value_before_an_expired_deadline() {
+            let cell = AtomicU32::new(7);
+
+            assert_eq!(wait(address_of(&cell), 0, MATCH_ANY, Some(after(-5))), -EAGAIN);
+            assert_eq!(wait(address_of(&cell), 7, MATCH_ANY, Some(after(-5))), -ETIMEDOUT);
         }
-
-        assert_eq!(requeue(address_of(&first), 0, address_of(&second), 1, Some(1)), -EAGAIN);
-        assert_eq!(requeue(address_of(&first), 0, address_of(&second), 1, Some(0)), 1);
-        assert_eq!(wake(address_of(&first), 1, MATCH_ANY), 0);
-        assert_eq!(wake(address_of(&second), 1, MATCH_ANY), 1);
-        assert_eq!(waiter.join().unwrap(), 0);
     }
 
-    #[test]
-    fn futex_store_then_wake_never_loses_a_wakeup_over_many_rounds() {
-        let cell = Arc::new(AtomicU32::new(0));
-        for round in 1..=300u32 {
+    bounded_test! {
+        fn futex_wake_releases_a_blocked_waiter_and_counts_only_woken_waiters() {
+            let cell = Arc::new(AtomicU32::new(0));
             let waiter = {
                 let cell = cell.clone();
-                std::thread::spawn(move || {
-                    while cell.load(Ordering::SeqCst) < round {
-                        wait(address_of(&cell), round - 1, MATCH_ANY, Some(after(3000)));
-                    }
-                })
+                std::thread::spawn(move || wait(address_of(&cell), 0, MATCH_ANY, None))
             };
-            cell.store(round, Ordering::SeqCst);
-            wake(address_of(&cell), 1, MATCH_ANY);
-            waiter.join().unwrap();
+            let mut woken = 0;
+            while woken == 0 {
+                std::thread::yield_now();
+                woken = wake(address_of(&cell), 1, MATCH_ANY);
+            }
+
+            assert_eq!(waiter.join().unwrap(), 0);
+            assert_eq!(woken, 1);
         }
     }
 
-    #[test]
-    fn futex_wake_op_applies_the_operation_and_wakes_the_second_word_only_when_the_comparison_holds() {
-        // cite: bionic futex.h#FUTEX_OP
-        let first = AtomicU32::new(0);
-        let second = AtomicU32::new(5);
-        let encoded = (1u32 << 28) | (1 << 24) | (3 << 12) | 5;
+    bounded_test! {
+        fn futex_wake_count_bounds_the_number_of_released_waiters() {
+            let cell = Arc::new(AtomicU32::new(0));
+            let waiters: Vec<_> = (0..3)
+                .map(|_| {
+                    let cell = cell.clone();
+                    std::thread::spawn(move || wait(address_of(&cell), 0, MATCH_ANY, Some(after(5000))))
+                })
+                .collect();
+            let queued = || queued_at(address_of(&cell));
+            while queued() < 3 {
+                std::thread::yield_now();
+            }
 
-        assert_eq!(wake_op(address_of(&first), 1, address_of(&second), 1, encoded), 0);
-        assert_eq!(second.load(Ordering::SeqCst), 8);
+            assert_eq!(wake(address_of(&cell), 1, MATCH_ANY), 1);
+            assert_eq!(queued(), 2);
+            assert_eq!(wake(address_of(&cell), i32::MAX, MATCH_ANY), 2);
+            assert!(waiters.into_iter().all(|waiter| waiter.join().unwrap() == 0));
+        }
     }
 
-    #[test]
-    fn futex_pi_lock_reports_deadlock_for_the_owner_and_hands_over_on_unlock() {
-        // cite: bionic futex.h#FUTEX_LOCK_PI, FUTEX_UNLOCK_PI
-        let cell = AtomicU32::new(0);
+    bounded_test! {
+        fn futex_bitset_wake_skips_waiters_whose_mask_does_not_intersect() {
+            let cell = Arc::new(AtomicU32::new(0));
+            let waiter = {
+                let cell = cell.clone();
+                std::thread::spawn(move || wait(address_of(&cell), 0, 2, Some(after(300))))
+            };
+            while queued_at(address_of(&cell)) == 0 {
+                std::thread::yield_now();
+            }
 
-        assert_eq!(lock_pi(address_of(&cell), 77, None), 0);
-        assert_eq!(cell.load(Ordering::SeqCst), 77);
-        assert_eq!(lock_pi(address_of(&cell), 77, None), -EDEADLK);
-        assert_eq!(trylock_pi(address_of(&cell), 78), -EAGAIN);
-        assert_eq!(unlock_pi(address_of(&cell), 78), -EPERM);
-        assert_eq!(lock_pi(address_of(&cell), 78, Some(after(20))), -ETIMEDOUT);
-        assert_eq!(unlock_pi(address_of(&cell), 77), 0);
-        assert_eq!(cell.load(Ordering::SeqCst), 0);
+            assert_eq!(wake(address_of(&cell), 1, 1), 0);
+            assert_eq!(waiter.join().unwrap(), -ETIMEDOUT);
+        }
+    }
+
+    bounded_test! {
+        fn futex_requeue_moves_a_waiter_to_the_second_word_where_a_wake_releases_it() {
+            // cite: bionic futex.h#FUTEX_CMP_REQUEUE
+            let first = Arc::new(AtomicU32::new(0));
+            let second = Arc::new(AtomicU32::new(0));
+            let waiter = {
+                let first = first.clone();
+                std::thread::spawn(move || wait(address_of(&first), 0, MATCH_ANY, Some(after(5000))))
+            };
+            while queued_at(address_of(&first)) == 0 {
+                std::thread::yield_now();
+            }
+
+            assert_eq!(requeue(address_of(&first), 0, address_of(&second), 1, Some(1)), -EAGAIN);
+            assert_eq!(requeue(address_of(&first), 0, address_of(&second), 1, Some(0)), 1);
+            assert_eq!(wake(address_of(&first), 1, MATCH_ANY), 0);
+            assert_eq!(wake(address_of(&second), 1, MATCH_ANY), 1);
+            assert_eq!(waiter.join().unwrap(), 0);
+        }
+    }
+
+    bounded_test! {
+        fn futex_store_then_wake_never_loses_a_wakeup_over_many_rounds() {
+            let cell = Arc::new(AtomicU32::new(0));
+            for round in 1..=300u32 {
+                let waiter = {
+                    let cell = cell.clone();
+                    std::thread::spawn(move || {
+                        while cell.load(Ordering::SeqCst) < round {
+                            wait(address_of(&cell), round - 1, MATCH_ANY, Some(after(3000)));
+                        }
+                    })
+                };
+                cell.store(round, Ordering::SeqCst);
+                wake(address_of(&cell), 1, MATCH_ANY);
+                waiter.join().unwrap();
+            }
+        }
+    }
+
+    bounded_test! {
+        fn futex_wake_op_applies_the_operation_and_wakes_the_second_word_only_when_the_comparison_holds() {
+            // cite: bionic futex.h#FUTEX_OP
+            let first = AtomicU32::new(0);
+            let second = AtomicU32::new(5);
+            let encoded = (1u32 << 28) | (1 << 24) | (3 << 12) | 5;
+
+            assert_eq!(wake_op(address_of(&first), 1, address_of(&second), 1, encoded), 0);
+            assert_eq!(second.load(Ordering::SeqCst), 8);
+        }
+    }
+
+    bounded_test! {
+        fn futex_pi_lock_reports_deadlock_for_the_owner_and_hands_over_on_unlock() {
+            // cite: bionic futex.h#FUTEX_LOCK_PI, FUTEX_UNLOCK_PI
+            let cell = AtomicU32::new(0);
+
+            assert_eq!(lock_pi(address_of(&cell), 77, None), 0);
+            assert_eq!(cell.load(Ordering::SeqCst), 77);
+            assert_eq!(lock_pi(address_of(&cell), 77, None), -EDEADLK);
+            assert_eq!(trylock_pi(address_of(&cell), 78), -EAGAIN);
+            assert_eq!(unlock_pi(address_of(&cell), 78), -EPERM);
+            assert_eq!(lock_pi(address_of(&cell), 78, Some(after(20))), -ETIMEDOUT);
+            assert_eq!(unlock_pi(address_of(&cell), 77), 0);
+            assert_eq!(cell.load(Ordering::SeqCst), 0);
+        }
     }
 }

@@ -1,9 +1,12 @@
 use super::super::futex_syscall::futex_syscall;
 use super::super::host_log;
+use super::super::thread_list;
 use super::current_thread;
 use super::export::in_libc;
+use super::prctl;
 
 const NR_SET_TID_ADDRESS: i64 = 96;
+const NR_PRCTL: i64 = 167;
 const NR_FUTEX: i64 = 98;
 const NR_SCHED_YIELD: i64 = 124;
 const NR_TGKILL: i64 = 131;
@@ -18,7 +21,12 @@ pub fn translate(number: i64, arguments: [u64; 6]) -> i64 {
     // cite: bionic unistd.h#__NR_futex, __NR_gettid, __NR_tgkill, __NR_rseq
     match number {
         NR_FUTEX => futex_syscall(arguments),
-        NR_GETTID | NR_SET_TID_ADDRESS => i64::from(current_thread::tid()),
+        NR_GETTID => i64::from(current_thread::tid()),
+        NR_SET_TID_ADDRESS => {
+            thread_list::set_clear_tid(current_thread::record(), arguments[0] as usize);
+            i64::from(current_thread::tid())
+        }
+        NR_PRCTL => prctl::control(arguments[0] as i32, arguments[1] as usize),
         NR_GETPID => i64::from(unsafe { libc::getpid() }),
         NR_SCHED_YIELD => i64::from(unsafe { libc::sched_yield() }),
         NR_RSEQ | NR_MEMBARRIER => -ENOSYS,

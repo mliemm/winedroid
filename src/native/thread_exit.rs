@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
 use super::bionic::pthread_key;
 use super::call_assign::CallBuilder;
@@ -104,6 +104,13 @@ fn block_every_signal() {
     }
 }
 
+pub fn clear_child_tid(record: usize) {
+    // cite: bionic SYSCALLS.TXT#__set_tid_address
+    let Some(address) = thread_list::take_clear_tid(record) else { return };
+    unsafe { AtomicU32::from_ptr(address as *mut u32) }.store(0, Ordering::Release);
+    futex::wake(address, i32::MAX, MATCH_ANY);
+}
+
 pub fn publish_exit(record: usize) {
     // cite: bionic pthread_exit.cpp#pthread_exit
     let state = join_state(record);
@@ -115,6 +122,7 @@ pub fn publish_exit(record: usize) {
         }
     }
     unsafe { (*thread(record)).terminating = 1 };
+    clear_child_tid(record);
     block_every_signal();
     set_slot(SLOT_THREAD_ID, 0);
     set_slot(SLOT_BIONIC_TLS, 0);

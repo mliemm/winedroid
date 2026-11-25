@@ -16,6 +16,7 @@ fn thread_record(context: &mut CallContext) -> Option<*mut super::pthread_intern
 
 pub fn register_thread_handlers() {
     static ONCE: Once = Once::new();
+    super::fork_gate::install();
     ONCE.call_once(register_all_thread_handlers);
 }
 

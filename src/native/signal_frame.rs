@@ -228,4 +228,59 @@ mod tests {
         assert_eq!(UC_RESERVED, 464);
         assert_eq!((FRAME_BYTES, SIGINFO_OFFSET, UCONTEXT_OFFSET), (4704, 16, 144));
     }
+
+    #[test]
+    fn read_back_copies_every_register_the_guest_handler_may_edit_into_the_interrupted_darwin_context() {
+        // cite: bionic sigcontext.h#sigcontext, fpsimd_context
+        let mut linux = vec![0u64; UCONTEXT_BYTES / 8];
+        let buffer = linux.as_mut_ptr() as usize;
+        for index in 0..31 {
+            write_value::<u64>(buffer + UC_REGS + 8 * index, 0x1000 + index as u64);
+        }
+        write_value::<u64>(buffer + UC_SP, 0x2000);
+        write_value::<u64>(buffer + UC_PC, 0x3000);
+        write_value::<u64>(buffer + UC_PSTATE, 0xA000_0000 | 0x3C5);
+        let reserved = buffer + UC_RESERVED;
+        write_value::<u32>(reserved, FPSIMD_MAGIC);
+        write_value::<u32>(reserved + 4, FPSIMD_SIZE);
+        write_value::<u32>(reserved + 8, 7);
+        write_value::<u32>(reserved + 12, 9);
+        for byte in 0..512 {
+            write_value::<u8>(reserved + 16 + byte, (byte % 251) as u8);
+        }
+        let mut darwin = vec![0xEEu8; 1024];
+        let target = darwin.as_mut_ptr() as usize;
+        write_value::<u32>(target + DARWIN_CPSR, 0x5000_0105);
+        let mut context = vec![0u64; 16];
+        write_value::<usize>(context.as_mut_ptr() as usize + DARWIN_MCONTEXT_POINTER, target);
+
+        read_back(buffer, context.as_ptr() as usize);
+
+        for index in (0..29).filter(|index| *index != PLATFORM_REGISTER) {
+            assert_eq!(read_value::<u64>(target + DARWIN_X0 + 8 * index), 0x1000 + index as u64, "x{index}");
+        }
+        assert_eq!(read_value::<u64>(target + DARWIN_X0 + 8 * PLATFORM_REGISTER), 0xEEEE_EEEE_EEEE_EEEE, "x18 belongs to the platform");
+        assert_eq!(read_value::<u64>(target + DARWIN_FP), 0x1000 + 29);
+        assert_eq!(read_value::<u64>(target + DARWIN_LR), 0x1000 + 30);
+        assert_eq!(read_value::<u64>(target + DARWIN_SP), 0x2000);
+        assert_eq!(read_value::<u64>(target + DARWIN_PC), 0x3000);
+        assert_eq!(read_value::<u32>(target + DARWIN_CPSR), 0x0000_0105 | 0xA000_0000, "only the condition flags come from the guest");
+        assert_eq!((read_value::<u32>(target + DARWIN_FPSR), read_value::<u32>(target + DARWIN_FPCR)), (7, 9));
+        assert!((0..512).all(|byte| read_value::<u8>(target + DARWIN_VECTORS + byte) == (byte % 251) as u8));
+    }
+
+    #[test]
+    fn read_back_leaves_the_vector_state_alone_when_the_guest_frame_has_no_fpsimd_record() {
+        // cite: bionic sigcontext.h#fpsimd_context
+        let mut linux = vec![0u64; UCONTEXT_BYTES / 8];
+        let mut darwin = vec![0xEEu8; 1024];
+        let target = darwin.as_mut_ptr() as usize;
+        let mut context = vec![0u64; 16];
+        write_value::<usize>(context.as_mut_ptr() as usize + DARWIN_MCONTEXT_POINTER, target);
+
+        read_back(linux.as_mut_ptr() as usize, context.as_ptr() as usize);
+
+        assert!((0..512).all(|byte| read_value::<u8>(target + DARWIN_VECTORS + byte) == 0xEE));
+        assert_eq!(read_value::<u32>(target + DARWIN_FPSR), 0xEEEE_EEEE);
+    }
 }

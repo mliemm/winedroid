@@ -40,6 +40,7 @@ pub mod pthread_rwlock;
 pub mod pthread_sched;
 pub mod pthread_spin;
 pub mod pthread_thread;
+pub mod prctl;
 pub mod prng;
 pub mod props;
 pub mod sdk;
@@ -115,6 +116,7 @@ fn register_thread_group() {
     pthread_thread::register();
     atfork::register();
     syscall::register();
+    prctl::register();
     tls_handlers::register();
     signal_handlers::register();
 }
