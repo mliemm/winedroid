@@ -8,6 +8,7 @@
 #include <sys/select.h>
 #include <sys/types.h>
 #include <time.h>
+#include <wchar.h>
 #include <unistd.h>
 
 extern int __android_log_print(int priority, const char *tag, const char *format, ...);
@@ -791,4 +792,68 @@ int fx_ctime(long seconds, char *buffer)
 {
     time_t value = seconds;
     return ctime_r(&value, buffer) == buffer;
+}
+
+size_t fx_mbrtowc(unsigned *out, const char *text, size_t count, mbstate_t *state)
+{
+    wchar_t value = 0xdeadbeef;
+    size_t result = mbrtowc(&value, text, count, state);
+    *out = (unsigned)value;
+    return result;
+}
+
+size_t fx_wcrtomb(char *buffer, unsigned value, mbstate_t *state)
+{
+    return wcrtomb(buffer, (wchar_t)value, state);
+}
+
+unsigned fx_btowc(int character)
+{
+    return (unsigned)btowc(character);
+}
+
+int fx_wctob(unsigned value)
+{
+    return wctob((wint_t)value);
+}
+
+int fx_mbsinit(const mbstate_t *state)
+{
+    return mbsinit(state);
+}
+
+int fx_mbtowc(unsigned *out, const char *text, size_t count)
+{
+    wchar_t value = 0;
+    int result = mbtowc(&value, text, count);
+    *out = (unsigned)value;
+    return result;
+}
+
+int fx_wctomb(char *buffer, unsigned value)
+{
+    return wctomb(buffer, (wchar_t)value);
+}
+
+int fx_wide_strings(void)
+{
+    wchar_t first[8], second[8], copy[16];
+    first[0] = L'a'; first[1] = L'b'; first[2] = 0x1F600; first[3] = 0;
+    second[0] = L'a'; second[1] = L'b'; second[2] = 0x1F601; second[3] = 0;
+    if (wcslen(first) != 3) return 1;
+    if (wcscmp(first, first) != 0) return 2;
+    if (wcscmp(first, second) >= 0) return 3;
+    if (wcsncmp(first, second, 2) != 0) return 4;
+    if (wcschr(first, 0x1F600) != first + 2) return 5;
+    if (wcsrchr(first, L'a') != first) return 6;
+    wcscpy(copy, first);
+    wcscat(copy, second);
+    if (wcslen(copy) != 6 || copy[3] != L'a') return 7;
+    if (wmemcmp(first, second, 3) != -1 || wmemcmp(second, first, 3) != 1 || wmemcmp(first, first, 3) != 0) return 8;
+    if (wmemchr(first, 0x1F600, 4) != first + 2) return 9;
+    wmemset(copy, 7, 3);
+    if (copy[2] != 7 || copy[3] != L'a') return 10;
+    wcsncpy(copy, first, 8);
+    if (copy[3] != 0 || copy[7] != 0) return 11;
+    return 0;
 }

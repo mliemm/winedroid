@@ -18,6 +18,7 @@ pub mod locale;
 pub mod log;
 pub mod log_sink;
 pub mod math;
+pub mod mbstate;
 pub mod memory;
 pub mod printf;
 pub mod printf_handlers;
@@ -35,6 +36,7 @@ pub mod sysinfo;
 pub mod time_handlers;
 pub mod tz_state;
 pub mod tzif;
+pub mod wide;
 
 use std::sync::Once;
 
@@ -50,6 +52,8 @@ pub fn register_libc_core() {
         printf_handlers::register();
         ctype::register();
         locale::register();
+        mbstate::register();
+        wide::register();
         strtonum::register();
         stdlib::register();
         prng::register();

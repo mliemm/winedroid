@@ -118,7 +118,7 @@ build_variant() {
         bsearch calloc clock_gettime exit free getenv getpagesize gettimeofday gmtime_r lrand48 mallinfo malloc \
         malloc_usable_size mallopt memalign memrchr memset putenv qsort rand realloc reallocarray setenv sleep snprintf \
         sprintf srand srand48 strcasecmp strcasestr strcat strchr strcmp strcpy strerror strerror_r strlcat strlcpy strlen \
-        strncasecmp strstr strtod strtok_r strtol strtoul strxfrm sysconf tolower toupper isalnum ispunct isspace isxdigit isalpha isdigit setlocale newlocale uselocale freelocale __ctype_get_mb_cur_max localeconv tzset localtime_r mktime strftime ctime_r +_ctype_ +tzname +timezone +daylight timegm unsetenv usleep vsnprintf vsprintf
+        strncasecmp strstr strtod strtok_r strtol strtoul strxfrm sysconf tolower toupper isalnum ispunct isspace isxdigit isalpha isdigit setlocale newlocale uselocale freelocale __ctype_get_mb_cur_max localeconv mbrtowc wcrtomb btowc wctob mbsinit mbtowc wctomb wcslen wcscmp wcsncmp wcschr wcsrchr wcscpy wcscat wmemcmp wmemchr wmemset wcsncpy tzset localtime_r mktime strftime ctime_r +_ctype_ +tzname +timezone +daylight timegm unsetenv usleep vsnprintf vsprintf
     make_stub libm.so "$work/stubs_core" atan2 copysignl fabsl feclearexcept fegetenv fegetround feraiseexcept fesetenv fesetround \
         fetestexcept fma fmax frexp hypot ilogb ilogbf ldexp lgamma lgamma_r llround lrint modf nan nanf nearbyint pow \
         powf round scalbln sin sincos sqrtf +signgam

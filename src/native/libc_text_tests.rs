@@ -91,3 +91,93 @@ fn bionic_localeconv_has_a_dot_decimal_point_and_char_max_numeric_fields() {
     assert_eq!((c_text(&point), extra), (".".to_string(), 0));
     assert_eq!(fields, [255u8; 14]);
 }
+
+const ILLEGAL: u64 = u64::MAX;
+const INCOMPLETE: u64 = u64::MAX - 1;
+
+fn decode(bytes: &[u8], count: usize, state: &mut [u8; 8]) -> (u64, u32) {
+    let bridged = libc_fixture();
+    let mut value = 0u32;
+    let mut copy = bytes.to_vec();
+    copy.push(0);
+    let result = bridged.call("fx_mbrtowc").ptr(&mut value as *mut u32 as usize).ptr(copy.as_ptr() as usize).int(count as u64).ptr(state.as_mut_ptr() as usize).invoke().unwrap().u64();
+    (result, value)
+}
+
+#[test]
+fn bionic_mbrtowc_decodes_utf8_boundaries_and_rejects_overlong_surrogate_and_truncated_input() {
+    let mut state = [0u8; 8];
+    for (bytes, expected) in [
+        (&b"\x7f"[..], 0x7f),
+        (&b"\xc2\x80"[..], 0x80),
+        (&b"\xdf\xbf"[..], 0x7ff),
+        (&b"\xe0\xa0\x80"[..], 0x800),
+        (&b"\xef\xbf\xbf"[..], 0xffff),
+        (&b"\xf0\x90\x80\x80"[..], 0x10000),
+        (&b"\xf4\x8f\xbf\xbf"[..], 0x10ffff),
+    ] {
+        assert_eq!(decode(bytes, bytes.len(), &mut state).0, bytes.len() as u64, "{bytes:x?}");
+        assert_eq!(decode(bytes, bytes.len(), &mut state).1, expected, "{bytes:x?}");
+    }
+    for bytes in [&b"\xc0\x80"[..], &b"\xed\xa0\x80"[..], &b"\xf4\x90\x80\x80"[..], &b"\x80"[..], &b"\xe0\x80\x80"[..]] {
+        assert_eq!(decode(bytes, bytes.len(), &mut state).0, ILLEGAL, "{bytes:x?}");
+        assert_eq!(state[..4], [0, 0, 0, 0], "the state is reset after an illegal sequence");
+    }
+    assert_eq!(decode(b"", 0, &mut state).0, 0, "n == 0 returns 0 in Bionic, not -2");
+    assert_eq!(decode(b"\x00", 1, &mut state).0, 0);
+}
+
+#[test]
+fn bionic_mbrtowc_carries_a_partial_sequence_in_the_eight_byte_state_across_calls() {
+    let mut state = [0u8; 8];
+
+    assert_eq!(decode(b"\xe2\x82", 2, &mut state).0, INCOMPLETE);
+    assert_eq!(state[..3], [0xe2, 0x82, 0]);
+    let (result, value) = decode(b"\xac", 1, &mut state);
+    assert_eq!((result, value), (1, 0x20ac), "the euro sign completes with the bytes consumed in this call");
+    assert_eq!(state[..4], [0, 0, 0, 0]);
+    assert_eq!(decode(b"\xe2\x41", 2, &mut state).0, ILLEGAL, "a non continuation byte in the middle is illegal");
+}
+
+#[test]
+fn bionic_wcrtomb_encodes_one_to_four_bytes_without_rejecting_surrogates() {
+    let bridged = libc_fixture();
+    let encode = |value: u32| {
+        let (mut buffer, mut state) = ([0u8; 8], [0u8; 8]);
+        let length = bridged.call("fx_wcrtomb").ptr(buffer.as_mut_ptr() as usize).u32(value).ptr(state.as_mut_ptr() as usize).invoke().unwrap().u64();
+        (length, buffer[..length.min(4) as usize].to_vec())
+    };
+
+    assert_eq!(encode(0x41), (1, vec![0x41]));
+    assert_eq!(encode(0x20ac), (3, vec![0xe2, 0x82, 0xac]));
+    assert_eq!(encode(0xd800), (3, vec![0xed, 0xa0, 0x80]));
+    assert_eq!(encode(0x1f600), (4, vec![0xf0, 0x9f, 0x98, 0x80]));
+    assert_eq!(encode(0x200000).0, ILLEGAL);
+}
+
+#[test]
+fn bionic_btowc_wctob_mbsinit_mbtowc_wctomb_follow_the_openbsd_wrappers() {
+    let bridged = libc_fixture();
+    let (mut state, mut value, mut buffer) = ([0u8; 8], 0u32, [0u8; 8]);
+
+    assert_eq!(bridged.call("fx_btowc").i32(0x41).invoke().unwrap().u64() as u32, 0x41);
+    assert_eq!(bridged.call("fx_btowc").i32(0x80).invoke().unwrap().u64() as u32, u32::MAX, "btowc(0x80) is WEOF");
+    assert_eq!(bridged.call("fx_btowc").i32(-1).invoke().unwrap().u64() as u32, u32::MAX);
+    assert_eq!(bridged.call("fx_wctob").u32(0x41).invoke().unwrap().i32(), 0x41);
+    assert_eq!(bridged.call("fx_wctob").u32(0x20ac).invoke().unwrap().i32(), -1);
+    assert_eq!(bridged.call("fx_mbsinit").ptr(state.as_mut_ptr() as usize).invoke().unwrap().i32(), 1);
+    state[0] = 0xe2;
+    assert_eq!(bridged.call("fx_mbsinit").ptr(state.as_mut_ptr() as usize).invoke().unwrap().i32(), 0);
+    let euro = b"\xe2\x82\xac\0";
+    assert_eq!(bridged.call("fx_mbtowc").ptr(&mut value as *mut u32 as usize).ptr(euro.as_ptr() as usize).int(3).invoke().unwrap().i32(), 3);
+    assert_eq!(value, 0x20ac);
+    assert_eq!(bridged.call("fx_wctomb").ptr(buffer.as_mut_ptr() as usize).u32(0x20ac).invoke().unwrap().i32(), 3);
+    assert_eq!(&buffer[..3], b"\xe2\x82\xac");
+}
+
+#[test]
+fn upstream_freebsd_wide_string_functions_compare_unsigned_and_copy_with_padding() {
+    let bridged = libc_fixture();
+
+    assert_eq!(bridged.call("fx_wide_strings").invoke().unwrap().i32(), 0);
+}
