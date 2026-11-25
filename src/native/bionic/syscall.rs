@@ -22,7 +22,7 @@ pub fn translate(number: i64, arguments: [u64; 6]) -> i64 {
         NR_GETPID => i64::from(unsafe { libc::getpid() }),
         NR_SCHED_YIELD => i64::from(unsafe { libc::sched_yield() }),
         NR_RSEQ | NR_MEMBARRIER => -ENOSYS,
-        NR_TGKILL => -ENOSYS,
+        NR_TGKILL => super::signal_handlers::tgkill(arguments[0] as i32, arguments[1] as i32, arguments[2] as i32),
         other => {
             host_log::line(&format!("FIXME: syscall {other} is not translated; next missing primitive: syscall {other}"));
             -ENOSYS

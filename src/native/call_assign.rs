@@ -28,6 +28,8 @@ impl CallBuilder {
             ret_q: [[0; 2]; 4],
             frame: 0,
             aborted: 0,
+            stack_top: 0,
+            padding: 0,
         };
         Self { frame, next_general: 0, next_vector: 0, stack: Vec::new(), copies: Vec::new() }
     }
@@ -171,6 +173,11 @@ impl CallBuilder {
             }
             self.stack.extend(words);
         }
+        self
+    }
+
+    pub fn on_stack(mut self, top: usize) -> Self {
+        self.frame.stack_top = top as u64;
         self
     }
 

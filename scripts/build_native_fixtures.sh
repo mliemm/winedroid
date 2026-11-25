@@ -102,7 +102,7 @@ build_variant() {
     local out="$OUT_ROOT/$label"
     local work
     work="$(mktemp -d)"
-    mkdir -p "$out" "$work/stubs" "$work/stubs_bridge" "$work/stubs_core" "$work/stubs_threads"
+    mkdir -p "$out" "$work/stubs" "$work/stubs_bridge" "$work/stubs_core" "$work/stubs_threads" "$work/stubs_signals"
     rm -f "$out"/*.so
 
     make_stub libc.so "$work/stubs" strlen memcpy malloc free snprintf \
@@ -122,6 +122,9 @@ build_variant() {
         pthread_rwlockattr_setkind_np pthread_self pthread_setname_np pthread_setspecific pthread_spin_destroy pthread_spin_init \
         pthread_spin_lock pthread_spin_trylock pthread_spin_unlock sched_yield sem_clockwait sem_init sem_post sem_timedwait sem_trywait sem_wait \
         strcmp syscall pthread_exit
+    make_stub libc.so "$work/stubs_signals" \
+        __errno __stack_chk_fail abort getpid gettid memset pthread_create pthread_join pthread_kill pthread_self raise sched_yield \
+        sigaction sigaddset sigaltstack sigemptyset sigismember signal sigprocmask tgkill fx_emit
     make_stub libdl.so "$work/stubs" dlopen dlsym dlclose dlerror
     make_stub libc.so "$work/stubs_core" \
         __FD_SET_chk __assert2 __cxa_atexit __errno __memcpy_chk __memset_chk __read_chk __snprintf_chk __stack_chk_fail \
@@ -174,6 +177,9 @@ build_variant() {
 
     compile fx_threads "$work" -mno-outline-atomics
     STUB_DIR="$work/stubs_threads" link fx_threads "$page" "$work" "$out" -lc
+
+    compile fx_signals "$work"
+    STUB_DIR="$work/stubs_signals" link fx_signals "$page" "$work" "$out" -lc
 
     compile fx_dlmain "$work"
     STUB_DIR="$work/stubs_core" link fx_dlmain "$page" "$work" "$out" -lc -ldl

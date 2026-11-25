@@ -9,7 +9,7 @@ from the matching file in `src/`; nothing is hand edited.
 - Sources: `src/fx_add.c`, `src/fx_reloc.c`, `src/fx_dep.c`, `src/fx_jni.c`,
   `src/fx_order_child.c`, `src/fx_order_parent.c`, `src/fx_relro.c`,
   `src/fx_bridge.c`, `src/fx_libc.c`, `src/fx_math.c`, `src/fx_dlmain.c`,
-  `src/fx_threads.c`.
+  `src/fx_threads.c`, `src/fx_signals.c`.
 - Headers: Bionic from the android-ref checkout (`bionic/libc/include` and the
   kernel uapi directories) plus `include/jni.h`. No Android NDK is installed.
 - `include/jni.h` is written from ART's `JNINativeInterface` table in

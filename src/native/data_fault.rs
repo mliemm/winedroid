@@ -56,6 +56,10 @@ fn message_at(address: usize) -> Option<&'static str> {
     unsafe { message.as_ref() }.map(String::as_str)
 }
 
+pub fn is_reserved(address: usize) -> bool {
+    message_at(address).is_some()
+}
+
 fn previous_of(signal: libc::c_int) -> &'static AtomicPtr<libc::sigaction> {
     if signal == libc::SIGBUS {
         &PREVIOUS_BUS

@@ -305,6 +305,7 @@ extern "C" fn spk_dispatch(id: u64, regs: *mut Regs) {
         std::process::abort();
     };
     let regs = unsafe { &mut *regs };
+    let outer = super::signal_state::set_in_guest(false);
     let failure = match &entry.binding {
         Binding::Handler(handler) => run_handler(entry, handler, regs),
         Binding::Missing { importer } => {
@@ -316,6 +317,8 @@ extern "C" fn spk_dispatch(id: u64, regs: *mut Regs) {
     if let Some(message) = failure {
         abort_active_call(message);
     }
+    super::signal_router::deliver_pending();
+    super::signal_state::set_in_guest(outer);
 }
 
 pub fn native_provider() -> BridgeProvider {

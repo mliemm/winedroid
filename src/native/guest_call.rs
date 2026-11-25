@@ -81,7 +81,10 @@ pub fn invoke_frame(frame: &mut GuestCallFrame) -> Result<GuestResult> {
         active.push(frame);
         depth
     });
+    super::signal_router::deliver_pending();
+    let outer = super::signal_state::set_in_guest(true);
     unsafe { spk_call_guest(frame) };
+    super::signal_state::set_in_guest(outer);
     ACTIVE.with(|active| active.borrow_mut().truncate(depth));
     if frame.aborted != 0 {
         let message = ABORT.with(|abort| abort.borrow_mut().take()).unwrap_or_else(|| "guest call aborted".to_string());

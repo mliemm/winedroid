@@ -74,3 +74,8 @@ pub fn inherit_name(parent: usize, child: usize) {
     let name = name_of(parent);
     NAMES.lock().expect("thread names").insert(child, name);
 }
+
+pub fn try_other_host() -> Option<libc::pthread_t> {
+    let me = unsafe { libc::pthread_self() } as usize;
+    HOSTS.try_lock().ok()?.values().map(|host| host.handle).find(|handle| *handle != me).map(|handle| handle as libc::pthread_t)
+}

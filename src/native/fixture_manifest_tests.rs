@@ -10,7 +10,7 @@ use super::fixture_reference_tests::android_ref_root;
 
 const TOOL_MISSING_STATUS: i32 = 127;
 const VARIANT_DIRECTORIES: [&str; 2] = ["16k", "4k"];
-const FIXTURE_LIBRARIES: [&str; 14] = [
+const FIXTURE_LIBRARIES: [&str; 15] = [
     "libfx_add.so",
     "libfx_aps2.so",
     "libfx_bridge.so",
@@ -24,6 +24,7 @@ const FIXTURE_LIBRARIES: [&str; 14] = [
     "libfx_reloc.so",
     "libfx_relr.so",
     "libfx_relro.so",
+    "libfx_signals.so",
     "libfx_threads.so",
 ];
 

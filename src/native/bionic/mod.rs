@@ -44,6 +44,7 @@ pub mod prng;
 pub mod props;
 pub mod sdk;
 pub mod semaphore;
+pub mod signal_handlers;
 pub mod sleep;
 pub mod sort;
 pub mod stdlib;
@@ -115,4 +116,5 @@ fn register_thread_group() {
     atfork::register();
     syscall::register();
     tls_handlers::register();
+    signal_handlers::register();
 }

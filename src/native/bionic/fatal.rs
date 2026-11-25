@@ -1,5 +1,6 @@
 use std::sync::OnceLock;
 
+use super::super::{signal_numbers, signal_router, signal_state};
 use super::export::in_libc;
 use super::guest_mem::{cstr_lossy, optional_cstr};
 use super::log_sink::{emit, LogRecord};
@@ -20,6 +21,16 @@ pub fn abort_message() -> Option<&'static str> {
 
 pub fn guest_abort() -> ! {
     // cite: bionic abort.cpp#abort
+    const SIGABRT: i32 = 6;
+    if signal_state::action_of(SIGABRT).has_handler() {
+        signal_state::set_mask(signal_state::mask() & !signal_numbers::bit(SIGABRT));
+        signal_router::apply_darwin_mask(signal_state::mask());
+        signal_state::mark_thread_directed(SIGABRT);
+        signal_state::raise_pending(SIGABRT);
+        signal_router::deliver_pending();
+        signal_state::publish_action(SIGABRT, signal_state::DEFAULT_ACTION);
+        let _ = signal_router::install(SIGABRT, &signal_state::DEFAULT_ACTION);
+    }
     unsafe { libc::abort() }
 }
 

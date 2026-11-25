@@ -2,7 +2,7 @@ use std::arch::global_asm;
 
 pub const STUB_COUNT: usize = 8192;
 pub const STUB_SLOT_BYTES: usize = 8;
-pub const GUEST_CALL_SIZE: usize = 320;
+pub const GUEST_CALL_SIZE: usize = 336;
 
 #[repr(C, align(16))]
 #[derive(Debug)]
@@ -17,6 +17,8 @@ pub struct GuestCallFrame {
     pub ret_q: [[u64; 2]; 4],
     pub frame: u64,
     pub aborted: u64,
+    pub stack_top: u64,
+    pub padding: u64,
 }
 
 const _: () = assert!(std::mem::size_of::<GuestCallFrame>() == GUEST_CALL_SIZE);
@@ -28,6 +30,7 @@ const _: () = assert!(std::mem::offset_of!(GuestCallFrame, stack) == 216);
 const _: () = assert!(std::mem::offset_of!(GuestCallFrame, ret_x) == 224);
 const _: () = assert!(std::mem::offset_of!(GuestCallFrame, ret_q) == 240);
 const _: () = assert!(std::mem::offset_of!(GuestCallFrame, frame) == 304);
+const _: () = assert!(std::mem::offset_of!(GuestCallFrame, stack_top) == 320);
 
 global_asm!(
     ".text",
@@ -89,6 +92,10 @@ global_asm!(
     "mov x29, sp",
     "mov x19, x0",
     "str x29, [x19, #304]",
+    "ldr x14, [x19, #320]",
+    "cbz x14, 3f",
+    "mov sp, x14",
+    "3:",
     "ldr x9, [x19, #208]",
     "ldr x10, [x19, #216]",
     "add x11, x9, #1",

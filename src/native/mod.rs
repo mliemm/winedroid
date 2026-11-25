@@ -63,6 +63,14 @@ pub mod pthread_internal;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod runtime;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod signal_frame;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod signal_numbers;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod signal_router;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod signal_state;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod stub_table;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod thread_block;
@@ -122,6 +130,8 @@ mod bridge_va_tests;
 mod guest_thread_tests;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
 mod guest_call_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod signal_tests;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
 mod thread_tests;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
