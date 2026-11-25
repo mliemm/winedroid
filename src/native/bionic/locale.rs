@@ -63,6 +63,10 @@ fn max_bytes(locale: usize) -> u64 {
     }
 }
 
+pub fn current_max_bytes() -> u64 {
+    max_bytes(CURRENT.with(|current| current.get()))
+}
+
 fn lconv() -> usize {
     // cite: bionic locale.cpp#localeconv
     *LCONV.get_or_init(|| {
@@ -124,7 +128,7 @@ pub fn register() {
     });
     in_libc("__ctype_get_mb_cur_max", |context| {
         // cite: bionic locale.cpp#__ctype_get_mb_cur_max
-        context.ret_u64(max_bytes(CURRENT.with(|current| current.get())));
+        context.ret_u64(current_max_bytes());
     });
     in_libc("localeconv", |context| context.ret_ptr(lconv()));
     let _ = LC_ALL;

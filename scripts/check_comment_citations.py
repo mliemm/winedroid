@@ -18,6 +18,7 @@ ALLOWED_REPOSITORIES = (
     "art",
     "dalvik",
     "bionic",
+    "logging",
     "frameworks-native",
     "cts",
 )

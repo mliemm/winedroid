@@ -4,6 +4,11 @@ pub fn cstr_bytes<'a>(pointer: usize) -> &'a [u8] {
     unsafe { CStr::from_ptr(pointer as *const c_char) }.to_bytes()
 }
 
+pub fn cstr_bytes_bounded<'a>(pointer: usize, limit: usize) -> &'a [u8] {
+    let length = unsafe { libc::strnlen(pointer as *const c_char, limit) };
+    unsafe { std::slice::from_raw_parts(pointer as *const u8, length) }
+}
+
 pub fn cstr_lossy(pointer: usize) -> String {
     String::from_utf8_lossy(cstr_bytes(pointer)).into_owned()
 }

@@ -33,7 +33,7 @@ fn architecture_applies(tags: &str) -> bool {
     !restricted || words.contains(&"arm64")
 }
 
-fn exported_names(map: &Path) -> BTreeSet<String> {
+pub(super) fn exported_names(map: &Path) -> BTreeSet<String> {
     let text = std::fs::read_to_string(map).unwrap();
     let mut names = BTreeSet::new();
     let (mut section, mut global) = (String::new(), false);
@@ -49,7 +49,7 @@ fn exported_names(map: &Path) -> BTreeSet<String> {
         } else if global && !SKIPPED_SECTIONS.contains(&section.as_str()) {
             let (code, tags) = trimmed.split_once('#').unwrap_or((trimmed, ""));
             if let Some(name) = code.trim().strip_suffix(';') {
-                if !name.is_empty() && !name.contains('*') && architecture_applies(tags) {
+                if !name.is_empty() && !name.contains('*') && !name.starts_with('}') && architecture_applies(tags) {
                     names.insert(name.to_string());
                 }
             }
@@ -58,7 +58,7 @@ fn exported_names(map: &Path) -> BTreeSet<String> {
     names
 }
 
-fn registered(soname: &str, name: &str) -> bool {
+pub(super) fn registered(soname: &str, name: &str) -> bool {
     BridgeProvider.export(soname, name).is_some()
 }
 
@@ -104,6 +104,20 @@ fn libm_exports_are_registered_under_libm_and_the_map_is_reported_when_present()
         let exported = exported_names(&map);
         let present = exported.iter().filter(|name| registered("libm.so", name)).count();
         eprintln!("libm.map.txt arm64 exports: {}, registered: {present}", exported.len());
+        let absent: Vec<&String> = exported.iter().filter(|name| !registered("libm.so", name)).collect();
+        let not_exported: Vec<&&str> = CORE_LIBM.iter().filter(|name| !exported.contains(**name)).collect();
+        assert!(not_exported.is_empty(), "core libm names that libm.map.txt does not export for arm64: {not_exported:?}");
+        const COMPLEX: [&str; 16] = ["cabs", "cacos", "carg", "casin", "catan", "ccos", "cexp", "cimag", "clog", "conj", "cpow", "cproj", "creal", "csin", "csqrt", "ctan"];
+        let unexplained: Vec<&&String> = absent
+            .iter()
+            .filter(|name| {
+                let long_double = name.ends_with('l') || name.ends_with("l_r");
+                let complex = COMPLEX.iter().any(|prefix| name.starts_with(prefix));
+                !(long_double || complex || name.starts_with("nexttoward") || name.starts_with("scalb") || name.starts_with("significand"))
+            })
+            .collect();
+        assert!(unexplained.is_empty(), "libm exports that are neither long double, complex, nexttoward nor scalb/significand yet have no registration: {unexplained:?}");
+        assert!(present >= 150, "libm registrations dropped to {present} of {}", exported.len());
     } else {
         eprintln!("libm.map.txt is not in the android-ref checkout, so libm coverage is measured against the core list only");
     }

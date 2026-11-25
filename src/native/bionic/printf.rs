@@ -1,7 +1,7 @@
 use super::super::va_list::GuestVaList;
 use super::errno::{guest_errno, message};
 use super::fatal::fortify_fatal;
-use super::guest_mem::cstr_bytes;
+use super::guest_mem::{cstr_bytes, cstr_bytes_bounded};
 
 #[derive(Default, Clone, Copy)]
 struct Flags {
@@ -101,6 +101,17 @@ fn parse_spec(cursor: &mut Cursor, args: &mut GuestVaList) -> Result<Spec, Strin
             Some(b'h') => length = if length == Length::Short { Length::Char } else { Length::Short },
             Some(b'l' | b'j' | b'z' | b't' | b'q') => length = Length::Long,
             Some(b'L') => length = Length::Double,
+            Some(b'w') => {
+                cursor.index += 1;
+                length = match cursor.number() {
+                    8 => Length::Char,
+                    16 => Length::Short,
+                    32 => Length::Int,
+                    64 => Length::Long,
+                    bits => fortify_fatal(&format!("%w{bits} is unsupported")),
+                };
+                continue;
+            }
             _ => break,
         }
         cursor.index += 1;
@@ -168,6 +179,9 @@ fn integer(out: &mut Vec<u8>, spec: &Spec, negative: bool, magnitude: u64, base:
     if base == 16 && (always_prefix || (spec.flags.alternate && magnitude != 0)) {
         prefix.extend_from_slice(if upper { b"0X" } else { b"0x" });
     }
+    if base == 2 && spec.flags.alternate && magnitude != 0 {
+        prefix.extend_from_slice(if upper { b"0B" } else { b"0b" });
+    }
     finish(out, spec, &prefix, &digits, spec.precision.is_none());
 }
 
@@ -210,10 +224,23 @@ fn host_float(spec: &Spec, conversion: u8, value: f64) -> Vec<u8> {
     buffer
 }
 
+fn text(out: &mut Vec<u8>, spec: &Spec, bytes: &[u8]) {
+    let used = spec.precision.map_or(bytes.len(), |limit| bytes.len().min(limit));
+    finish(out, spec, &[], &bytes[..used], true);
+}
+
 fn string(out: &mut Vec<u8>, spec: &Spec, pointer: usize) {
-    let text: &[u8] = if pointer == 0 { b"(null)" } else { cstr_bytes(pointer) };
-    let used = spec.precision.map_or(text.len(), |limit| text.len().min(limit));
-    finish(out, spec, &[], &text[..used], false);
+    // cite: bionic vfprintf.cpp#vfprintf
+    match (pointer, spec.precision) {
+        (0, _) => text(out, spec, b"(null)"),
+        (_, Some(limit)) => text(out, spec, cstr_bytes_bounded(pointer, limit)),
+        (_, None) => text(out, spec, cstr_bytes(pointer)),
+    }
+}
+
+fn long_alias(spec: &mut Spec, conversion: u8) -> u8 {
+    spec.length = Length::Long;
+    conversion
 }
 
 pub fn format(format: &[u8], args: &mut GuestVaList) -> Result<Vec<u8>, String> {
@@ -225,8 +252,16 @@ pub fn format(format: &[u8], args: &mut GuestVaList) -> Result<Vec<u8>, String> 
             out.push(byte);
             continue;
         }
-        let spec = parse_spec(&mut cursor, args)?;
+        let mut spec = parse_spec(&mut cursor, args)?;
         let Some(conversion) = cursor.take() else { break };
+        let conversion = match conversion {
+            b'D' => long_alias(&mut spec, b'd'),
+            b'O' => long_alias(&mut spec, b'o'),
+            b'U' => long_alias(&mut spec, b'u'),
+            b'C' => long_alias(&mut spec, b'c'),
+            b'S' => long_alias(&mut spec, b's'),
+            other => other,
+        };
         match conversion {
             b'd' | b'i' => {
                 let value = signed_value(args, spec.length);
@@ -234,6 +269,8 @@ pub fn format(format: &[u8], args: &mut GuestVaList) -> Result<Vec<u8>, String> 
             }
             b'u' => integer(&mut out, &spec, false, unsigned_value(args, spec.length), 10, false, false, false),
             b'o' => integer(&mut out, &spec, false, unsigned_value(args, spec.length), 8, false, false, false),
+            b'b' => integer(&mut out, &spec, false, unsigned_value(args, spec.length), 2, false, false, false),
+            b'B' => integer(&mut out, &spec, false, unsigned_value(args, spec.length), 2, true, false, false),
             b'x' => integer(&mut out, &spec, false, unsigned_value(args, spec.length), 16, false, false, false),
             b'X' => integer(&mut out, &spec, false, unsigned_value(args, spec.length), 16, true, false, false),
             b'p' => integer(&mut out, &spec, false, args.next_ptr() as u64, 16, false, false, true),
@@ -242,7 +279,7 @@ pub fn format(format: &[u8], args: &mut GuestVaList) -> Result<Vec<u8>, String> 
                     return Err("printf %lc; next missing primitive: printf wide characters".to_string());
                 }
                 let character = [args.next_i32() as u8];
-                finish(&mut out, &spec, &[], &character, false);
+                finish(&mut out, &spec, &[], &character, true);
             }
             b's' => {
                 if spec.length == Length::Long {
@@ -251,8 +288,8 @@ pub fn format(format: &[u8], args: &mut GuestVaList) -> Result<Vec<u8>, String> 
                 string(&mut out, &spec, args.next_ptr());
             }
             b'm' => {
-                let text = message(guest_errno()).map_or_else(|| format!("Unknown error {}", guest_errno()), str::to_string);
-                finish(&mut out, &spec, &[], text.as_bytes(), false);
+                let message = message(guest_errno()).map_or_else(|| format!("Unknown error {}", guest_errno()), str::to_string);
+                text(&mut out, &spec, message.as_bytes());
             }
             b'e' | b'E' | b'f' | b'F' | b'g' | b'G' | b'a' | b'A' => {
                 if spec.length == Length::Double {
@@ -261,9 +298,8 @@ pub fn format(format: &[u8], args: &mut GuestVaList) -> Result<Vec<u8>, String> 
                 out.extend(host_float(&spec, conversion, args.next_f64()));
             }
             b'n' => fortify_fatal("%n not allowed on Android"),
-            b'%' => out.push(b'%'),
             0 => break,
-            other => out.push(other),
+            other => finish(&mut out, &spec, &[], &[other], true),
         }
     }
     Ok(out)

@@ -18,7 +18,7 @@ fn register_integers() {
     in_libc("div", |context| {
         // cite: bionic div.c#div
         let (numerator, denominator) = (context.arg_i32(0), context.arg_i32(1));
-        let quotient = numerator.checked_div(denominator).unwrap_or(0);
+        let quotient = if denominator == 0 { 0 } else { numerator.wrapping_div(denominator) };
         let remainder = numerator.wrapping_sub(quotient.wrapping_mul(denominator));
         context.ret_u64(u64::from(quotient as u32) | (u64::from(remainder as u32) << 32));
     });
@@ -26,7 +26,7 @@ fn register_integers() {
         in_libc(name, |context| {
             // cite: bionic ldiv.c#ldiv
             let (numerator, denominator) = (context.arg_u64(0) as i64, context.arg_u64(1) as i64);
-            let quotient = numerator.checked_div(denominator).unwrap_or(0);
+            let quotient = if denominator == 0 { 0 } else { numerator.wrapping_div(denominator) };
             let remainder = numerator.wrapping_sub(quotient.wrapping_mul(denominator));
             context.ret_pair(quotient as u64, remainder as u64);
         });

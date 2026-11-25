@@ -61,7 +61,7 @@ The only permitted comment form:
     // cite: <repo> <FileName>#<anchor>[, <anchor>...]
 
 - <repo> is a directory under ~/Dev/android-ref (androidx, frameworks-base,
-  libcore, art, dalvik, bionic, frameworks-native, cts).
+  libcore, art, dalvik, bionic, logging, frameworks-native, cts).
 - <FileName> is the bare file name; <anchor> is a method, field, constant,
   or attribute name inside it. Every part must be findable with rg inside
   the reference checkout. No line numbers — they rot when the pin moves.
@@ -109,8 +109,10 @@ Android behavior is never guessed, remembered, or inferred. It is read.
     - art/ — the real DEX interpreter and libdexfile. The reference for
       instruction semantics, verifier rules, and dex format edge cases.
     - dalvik/ — opcode tables (opcode-gen) and legacy runtime docs.
-    - bionic/ — libc and the dynamic linker, for the Bionic-compatible
+    - bionic/ — libc, libm and the dynamic linker, for the Bionic-compatible
       native runtime.
+    - logging/ — liblog (system/logging): __android_log_* behavior, log.tag
+      property lookup, buffer ids.
     - frameworks-native/ — libs/input: native MotionEvent/KeyEvent
       semantics.
     - cts/ — Compatibility Test Suite subsets (view, widget, text,

@@ -14,6 +14,9 @@ pub mod fenv;
 pub mod fortify;
 pub mod fortify_check;
 pub mod guest_mem;
+pub mod langinfo;
+pub mod libgen;
+pub mod libstdcxx;
 pub mod locale;
 pub mod log;
 pub mod log_sink;
@@ -31,12 +34,14 @@ pub mod strerror_table;
 pub mod string;
 pub mod strtonum;
 pub mod sysconf_table;
+pub mod stdio_files;
 pub mod strftime;
 pub mod sysinfo;
 pub mod time_handlers;
 pub mod tz_state;
 pub mod tzif;
 pub mod wide;
+pub mod wide_float;
 
 use std::sync::Once;
 
@@ -68,5 +73,10 @@ pub fn register_libc_core() {
         dl::register();
         fenv::register();
         math::register();
+        libstdcxx::register();
+        langinfo::register();
+        libgen::register();
+        stdio_files::register();
+        wide_float::register();
     });
 }

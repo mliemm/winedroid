@@ -14,7 +14,9 @@ ART_PATHS=(runtime libdexfile)
 
 DALVIK_PATHS=(docs opcode-gen)
 
-BIONIC_PATHS=(libc linker docs)
+BIONIC_PATHS=(libc linker libm docs)
+
+LOGGING_PATHS=(liblog)
 
 FRAMEWORKS_NATIVE_PATHS=(libs/input include)
 
@@ -54,6 +56,9 @@ fetch_sparse https://android.googlesource.com/platform/dalvik \
 
 fetch_sparse https://android.googlesource.com/platform/bionic \
     "$REF_ROOT/bionic" "$PLATFORM_TAG" "${BIONIC_PATHS[@]}"
+
+fetch_sparse https://android.googlesource.com/platform/system/logging \
+    "$REF_ROOT/logging" "$PLATFORM_TAG" "${LOGGING_PATHS[@]}"
 
 fetch_sparse https://android.googlesource.com/platform/frameworks/native \
     "$REF_ROOT/frameworks-native" "$PLATFORM_TAG" "${FRAMEWORKS_NATIVE_PATHS[@]}"

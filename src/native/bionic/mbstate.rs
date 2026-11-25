@@ -7,7 +7,7 @@ use super::guest_mem::{read_value, write_value};
 const ILLEGAL: u64 = u64::MAX;
 const INCOMPLETE: u64 = u64::MAX - 1;
 const WEOF: u32 = u32::MAX;
-const PRIVATE_STATES: usize = 8;
+const PRIVATE_STATES: usize = 10;
 const STATE_MBRTOWC: usize = 0;
 const STATE_MBRTOC32: usize = 1;
 const STATE_MBRLEN: usize = 2;
@@ -16,6 +16,10 @@ const STATE_C32RTOMB: usize = 4;
 const STATE_MBTOWC: usize = 5;
 const STATE_WCTOMB: usize = 6;
 const STATE_BTOWC: usize = 7;
+const STATE_MBSNRTOWCS: usize = 8;
+const STATE_WCSNRTOMBS: usize = 9;
+const ASCII_LIMIT: u8 = 0x80;
+const SEQUENCE_WINDOW: usize = 4;
 
 type Sequence = [u8; 4];
 
@@ -185,7 +189,156 @@ fn encode_call(destination: usize, code: u32, private: usize, state_address: usi
     outcome
 }
 
+fn reset_and_return(value: usize, state: &mut Sequence) -> Outcome {
+    // cite: bionic bionic_mbstate.h#mbstate_reset_and_return
+    *state = [0; 4];
+    Outcome { value: value as u64, errno: None }
+}
+
+fn sequence_at(address: usize, available: usize) -> &'static [u8] {
+    unsafe { std::slice::from_raw_parts(address as *const u8, available.min(SEQUENCE_WINDOW)) }
+}
+
+fn mbsnrtowcs(destination: usize, source: usize, nmc: usize, len: usize, state: &mut Sequence) -> Outcome {
+    // cite: bionic wchar.cpp#mbsnrtowcs
+    let base = read_value::<usize>(source);
+    let byte = |index: usize| read_value::<u8>(base + index);
+    if nmc > 0 && bytes_so_far(state) > 0 && byte(0) < ASCII_LIMIT {
+        return illegal(EILSEQ, state);
+    }
+    let (mut consumed, mut produced) = (0usize, 0usize);
+    while consumed < nmc && (destination == 0 || produced < len) {
+        let step;
+        if byte(consumed) < ASCII_LIMIT {
+            if destination != 0 {
+                write_value::<u32>(destination + produced * 4, u32::from(byte(consumed)));
+            }
+            if byte(consumed) == 0 {
+                if destination != 0 {
+                    write_value::<usize>(source, 0);
+                }
+                return reset_and_return(produced, state);
+            }
+            step = 1;
+        } else {
+            let mut decoded = None;
+            let outcome = decode(state, Some(sequence_at(base + consumed, nmc - consumed)), &mut decoded);
+            match outcome.value {
+                ILLEGAL => {
+                    if destination != 0 {
+                        write_value::<usize>(source, base + consumed);
+                    }
+                    return illegal(EILSEQ, state);
+                }
+                INCOMPLETE => {
+                    if destination != 0 {
+                        write_value::<usize>(source, base + nmc);
+                    }
+                    return illegal(EILSEQ, state);
+                }
+                0 => {
+                    if destination != 0 {
+                        write_value::<usize>(source, 0);
+                    }
+                    return reset_and_return(produced, state);
+                }
+                taken => {
+                    if let (Some(code), true) = (decoded, destination != 0) {
+                        write_value::<u32>(destination + produced * 4, code);
+                    }
+                    step = taken as usize;
+                }
+            }
+        }
+        consumed += step;
+        produced += 1;
+    }
+    if destination != 0 {
+        write_value::<usize>(source, base + consumed);
+    }
+    reset_and_return(produced, state)
+}
+
+fn wcsnrtombs(destination: usize, source: usize, nwc: usize, len: usize, state: &mut Sequence) -> Outcome {
+    // cite: bionic wchar.cpp#wcsnrtombs
+    if !is_initial(state) {
+        return illegal(EILSEQ, state);
+    }
+    let base = read_value::<usize>(source);
+    let wide = |index: usize| read_value::<u32>(base + index * 4);
+    let (mut consumed, mut produced) = (0usize, 0usize);
+    while consumed < nwc && (destination == 0 || produced < len) {
+        let mut bytes = Vec::new();
+        if wide(consumed) < u32::from(ASCII_LIMIT) {
+            if wide(consumed) == 0 {
+                if destination != 0 {
+                    write_value::<u8>(destination + produced, 0);
+                    write_value::<usize>(source, 0);
+                }
+                return Outcome { value: produced as u64, errno: None };
+            }
+            bytes.push(wide(consumed) as u8);
+        } else {
+            let outcome = encode(state, wide(consumed), &mut bytes);
+            if outcome.value == ILLEGAL {
+                if destination != 0 {
+                    write_value::<usize>(source, base + consumed * 4);
+                }
+                return outcome;
+            }
+        }
+        if destination != 0 {
+            if bytes.len() > len - produced {
+                break;
+            }
+            super::guest_mem::write_bytes(destination + produced, &bytes);
+        }
+        consumed += 1;
+        produced += bytes.len();
+    }
+    if destination != 0 {
+        write_value::<usize>(source, base + consumed * 4);
+    }
+    Outcome { value: produced as u64, errno: None }
+}
+
+fn register_strings() {
+    in_libc("mbsnrtowcs", |context| {
+        let (destination, source, nmc, len) = (context.arg_ptr(0), context.arg_ptr(1), context.arg_u64(2) as usize, context.arg_u64(3) as usize);
+        let outcome = with_state(context.arg_ptr(4), STATE_MBSNRTOWCS, |state| mbsnrtowcs(destination, source, nmc, len, state));
+        finish(context, &outcome);
+    });
+    in_libc("mbsrtowcs", |context| {
+        let (destination, source, len) = (context.arg_ptr(0), context.arg_ptr(1), context.arg_u64(2) as usize);
+        let outcome = with_state(context.arg_ptr(3), STATE_MBSNRTOWCS, |state| mbsnrtowcs(destination, source, usize::MAX, len, state));
+        finish(context, &outcome);
+    });
+    in_libc("mbstowcs", |context| {
+        // cite: bionic mbstowcs.c#mbstowcs
+        let (destination, cursor) = (context.arg_ptr(0), [context.arg_ptr(1)]);
+        let outcome = mbsnrtowcs(destination, cursor.as_ptr() as usize, usize::MAX, context.arg_u64(2) as usize, &mut [0; 4]);
+        finish(context, &outcome);
+    });
+    in_libc("wcsnrtombs", |context| {
+        let (destination, source, nwc, len) = (context.arg_ptr(0), context.arg_ptr(1), context.arg_u64(2) as usize, context.arg_u64(3) as usize);
+        let outcome = with_state(context.arg_ptr(4), STATE_WCSNRTOMBS, |state| wcsnrtombs(destination, source, nwc, len, state));
+        finish(context, &outcome);
+    });
+    in_libc("wcsrtombs", |context| {
+        let (destination, source, len) = (context.arg_ptr(0), context.arg_ptr(1), context.arg_u64(2) as usize);
+        let outcome = with_state(context.arg_ptr(3), STATE_WCSNRTOMBS, |state| wcsnrtombs(destination, source, usize::MAX, len, state));
+        finish(context, &outcome);
+    });
+    in_libc("wcstombs", |context| {
+        // cite: bionic wcstombs.c#wcstombs
+        let (destination, cursor) = (context.arg_ptr(0), [context.arg_ptr(1)]);
+        let outcome = wcsnrtombs(destination, cursor.as_ptr() as usize, usize::MAX, context.arg_u64(2) as usize, &mut [0; 4]);
+        finish(context, &outcome);
+    });
+}
+
 pub fn register() {
+    register_strings();
     in_libc("mbsinit", |context| {
         let initial = context.arg_ptr(0) == 0 || with_state(context.arg_ptr(0), 0, |state| is_initial(state));
         context.ret_i32(i32::from(initial));

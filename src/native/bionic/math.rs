@@ -48,6 +48,7 @@ host_functions! {
     frexp(x: f64, e: *mut i32) -> f64; frexpf(x: f32, e: *mut i32) -> f32;
     modf(x: f64, i: *mut f64) -> f64; modff(x: f32, i: *mut f32) -> f32;
     ilogb(x: f64) -> i32;
+    remquo(x: f64, y: f64, q: *mut i32) -> f64; remquof(x: f32, y: f32, q: *mut i32) -> f32;
     lgamma_r(x: f64, s: *mut i32) -> f64; lgammaf_r(x: f32, s: *mut i32) -> f32;
     jn(n: i32, x: f64) -> f64; yn(n: i32, x: f64) -> f64;
 }
@@ -234,6 +235,18 @@ fn register_pointer_results() {
         let fraction = unsafe { host::modff(context.arg_f32(0), &mut whole) };
         write_value::<f32>(context.arg_ptr(0), whole);
         context.ret_f32(fraction);
+    });
+    in_libm("remquo", |context| {
+        let mut quotient = 0i32;
+        let remainder = unsafe { host::remquo(context.arg_f64(0), context.arg_f64(1), &mut quotient) };
+        write_value::<i32>(context.arg_ptr(0), quotient);
+        context.ret_f64(remainder);
+    });
+    in_libm("remquof", |context| {
+        let mut quotient = 0i32;
+        let remainder = unsafe { host::remquof(context.arg_f32(0), context.arg_f32(1), &mut quotient) };
+        write_value::<i32>(context.arg_ptr(0), quotient);
+        context.ret_f32(remainder);
     });
     in_libm("ldexpf", |context| context.ret_f32(unsafe { host::ldexpf(context.arg_f32(0), context.arg_i32(0)) }));
     in_libm("scalbn", |context| context.ret_f64(unsafe { host::scalbn(context.arg_f64(0), context.arg_i32(0)) }));

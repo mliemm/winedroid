@@ -23,9 +23,9 @@ pub fn take_capture() -> Vec<LogRecord> {
 }
 
 pub fn priority_letter(priority: i32) -> char {
-    // cite: bionic async_safe_log.cpp#async_safe_write_log
-    const LETTERS: &[u8; 9] = b"XXVDIWEFS";
-    let index = if priority < 0 { 0 } else { (priority as usize).min(LETTERS.len() - 1) };
+    // cite: logging logger_write.cpp#filestream_logger, log_characters
+    const LETTERS: &[u8; 9] = b"XXVDIWEF\0";
+    let index = if priority < 0 { 0 } else if priority > 8 { 7 } else { priority as usize };
     LETTERS[index] as char
 }
 

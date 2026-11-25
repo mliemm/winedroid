@@ -102,6 +102,17 @@ fn store() -> &'static Mutex<Store> {
     })
 }
 
+#[cfg(test)]
+pub fn set_for_test(name: &str, value: Option<&str>) {
+    let mut store = store().lock().expect("property store");
+    match value {
+        Some(value) => add(&mut store, name.as_bytes(), value.as_bytes()),
+        None => {
+            store.properties.remove(name.as_bytes());
+        }
+    }
+}
+
 pub fn get(name: &str) -> Option<String> {
     let store = store().lock().expect("property store");
     store.properties.get(name.as_bytes()).map(|property| String::from_utf8_lossy(&property.value).into_owned())

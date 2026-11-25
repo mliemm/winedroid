@@ -17,6 +17,10 @@ use super::props::get as property;
 const PRIORITY_DEFAULT: i32 = 1;
 const PRIORITY_VERBOSE: i32 = 2;
 const PRIORITY_FATAL: i32 = 7;
+const PRIORITY_SILENT: i32 = 8;
+const BOOLEAN_TRUE: u8 = 0xFF;
+const BOOLEAN_FALSE: u8 = 0xFE;
+const TAG_LIMIT: usize = 4068;
 const BUFFER_DEFAULT: i32 = 0x7FFF_FFFF;
 const FORMAT_LIMIT: usize = 1023;
 
@@ -25,20 +29,52 @@ static ABORTER: AtomicUsize = AtomicUsize::new(0);
 static MINIMUM: AtomicI32 = AtomicI32::new(PRIORITY_DEFAULT);
 static DEFAULT_TAG: Mutex<Option<String>> = Mutex::new(None);
 
-fn tag_priority(tag: &[u8]) -> Option<i32> {
-    // cite: bionic async_safe_log.cpp#async_safe_write_log
-    let tag = String::from_utf8_lossy(tag).into_owned();
-    let lookups = [format!("log.tag.{tag}"), format!("persist.log.tag.{tag}"), "log.tag".to_string(), "persist.log.tag".to_string()];
-    lookups.iter().find_map(|key| property(key)).and_then(|value| {
-        let letter = value.bytes().next()?.to_ascii_uppercase();
-        "XXVDIWEFS".bytes().position(|candidate| candidate == letter).map(|index| index as i32)
-    })
+fn property_level(key: &str) -> u8 {
+    // cite: logging properties.cpp#refresh_cache
+    let Some(value) = property(key) else { return 0 };
+    let bytes = value.as_bytes();
+    match bytes.first().copied() {
+        Some(first @ (b't' | b'T')) => if value[1..].eq_ignore_ascii_case("rue") { BOOLEAN_TRUE } else { first },
+        Some(first @ (b'f' | b'F')) => if value[1..].eq_ignore_ascii_case("alse") { BOOLEAN_FALSE } else { first },
+        Some(first) => first,
+        None => 0,
+    }
+}
+
+fn level_of(level: u8) -> Option<i32> {
+    // cite: logging properties.cpp#__android_log_level
+    match level.to_ascii_uppercase() {
+        b'V' => Some(PRIORITY_VERBOSE),
+        b'D' => Some(3),
+        b'I' => Some(4),
+        b'W' => Some(5),
+        b'E' => Some(6),
+        b'F' | b'A' => Some(PRIORITY_FATAL),
+        BOOLEAN_FALSE | b'S' => Some(PRIORITY_SILENT),
+        _ => None,
+    }
+}
+
+fn first_level(keys: &[String]) -> u8 {
+    keys.iter().map(|key| property_level(key)).find(|level| *level != 0).unwrap_or(0)
+}
+
+fn tag_priority(tag: Option<&[u8]>) -> Option<i32> {
+    // cite: logging properties.cpp#__android_log_level
+    let tag = match tag {
+        Some(bytes) if !bytes.is_empty() => String::from_utf8_lossy(bytes).into_owned(),
+        _ => default_tag(),
+    };
+    let specific = first_level(&[format!("log.tag.{tag}"), format!("persist.log.tag.{tag}")]);
+    let level = if level_of(specific).is_some() { specific } else { first_level(&["log.tag".to_string(), "persist.log.tag".to_string()]) };
+    level_of(level)
 }
 
 pub fn is_loggable(priority: i32, tag: Option<&[u8]>, default_priority: i32) -> bool {
+    // cite: logging properties.cpp#__android_log_is_loggable_len
     let minimum = MINIMUM.load(Ordering::SeqCst);
     let set_minimum = (minimum != PRIORITY_DEFAULT).then_some(minimum);
-    let from_tag = tag.and_then(tag_priority);
+    let from_tag = tag_priority(tag);
     let effective = match (set_minimum, from_tag) {
         (Some(left), Some(right)) => left.min(right),
         (Some(value), None) | (None, Some(value)) => value,
@@ -58,7 +94,9 @@ fn buffer_is_writable(buffer: i32) -> bool {
 fn call_logger(record: &LogRecord) -> Result<(), String> {
     let logger = LOGGER.load(Ordering::SeqCst);
     if logger == 0 {
-        emit(record.clone());
+        // cite: logging logger_write.cpp#__android_log_logd_logger
+        let buffer = if record.buffer == BUFFER_DEFAULT { 0 } else { record.buffer };
+        emit(LogRecord { buffer, ..record.clone() });
         return Ok(());
     }
     let tag = CString::new(record.tag.clone()).unwrap_or_default();
@@ -74,7 +112,7 @@ fn call_logger(record: &LogRecord) -> Result<(), String> {
 }
 
 fn write_record(buffer: i32, priority: i32, tag: Option<&[u8]>, text: &[u8]) -> Result<(), String> {
-    // cite: bionic async_safe_log.cpp#async_safe_write_log
+    // cite: logging logger_write.cpp#__android_log_write_log_message
     if !buffer_is_writable(buffer) {
         return Ok(());
     }
@@ -83,7 +121,6 @@ fn write_record(buffer: i32, priority: i32, tag: Option<&[u8]>, text: &[u8]) -> 
     if priority == PRIORITY_FATAL {
         set_abort_message(&message);
     }
-    let buffer = if buffer == BUFFER_DEFAULT { 0 } else { buffer };
     call_logger(&LogRecord { buffer, priority, tag, file: None, line: 0, message })
 }
 
@@ -115,7 +152,7 @@ fn formatted_write(context: &mut CallContext, buffer: i32, priority: i32, tag: u
 }
 
 fn assert_fatal(context: &mut CallContext) {
-    // cite: bionic async_safe_log.cpp#async_safe_fatal_va_list
+    // cite: logging logger_write.cpp#__android_log_assert
     let regs = *context.regs();
     let (condition, tag, format_pointer) = (context.arg_ptr(0), context.arg_ptr(1), context.arg_ptr(2));
     let text = if format_pointer != 0 {
@@ -134,8 +171,10 @@ fn assert_fatal(context: &mut CallContext) {
     let mut line = text.clone();
     line.push(b'\n');
     unsafe { libc::write(2, line.as_ptr() as *const libc::c_void, line.len()) };
-    if let Err(message) = write_record(0, PRIORITY_FATAL, optional_cstr(tag), &text) {
-        return context.fail(message);
+    if is_loggable(PRIORITY_FATAL, optional_cstr(tag), PRIORITY_VERBOSE) {
+        if let Err(message) = write_record(0, PRIORITY_FATAL, optional_cstr(tag), &text) {
+            return context.fail(message);
+        }
     }
     let aborter = ABORTER.load(Ordering::SeqCst);
     if aborter != 0 {
@@ -219,7 +258,7 @@ fn register_configuration() {
     in_liblog("__android_log_set_minimum_priority", |context| context.ret_i32(MINIMUM.swap(context.arg_i32(0), Ordering::SeqCst)));
     in_liblog("__android_log_get_minimum_priority", |context| context.ret_i32(MINIMUM.load(Ordering::SeqCst)));
     in_liblog("__android_log_set_default_tag", |context| {
-        let tag = optional_cstr(context.arg_ptr(0)).map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+        let tag = optional_cstr(context.arg_ptr(0)).map(|bytes| String::from_utf8_lossy(&bytes[..bytes.len().min(TAG_LIMIT)]).into_owned());
         *DEFAULT_TAG.lock().expect("default tag") = tag;
     });
 }

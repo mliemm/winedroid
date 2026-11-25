@@ -1,5 +1,10 @@
+use super::abi_types::EINVAL;
+use super::ctype::{wide_class_member, wide_class_of, wide_lower, wide_upper};
 use super::export::in_libc;
-use super::guest_mem::{read_value, write_value};
+use super::guest_mem::{cstr_bytes, read_value, write_value};
+
+const TRANSLATE_LOWER: u64 = 1;
+const TRANSLATE_UPPER: u64 = 2;
 
 fn at(base: usize, index: usize) -> u32 {
     read_value::<u32>(base + index * 4)
@@ -26,6 +31,47 @@ fn compare(left: usize, right: usize, limit: usize) -> i32 {
         }
     }
     0
+}
+
+fn compare_folded(left: usize, right: usize, limit: usize) -> i32 {
+    // cite: bionic wcsncasecmp.c#wcsncasecmp
+    if limit == 0 {
+        return 0;
+    }
+    let mut remaining = limit;
+    let mut index = 0;
+    while at(left, index) != 0 {
+        let (a, b) = (wide_lower(at(left, index)), wide_lower(at(right, index)));
+        if a != b {
+            return a.wrapping_sub(b) as i32;
+        }
+        remaining = remaining.wrapping_sub(1);
+        if remaining == 0 {
+            return 0;
+        }
+        index += 1;
+    }
+    0u32.wrapping_sub(at(right, index)) as i32
+}
+
+fn search(haystack: usize, needle: usize) -> usize {
+    // cite: bionic wcsstr.c#wcsstr
+    let wanted = at(needle, 0);
+    if wanted == 0 {
+        return haystack;
+    }
+    let rest = length(needle + 4);
+    let mut index = 0;
+    loop {
+        let current = at(haystack, index);
+        if current == 0 {
+            return 0;
+        }
+        if current == wanted && compare(haystack + (index + 1) * 4, needle + 4, rest) == 0 {
+            return haystack + index * 4;
+        }
+        index += 1;
+    }
 }
 
 fn find(base: usize, wanted: u32, last: bool) -> usize {
@@ -57,7 +103,64 @@ fn copy_terminated(destination: usize, source: usize, limit: usize) {
     }
 }
 
+fn translate(character: u32, kind: u64) -> Option<u32> {
+    // cite: bionic wctype.cpp#towctrans
+    match kind {
+        TRANSLATE_LOWER => Some(wide_lower(character)),
+        TRANSLATE_UPPER => Some(wide_upper(character)),
+        _ => None,
+    }
+}
+
+fn register_classes() {
+    in_libc("wctype", |context| context.ret_u64(wide_class_of(cstr_bytes(context.arg_ptr(0)))));
+    in_libc("wctype_l", |context| context.ret_u64(wide_class_of(cstr_bytes(context.arg_ptr(0)))));
+    in_libc("iswctype", |context| context.ret_i32(wide_class_member(context.arg_u64(1), context.arg_i32(0))));
+    in_libc("iswctype_l", |context| context.ret_i32(wide_class_member(context.arg_u64(1), context.arg_i32(0))));
+    for name in ["wctrans", "wctrans_l"] {
+        in_libc(name, |context| {
+            // cite: bionic wctype.cpp#wctrans
+            context.ret_u64(match cstr_bytes(context.arg_ptr(0)) {
+                b"tolower" => TRANSLATE_LOWER,
+                b"toupper" => TRANSLATE_UPPER,
+                _ => 0,
+            });
+        });
+    }
+    for name in ["towctrans", "towctrans_l"] {
+        in_libc(name, |context| match translate(context.arg_u32(0), context.arg_u64(1)) {
+            Some(value) => context.ret_u32(value),
+            None => {
+                context.set_errno(EINVAL);
+                context.ret_u32(0);
+            }
+        });
+    }
+}
+
+fn register_search() {
+    in_libc("wcsstr", |context| context.ret_ptr(search(context.arg_ptr(0), context.arg_ptr(1))));
+    in_libc("wcscasecmp", |context| context.ret_i32(compare_folded(context.arg_ptr(0), context.arg_ptr(1), usize::MAX)));
+    in_libc("wcscasecmp_l", |context| context.ret_i32(compare_folded(context.arg_ptr(0), context.arg_ptr(1), usize::MAX)));
+    in_libc("wcsncasecmp", |context| context.ret_i32(compare_folded(context.arg_ptr(0), context.arg_ptr(1), context.arg_u64(2) as usize)));
+    in_libc("wcsncasecmp_l", |context| context.ret_i32(compare_folded(context.arg_ptr(0), context.arg_ptr(1), context.arg_u64(2) as usize)));
+    for name in ["wcsxfrm", "wcsxfrm_l"] {
+        in_libc(name, |context| {
+            // cite: bionic wcsxfrm.c#wcsxfrm
+            let (destination, source, capacity) = (context.arg_ptr(0), context.arg_ptr(1), context.arg_u64(2) as usize);
+            let total = length(source);
+            if capacity != 0 {
+                copy_terminated(destination, source, total.min(capacity - 1));
+                write_value::<u32>(destination + total.min(capacity - 1) * 4, 0);
+            }
+            context.ret_u64(total as u64);
+        });
+    }
+}
+
 pub fn register() {
+    register_classes();
+    register_search();
     in_libc("wcslen", |context| context.ret_u64(length(context.arg_ptr(0)) as u64));
     in_libc("wcsnlen", |context| {
         let (base, limit) = (context.arg_ptr(0), context.arg_u64(1) as usize);
