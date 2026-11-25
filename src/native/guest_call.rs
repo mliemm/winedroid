@@ -28,6 +28,12 @@ pub fn call_constructor(address: usize, args: &GuestProcessArgs) {
     function(args.argc, args.argv, args.envp);
 }
 
+pub fn call_init(address: usize) {
+    // cite: bionic linker_soinfo.cpp#call_function
+    let function: extern "C" fn() = unsafe { std::mem::transmute(address) };
+    function();
+}
+
 pub fn call_destructor(address: usize) {
     let function: extern "C" fn() = unsafe { std::mem::transmute(address) };
     function();

@@ -41,7 +41,9 @@ pub fn fixture_dir(variant: &str) -> PathBuf {
 }
 
 pub fn corpus_dir() -> PathBuf {
-    PathBuf::from("/private/tmp/claude-501/-Users-mliem-dev-GitHub/72d22855-6f45-48eb-8f6a-a82fc02a6831/scratchpad/tiktok-libs/lib/arm64-v8a")
+    std::env::var_os("WINEDROID_TIKTOK_LIBS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tiktok-libs/lib/arm64-v8a"))
 }
 
 extern "C" fn mutex_stub(_mutex: *mut u8) -> i32 {

@@ -10,6 +10,7 @@ use super::tls_modules;
 
 const ADDEND: u64 = 0x10;
 const VARIANTS: [&str; 2] = ["16k", "4k"];
+const R_AARCH64_RELATIVE_KIND: u32 = super::fixture_elf::R_AARCH64_RELATIVE;
 
 fn scratch_dir(label: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("winedroid-link-{label}-{}", std::process::id()));
@@ -205,6 +206,62 @@ fn bionic_soinfo_unload_unregisters_the_tls_module_of_the_closed_library() {
 
     assert_ne!(tls_modules::generation_of(module), Some(generation));
     assert_eq!(tls_modules::existing_block_address(module), None, "this thread's block of the closed module is gone");
+}
+
+#[test]
+fn bionic_open_library_prefers_the_dt_runpath_copy_over_the_library_directory_copy() {
+    let root = scratch_dir("runpath-first");
+    fs::create_dir_all(root.join("dep")).unwrap();
+    fs::copy(fixture_dir("16k").join("libfx_order_parent.so"), root.join("libfx_order_parent.so")).unwrap();
+    fs::copy(fixture_dir("16k").join("libfx_order_child.so"), root.join("dep/libfx_order_child.so")).unwrap();
+    fs::copy(fixture_dir("4k").join("libfx_order_child.so"), root.join("libfx_order_child.so")).unwrap();
+    let loader = loader_for(vec![fs::canonicalize(&root).unwrap()]);
+    take_recorded();
+
+    let parent = dlopen_without_constructors(&loader, "libfx_order_parent.so").unwrap();
+    let child = dlopen_without_constructors(&loader, "libfx_order_child.so").unwrap();
+
+    assert!(loader.module_info(parent).unwrap().children.contains(&"libfx_order_child.so".to_string()));
+    let path = loader.module_info(child).unwrap().path;
+    assert!(path.ends_with("dep/libfx_order_child.so"), "{path}");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn bionic_process_relocation_relative_stores_the_load_bias_plus_the_addend() {
+    for variant in VARIANTS {
+        let data = fs::read(fixture_dir(variant).join("libfx_reloc.so")).unwrap();
+        let elf = FixtureElf::parse(&data);
+        let relative: Vec<_> = elf.relocations.iter().filter(|relocation| relocation.kind == R_AARCH64_RELATIVE_KIND).collect();
+        assert!(!relative.is_empty(), "{variant} fixture has RELATIVE relocations");
+        let loader = loader_for(vec![fixture_dir(variant)]);
+        let handle = dlopen_without_constructors(&loader, "libfx_reloc.so").unwrap();
+        let bias = loader.module_info(handle).unwrap().load_bias;
+
+        for relocation in relative {
+            let at = relocation.file_offset + 16;
+            let addend = u64::from_le_bytes(data[at..at + 8].try_into().unwrap());
+            assert_eq!(slot(bias, relocation.vaddr), (bias as u64).wrapping_add(addend), "{variant} RELATIVE at {:#x}", relocation.vaddr);
+        }
+    }
+}
+
+#[test]
+fn bionic_dlclose_frees_the_tls_module_id_for_the_next_load() {
+    let loader = loader_for(vec![fixture_dir("16k")]);
+    let mut reused = false;
+    for _ in 0..50 {
+        let handle = loader.dlopen(Some("libfx_reloc.so"), 2, None).unwrap();
+        let module = loader.module_info(handle).unwrap().tls_module;
+        loader.dlclose(handle).unwrap();
+        let again = loader.dlopen(Some("libfx_reloc.so"), 2, None).unwrap();
+        reused |= loader.module_info(again).unwrap().tls_module == module;
+        loader.dlclose(again).unwrap();
+        if reused {
+            break;
+        }
+    }
+    assert!(reused, "a reload after dlclose never got the freed module id back");
 }
 
 #[test]

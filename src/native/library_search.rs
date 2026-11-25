@@ -29,7 +29,7 @@ pub fn open_library(name: &str, library_dirs: &[PathBuf], needed_by_runpath: &[P
     let candidates: Vec<PathBuf> = if name.contains('/') {
         vec![PathBuf::from(name)]
     } else {
-        library_dirs.iter().chain(needed_by_runpath).map(|dir| dir.join(name)).collect()
+        needed_by_runpath.iter().chain(library_dirs).map(|dir| dir.join(name)).collect()
     };
     candidates.into_iter().find_map(|candidate| {
         let metadata = fs::metadata(&candidate).ok().filter(|metadata| metadata.is_file())?;
@@ -62,7 +62,7 @@ mod tests {
     }
 
     #[test]
-    fn bionic_open_library_searches_the_runpath_after_the_library_directories() {
+    fn bionic_open_library_searches_the_runpath_before_the_library_directories() {
         let root = scratch("open");
         let (primary, runpath) = (root.join("primary"), root.join("runpath"));
         fs::create_dir_all(&primary).unwrap();
@@ -75,7 +75,7 @@ mod tests {
         let both = open_library("libboth.so", std::slice::from_ref(&primary), std::slice::from_ref(&runpath)).unwrap();
 
         assert_eq!(only.path, runpath.join("libonly_runpath.so"));
-        assert_eq!(both.path, primary.join("libboth.so"));
+        assert_eq!(both.path, runpath.join("libboth.so"));
         assert!(open_library("libonly_runpath.so", std::slice::from_ref(&primary), &[]).is_none());
         fs::remove_dir_all(root).unwrap();
     }
