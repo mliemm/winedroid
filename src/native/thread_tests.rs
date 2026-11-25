@@ -421,3 +421,98 @@ fn bionic_thread_list_rejects_addresses_that_are_not_live_records() {
     assert_eq!(super::thread_list::lookup(mine + 16), None);
     assert_eq!(super::thread_list::lookup(0), None);
 }
+
+fn tls_index(module: u64, offset: u64) -> usize {
+    Box::leak(Box::new([module, offset])).as_ptr() as usize
+}
+
+#[test]
+fn bionic_tls_get_addr_gives_each_thread_a_private_block_copied_from_the_template() {
+    // cite: bionic bionic_elf_tls.cpp#__tls_get_addr
+    use super::elf_image::TlsSegment;
+    let template = Box::leak(Box::new([1u8, 2, 3, 4, 9, 9, 9, 9])).as_ptr() as usize;
+    let module = super::tls_modules::register(TlsSegment { size: 8, alignment: 8, init_vaddr: 0, init_size: 4 }, template);
+    let index = tls_index(u64::from(module), 2);
+
+    let mine = shim("__tls_get_addr").ptr(index).invoke().unwrap().u64() as usize;
+    assert_eq!(unsafe { std::slice::from_raw_parts((mine - 2) as *const u8, 8).to_vec() }, vec![1, 2, 3, 4, 0, 0, 0, 0]);
+    unsafe { *(mine as *mut u8) = 77 };
+    let other = std::thread::spawn(move || {
+        let address = shim("__tls_get_addr").ptr(index).invoke().unwrap().u64() as usize;
+        (address, unsafe { *(address as *const u8) })
+    })
+    .join()
+    .unwrap();
+
+    assert_ne!(other.0, mine);
+    assert_eq!(other.1, 3);
+    assert_eq!(shim("__tls_get_addr").ptr(index).invoke().unwrap().u64() as usize, mine, "the block is stable for the thread");
+    super::tls_modules::unregister(module);
+}
+
+#[test]
+fn bionic_tls_get_addr_for_an_unregistered_module_fails_explicitly() {
+    // cite: bionic bionic_elf_tls.cpp#__tls_get_addr
+    let error = shim("__tls_get_addr").ptr(tls_index(60_000, 0)).invoke().unwrap_err().to_string();
+
+    assert!(error.contains("TLS module 60000 is not registered"), "{error}");
+}
+
+fn libcxx() -> Option<Bridged> {
+    use std::sync::Arc;
+    let dir = super::loader_test_support::corpus_dir();
+    if !dir.join("libc++_shared.so").exists() {
+        eprintln!("skipped: TikTok library extraction not found at {}", dir.display());
+        return None;
+    }
+    super::bridge_test_support::register_all();
+    let loader = Arc::new(super::loader::Loader::new(vec![dir], Box::new(super::bridge::BridgeProvider)).with_strict(false));
+    let handle = loader.dlopen(Some("libc++_shared.so"), 2, None).unwrap_or_else(|error| panic!("libc++_shared.so: {error}"));
+    Some(Bridged { loader, handle })
+}
+
+#[test]
+fn measured_libcxx_shared_mutex_lock_try_lock_and_unlock_work_on_a_zeroed_bionic_mutex() {
+    // cite: bionic pthread_mutex.cpp#NormalMutexTryLock, pthread_mutex_unlock
+    let Some(libcxx) = libcxx() else { return };
+    let storage = Box::leak(Box::new([0u64; 8])).as_mut_ptr() as usize;
+    let call = |name: &str| libcxx.call(name).ptr(storage).invoke().unwrap().i32();
+
+    call("_ZNSt6__ndk15mutex4lockEv");
+    assert_eq!(call("_ZNSt6__ndk15mutex8try_lockEv") & 0xFF, 0, "try_lock of a held mutex is false");
+    call("_ZNSt6__ndk15mutex6unlockEv");
+    assert_eq!(call("_ZNSt6__ndk15mutex8try_lockEv") & 0xFF, 1);
+    assert_eq!(unsafe { *(storage as *const u16) }, 1, "locked without waiters in the Bionic state word");
+}
+
+#[test]
+fn measured_libcxx_shared_recursive_mutex_locks_twice_through_a_bionic_recursive_mutex() {
+    // cite: bionic pthread_mutex.cpp#RecursiveIncrement, MutexLockWithTimeout
+    let Some(libcxx) = libcxx() else { return };
+    let storage = Box::leak(Box::new([0u64; 8])).as_mut_ptr() as usize;
+    libcxx.call("_ZNSt6__ndk115recursive_mutexC1Ev").ptr(storage).invoke().unwrap();
+
+    assert_eq!(unsafe { *(storage as *const u16) }, 0x4000);
+    libcxx.call("_ZNSt6__ndk115recursive_mutex4lockEv").ptr(storage).invoke().unwrap();
+    libcxx.call("_ZNSt6__ndk115recursive_mutex4lockEv").ptr(storage).invoke().unwrap();
+    assert_eq!(unsafe { *(storage as *const u16) } & 0x1FFC, 4, "second lock raises the recursion counter");
+    libcxx.call("_ZNSt6__ndk115recursive_mutex6unlockEv").ptr(storage).invoke().unwrap();
+    libcxx.call("_ZNSt6__ndk115recursive_mutex6unlockEv").ptr(storage).invoke().unwrap();
+    assert_eq!(unsafe { *(storage as *const u16) }, 0x4000);
+}
+
+#[test]
+fn measured_libkeva_loads_and_runs_its_constructors_with_the_real_pthread_shim() {
+    // cite: bionic linker_soinfo.cpp#call_constructors
+    let dir = super::loader_test_support::corpus_dir();
+    if !dir.join("libkeva.so").exists() {
+        eprintln!("skipped: TikTok library extraction not found at {}", dir.display());
+        return;
+    }
+    super::bridge_test_support::register_all();
+    let loader = super::loader::Loader::new(vec![dir], Box::new(super::bridge::BridgeProvider)).with_strict(false);
+
+    let handle = loader.dlopen(Some("libkeva.so"), 2, None);
+
+    assert!(handle.is_ok(), "{handle:?}");
+}
