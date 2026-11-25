@@ -231,12 +231,17 @@ fn unmapped_data_address(importer: &str, name: &str) -> usize {
     *names.data.entry(key).or_insert_with(|| {
         let page = unsafe { libc::mmap(std::ptr::null_mut(), 16384, libc::PROT_NONE, libc::MAP_PRIVATE | libc::MAP_ANON, -1, 0) };
         assert_ne!(page, libc::MAP_FAILED, "unresolved data page mapping failed for {importer} {name}");
+        eprintln!("{}", missing_data_message(importer, name));
         page as usize
     })
 }
 
 fn missing_message(importer: &str, name: &str) -> String {
     format!("FIXME: native import not implemented: {importer} {name}; next missing primitive: native import {name}")
+}
+
+pub(super) fn missing_data_message(importer: &str, name: &str) -> String {
+    format!("FIXME: native data import not implemented: {importer} {name}; next missing primitive: native data object {name}")
 }
 
 fn run_handler(entry: &Entry, handler: &Handler, regs: &mut Regs) -> Option<String> {
@@ -269,6 +274,11 @@ extern "C" fn spk_dispatch(id: u64, regs: *mut Regs) {
     if let Some(message) = failure {
         abort_active_call(message);
     }
+}
+
+pub fn native_provider() -> BridgeProvider {
+    super::thread_handlers::register_thread_handlers();
+    BridgeProvider
 }
 
 pub struct BridgeProvider;

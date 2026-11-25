@@ -1,8 +1,11 @@
 use std::arch::asm;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Once;
 
-use super::bridge::{handler_address, register_handler};
+use super::bridge::{handler_address, register_handler, register_missing};
 use super::call_assign::CallBuilder;
+use super::guest_call::active_depth;
+use super::loader_test_support::terminating_signal_of_child;
 
 extern "C" {
     fn sys_icache_invalidate(start: *mut libc::c_void, length: usize);
@@ -93,4 +96,47 @@ fn host_callee_saved_registers_survive_a_guest_call_that_unwinds_after_clobberin
 
     assert_eq!(floats, float_seed);
     assert_eq!(ints, int_seed);
+}
+
+static DEPTH_AFTER_INNER: AtomicUsize = AtomicUsize::new(0);
+static INNER_CODE: AtomicUsize = AtomicUsize::new(0);
+
+fn register_inner_then_fail() -> usize {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        register_handler("fx_inner_then_fail", |context| {
+            assert!(CallBuilder::new(INNER_CODE.load(Ordering::SeqCst)).invoke().is_ok());
+            DEPTH_AFTER_INNER.store(active_depth(), Ordering::SeqCst);
+            context.fail("outer call failed after its inner call returned");
+        });
+    });
+    handler_address("fx_inner_then_fail").unwrap()
+}
+
+#[test]
+fn a_failure_after_a_completed_inner_call_unwinds_the_outer_call_not_the_finished_inner_one() {
+    let stub = register_inner_then_fail();
+    INNER_CODE.store(executable(&RETURN_X8), Ordering::SeqCst);
+
+    let signal = terminating_signal_of_child(|| {
+        let error = CallBuilder::new(stub).invoke().unwrap_err().to_string();
+        let unwound_to_outer = error.contains("outer call failed after its inner call returned");
+        if !(unwound_to_outer && DEPTH_AFTER_INNER.load(Ordering::SeqCst) == 1 && active_depth() == 0) {
+            std::process::abort();
+        }
+    });
+
+    assert_eq!(signal, None, "the finished inner call must leave the active stack before the outer failure unwinds");
+}
+
+#[test]
+fn a_missing_import_reached_without_an_active_guest_call_aborts_the_process() {
+    let address = register_missing("/guest/libhost_thread.so", "fx_missing_without_active_call");
+
+    let signal = terminating_signal_of_child(|| {
+        let function: extern "C" fn() = unsafe { std::mem::transmute(address) };
+        function();
+    });
+
+    assert_eq!(signal, Some(libc::SIGABRT));
 }

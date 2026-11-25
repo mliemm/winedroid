@@ -1,3 +1,5 @@
+use std::sync::Once;
+
 use super::bridge::{register_data, register_handler, CallContext};
 use super::guest_thread::{attach_current, slot_word};
 
@@ -14,6 +16,11 @@ fn thread_record(context: &mut CallContext) -> Option<*mut super::pthread_intern
 }
 
 pub fn register_thread_handlers() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(register_all_thread_handlers);
+}
+
+fn register_all_thread_handlers() {
     register_handler("pthread_self", |context| {
         if let Some(record) = thread_record(context) {
             context.ret_ptr(record as usize);

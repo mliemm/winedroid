@@ -1,6 +1,6 @@
 use std::ffi::CString;
 
-use super::bridge::{handler_address, register_handler, register_missing, BridgeProvider};
+use super::bridge::{handler_address, native_provider, register_handler, register_missing, BridgeProvider};
 use super::bridge_test_support::{register_all, take_atexit, take_logged, Bridged};
 use super::call_assign::CallBuilder;
 use super::link_resolution::{ImportKind, SystemLibraryProvider};
@@ -283,4 +283,23 @@ fn a_handler_replaces_a_missing_binding_for_the_same_name() {
 
     assert_eq!(missing, handler);
     assert_eq!(super::bridge::bind_for_test(&entries, &mut ids, "late", false), handler);
+}
+
+#[test]
+fn native_provider_registers_the_thread_handlers_once_and_serves_them_on_every_call() {
+    let first = native_provider();
+    let second = native_provider();
+
+    let pthread_self = first.export("libc.so", "pthread_self").expect("pthread_self is registered");
+    assert_eq!(second.export("libc.so", "pthread_self"), Some(pthread_self));
+    assert!(second.export("libc.so", "__stack_chk_guard").is_some());
+}
+
+#[test]
+fn an_unresolved_data_import_message_names_the_importer_the_object_and_the_missing_primitive() {
+    let message = super::bridge::missing_data_message("/guest/libx.so", "environ_like_object");
+
+    assert!(message.starts_with("FIXME: native data import not implemented"), "{message}");
+    assert!(message.contains("/guest/libx.so") && message.contains("environ_like_object"), "{message}");
+    assert!(message.contains("next missing primitive"), "{message}");
 }

@@ -203,3 +203,86 @@ fn va_list_from_guest_refuses_malformed_structs() {
     write(&mut raw, -56, -128);
     assert!(GuestVaList::from_guest(base).is_err(), "register area missing");
 }
+
+fn numbered_general_registers() -> Regs {
+    let mut regs = Regs::zeroed();
+    for (index, slot) in regs.x.iter_mut().enumerate() {
+        *slot = index as u64 + 10;
+    }
+    regs
+}
+
+fn words(values: &[u64]) -> Vec<u8> {
+    values.iter().flat_map(|value| value.to_le_bytes()).collect()
+}
+
+#[test]
+fn va_list_hfa_in_vector_registers_takes_one_sixteen_byte_slot_per_member() {
+    let mut regs = Regs::zeroed();
+    for (index, slot) in regs.q.iter_mut().enumerate() {
+        *slot = [0x1000 + index as u64, 0xFFFF_FFFF_FFFF_FFFF];
+    }
+    let mut va = GuestVaList::from_regs(&regs, 0, 2);
+
+    let doubles = va.next_composite(16, 8, Some((8, 2)));
+
+    assert_eq!(doubles, words(&[0x1002, 0x1003]));
+    assert_eq!(va.raw().vr_offs, -64);
+    assert_eq!(va.next_f64().to_bits(), 0x1004, "the next vector argument is the register after the HFA");
+
+    let mut va = GuestVaList::from_regs(&regs, 1, 1);
+    let floats = va.next_composite(12, 4, Some((4, 3)));
+    let expected: Vec<u8> = [0x1001u32, 0x1002, 0x1003].iter().flat_map(|value| value.to_le_bytes()).collect();
+    assert_eq!(floats, expected);
+    assert_eq!(va.raw().vr_offs, -64);
+}
+
+#[test]
+fn va_list_composite_in_general_registers_takes_one_slot_per_eight_bytes() {
+    let regs = numbered_general_registers();
+    let mut va = GuestVaList::from_regs(&regs, 2, 0);
+
+    let bytes = va.next_composite(12, 8, None);
+
+    assert_eq!(bytes, words(&[12, 13])[..12]);
+    assert_eq!(va.raw().gr_offs, -32, "two slots consumed for twelve bytes");
+    assert_eq!(va.next_gp(), 14);
+}
+
+#[test]
+fn va_list_sixteen_byte_aligned_composite_starts_on_an_even_general_register() {
+    let regs = numbered_general_registers();
+
+    let mut aligned = GuestVaList::from_regs(&regs, 1, 0);
+    assert_eq!(aligned.next_composite(16, 16, None), words(&[12, 13]));
+    assert_eq!(aligned.raw().gr_offs, -32);
+
+    let mut natural = GuestVaList::from_regs(&regs, 1, 0);
+    assert_eq!(natural.next_composite(16, 8, None), words(&[11, 12]));
+    assert_eq!(natural.raw().gr_offs, -40);
+}
+
+#[test]
+fn va_list_composite_that_overruns_the_general_registers_goes_wholly_to_the_stack() {
+    let stack = [900u64, 901, 902];
+    let mut regs = regs_with_stack(&stack);
+    regs.x = numbered_general_registers().x;
+    let mut va = GuestVaList::from_regs(&regs, 7, 0);
+
+    let bytes = va.next_composite(16, 8, None);
+
+    assert_eq!(bytes, words(&[900, 901]));
+    assert!(va.raw().gr_offs >= 0, "later general arguments no longer use the registers");
+    assert_eq!(va.next_gp(), 902);
+}
+
+#[test]
+fn va_list_composite_larger_than_sixteen_bytes_is_passed_by_pointer() {
+    let storage = [1u64, 2, 3];
+    let mut regs = Regs::zeroed();
+    regs.x[0] = storage.as_ptr() as u64;
+    let mut va = GuestVaList::from_regs(&regs, 0, 0);
+
+    assert_eq!(va.next_composite(24, 8, None), words(&storage));
+    assert_eq!(va.raw().gr_offs, -56, "one pointer slot");
+}

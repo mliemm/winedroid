@@ -84,6 +84,11 @@ pub fn invoke_frame(frame: &mut GuestCallFrame) -> Result<GuestResult> {
     Ok(GuestResult { x: frame.ret_x, q: frame.ret_q })
 }
 
+#[cfg(test)]
+pub(super) fn active_depth() -> usize {
+    ACTIVE.with(|active| active.borrow().len())
+}
+
 pub fn abort_active_call(message: String) {
     let frame = ACTIVE.with(|active| active.borrow().last().copied());
     let Some(frame) = frame else {
