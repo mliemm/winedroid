@@ -47,6 +47,7 @@ mod tests {
 
     #[test]
     fn a_body_that_outlives_the_limit_fails_the_test_instead_of_hanging_it() {
+        // cite: libcore FutureTask.java#get
         let release = Arc::new(AtomicBool::new(false));
         let waiting = release.clone();
         let outcome = std::panic::catch_unwind(|| {
@@ -64,6 +65,7 @@ mod tests {
 
     #[test]
     fn a_panic_inside_the_body_reaches_the_test_with_its_own_message() {
+        // cite: libcore FutureTask.java#report
         let outcome = std::panic::catch_unwind(|| run_within("panicking_body", Duration::from_secs(5), || panic!("the oracle disagreed")));
 
         let message = *outcome.expect_err("the panic must propagate").downcast::<&str>().unwrap();
@@ -72,6 +74,7 @@ mod tests {
 
     #[test]
     fn a_body_that_finishes_in_time_returns_normally() {
+        // cite: libcore FutureTask.java#get
         let finished = Arc::new(AtomicBool::new(false));
         let mark = finished.clone();
 

@@ -45,6 +45,8 @@ fn fork_a_fresh_thread_that_attaches() -> (Option<i32>, Option<i32>) {
 
 bounded_test! {
     fn a_fork_waits_for_a_thread_holding_the_guest_thread_registry_and_the_child_can_attach() {
+        // cite: bionic fork.cpp#fork
+        // cite: bionic pthread_atfork.cpp#__bionic_atfork_run_prepare, __bionic_atfork_run_child, __bionic_atfork_run_parent
         fork_gate::install();
         let holder = hold_in_background(guest_thread::hold_for_fork);
 
@@ -55,6 +57,8 @@ bounded_test! {
 
 bounded_test! {
     fn a_fork_waits_for_a_thread_holding_the_host_thread_and_name_tables_and_the_child_can_attach() {
+        // cite: bionic fork.cpp#fork
+        // cite: bionic pthread_atfork.cpp#__bionic_atfork_run_prepare, __bionic_atfork_run_child, __bionic_atfork_run_parent
         fork_gate::install();
         let holder = hold_in_background(thread_list::hold_for_fork);
 
@@ -65,6 +69,8 @@ bounded_test! {
 
 bounded_test! {
     fn a_fork_waits_for_a_thread_holding_every_futex_bucket_and_the_child_can_wake() {
+        // cite: bionic fork.cpp#fork
+        // cite: bionic pthread_atfork.cpp#__bionic_atfork_run_prepare, __bionic_atfork_run_child, __bionic_atfork_run_parent
         fork_gate::install();
         let holder = hold_in_background(futex::hold_for_fork);
 
@@ -75,6 +81,8 @@ bounded_test! {
 
 bounded_test! {
     fn the_gate_releases_every_lock_in_the_parent_so_registry_calls_still_work_after_a_fork() {
+        // cite: bionic fork.cpp#fork
+        // cite: bionic pthread_atfork.cpp#__bionic_atfork_run_prepare, __bionic_atfork_run_child, __bionic_atfork_run_parent
         fork_gate::install();
         let (signal, code, _) = std::thread::spawn(|| child_result(|| {})).join().unwrap();
 

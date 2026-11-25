@@ -125,6 +125,7 @@ mod tests {
 
     #[test]
     fn masks_translate_between_linux_64_bit_sets_and_darwin_32_bit_sets() {
+        // cite: bionic SigSetConverter.h#SigSetConverter
         let linux = bit(7) | bit(10) | bit(16) | bit(40);
 
         assert_eq!(to_darwin_mask(linux), (1 << (libc::SIGBUS - 1)) | (1 << (libc::SIGUSR1 - 1)));

@@ -141,6 +141,7 @@ mod tests {
 
     #[test]
     fn actions_start_as_default_and_publish_replaces_them() {
+        // cite: bionic sigaction.cpp#sigaction
         let action = Action { flags: SA_SIGINFO | SA_RESTART, handler: 0x1234, mask: bit(10), restorer: 0 };
 
         assert_eq!(action_of(50), DEFAULT_ACTION);
@@ -152,6 +153,7 @@ mod tests {
 
     #[test]
     fn pending_signals_are_delivered_lowest_first_and_skip_blocked_ones() {
+        // cite: bionic sigprocmask.cpp#sigprocmask
         std::thread::spawn(|| {
             set_mask(bit(10));
             raise_pending(10);

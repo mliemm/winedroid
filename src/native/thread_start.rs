@@ -54,10 +54,7 @@ extern "C" fn host_thread_main(raw: *mut c_void) -> *mut c_void {
     let outcome = if routine == 0 { Ok(0) } else { CallBuilder::new(routine as usize).ptr(argument as usize).invoke().map(|result| result.u64()) };
     let finished = match outcome {
         Ok(result) => thread_exit::run_guest_storage(record, result),
-        Err(error) if thread_exit::take_exit_request() => {
-            let _ = error;
-            Ok(())
-        }
+        Err(_) if thread_exit::take_exit_request() => Ok(()),
         Err(error) => {
             failure_to_run(record, &error.to_string());
             thread_exit::run_guest_storage(record, 0)
@@ -99,12 +96,11 @@ fn host_attributes(attr: usize) -> Result<libc::pthread_attr_t, i32> {
     Ok(host)
 }
 
-fn schedule(record: usize, host: libc::pthread_t, attr: usize) -> Result<(), i32> {
+fn schedule(host: libc::pthread_t, attr: usize) -> Result<(), i32> {
     // cite: bionic pthread_create.cpp#__init_thread
     let flags: u32 = super::bionic::guest_mem::read_value(attr);
     let (policy, priority) = (super::bionic::guest_mem::read_value::<i32>(attr + 32), super::bionic::guest_mem::read_value::<i32>(attr + 36));
     let need = if flags & FLAG_INHERIT != 0 { false } else if flags & FLAG_EXPLICIT != 0 { true } else { policy != 0 };
-    let _ = record;
     if need { pthread_sched::set_host(host, policy, priority) } else { Ok(()) }
 }
 
@@ -155,7 +151,7 @@ pub fn create(thread_out: usize, attr: usize, routine: usize, argument: usize) -
         futex::wait(ready as *const AtomicU32 as usize, 0, MATCH_ANY, None);
     }
     drop(unsafe { Box::from_raw(start) });
-    if let Err(code) = schedule(address, host, attr_address) {
+    if let Err(code) = schedule(host, attr_address) {
         host_log::line(&format!("pthread_create sched_setscheduler failed: errno {code}"));
         unsafe {
             (*record).start_routine = 0;

@@ -27,6 +27,8 @@ pub mod link_resolution;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod loader;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod mach_task;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod module;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod quad;
@@ -139,7 +141,33 @@ mod fork_gate_tests;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
 mod signal_tests;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
-mod thread_tests;
+mod futex_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod thread_test_support;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod thread_mutex_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod thread_cond_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod thread_key_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod thread_tls_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod thread_lifecycle_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod thread_semaphore_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod thread_barrier_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod thread_rwlock_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod thread_once_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod thread_futex_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod thread_prctl_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod thread_corpus_tests;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
 mod tp_veneer_tests;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]

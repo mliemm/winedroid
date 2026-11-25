@@ -6,7 +6,7 @@ use super::super::host_log;
 use super::super::signal_numbers::{self, bit, darwin_to_linux, filter_reserved, is_valid, is_virtual, linux_to_darwin, to_darwin_mask, to_linux_mask, SIGKILL, SIGSTOP};
 use super::super::signal_router;
 use super::super::signal_state::{
-    self, action_of, alternate, mark_thread_directed, publish_action, raise_pending, set_alternate, set_mask, Action, AlternateStack, SIG_DFL, SIG_IGN, SA_RESTART, SS_DISABLE, SS_ONSTACK,
+    self, action_of, alternate, mark_thread_directed, publish_action, raise_pending, set_alternate, set_mask, Action, AlternateStack, SA_RESTART, SS_DISABLE, SS_ONSTACK,
 };
 use super::super::thread_list;
 use super::abi_types::EINVAL;
@@ -372,5 +372,4 @@ pub fn register() {
     register_actions();
     register_masks();
     register_delivery();
-    let _ = (SIG_DFL, SIG_IGN);
 }

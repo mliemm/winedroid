@@ -10,7 +10,9 @@ struct Registration {
     function: u64,
     argument: u64,
     dso: u64,
+    #[cfg(test)]
     sequence: u64,
+    #[cfg(test)]
     thread: std::thread::ThreadId,
 }
 
@@ -64,8 +66,17 @@ fn register_exit_handler(function: u64, argument: u64, dso: u64) -> i32 {
         return -1;
     }
     let mut table = TABLE.lock().expect("atexit table");
+    #[cfg(test)]
     let sequence = table.appends;
-    table.entries.push(Some(Registration { function, argument, dso, sequence, thread: std::thread::current().id() }));
+    table.entries.push(Some(Registration {
+        function,
+        argument,
+        dso,
+        #[cfg(test)]
+        sequence,
+        #[cfg(test)]
+        thread: std::thread::current().id(),
+    }));
     table.appends += 1;
     0
 }

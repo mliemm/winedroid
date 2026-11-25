@@ -119,6 +119,7 @@ mod tests {
 
     bounded_test! {
         fn the_forwarding_target_is_the_first_attached_thread_other_than_the_caller() {
+            // cite: bionic SYSCALLS.TXT#kill
             let table = hosts(&[100, 200, 300]);
 
             assert_eq!(first_other(&table, 100), Some(200 as libc::pthread_t));
@@ -129,6 +130,7 @@ mod tests {
 
     bounded_test! {
         fn there_is_no_forwarding_target_when_the_caller_is_the_only_attached_thread_or_none_is_attached() {
+            // cite: bionic SYSCALLS.TXT#kill
             assert_eq!(first_other(&hosts(&[100]), 100), None);
             assert_eq!(first_other(&hosts(&[]), 100), None);
         }
@@ -136,6 +138,7 @@ mod tests {
 
     bounded_test! {
         fn a_clear_tid_address_is_taken_once_and_forgetting_the_record_drops_it() {
+            // cite: bionic SYSCALLS.TXT#__set_tid_address
             set_clear_tid(0x7001, 0x40);
             set_clear_tid(0x7002, 0x44);
 

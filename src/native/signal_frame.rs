@@ -72,7 +72,7 @@ pub fn interrupted_sp(context: usize) -> u64 {
 fn address_is_mapped(address: u64) -> bool {
     let mut at = address;
     let (mut size, mut info, mut count, mut object) = (0u64, [0i32; 9], 9u32, 0u32);
-    let status = unsafe { mach_vm_region(libc::mach_task_self(), &mut at, &mut size, 9, info.as_mut_ptr(), &mut count, &mut object) };
+    let status = unsafe { mach_vm_region(super::mach_task::current(), &mut at, &mut size, 9, info.as_mut_ptr(), &mut count, &mut object) };
     status == 0 && at <= address
 }
 

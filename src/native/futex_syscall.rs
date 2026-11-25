@@ -44,7 +44,7 @@ pub fn futex_syscall(arguments: [u64; 6]) -> i64 {
     let (address, operation, value, timeout, address2, value3) =
         (arguments[0] as usize, arguments[1] as i32, arguments[2] as u32, arguments[3] as usize, arguments[4] as usize, arguments[5] as u32);
     let command = operation & !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
-    if operation & FUTEX_CLOCK_REALTIME != 0 && !matches!(command, FUTEX_WAIT_BITSET | FUTEX_WAIT_REQUEUE_PI | FUTEX_LOCK_PI | FUTEX_LOCK_PI2) {
+    if operation & FUTEX_CLOCK_REALTIME != 0 && !matches!(command, FUTEX_WAIT_BITSET | FUTEX_WAIT_REQUEUE_PI | FUTEX_LOCK_PI2) {
         return -ENOSYS;
     }
     let clock = if operation & FUTEX_CLOCK_REALTIME != 0 { CLOCK_REALTIME } else { CLOCK_MONOTONIC };
@@ -59,7 +59,8 @@ pub fn futex_syscall(arguments: [u64; 6]) -> i64 {
         FUTEX_REQUEUE => futex::requeue(address, value as i32, address2, timeout as i32, None),
         FUTEX_CMP_REQUEUE => futex::requeue(address, value as i32, address2, timeout as i32, Some(value3)),
         FUTEX_WAKE_OP => futex::wake_op(address, value as i32, address2, timeout as i32, value3),
-        FUTEX_LOCK_PI | FUTEX_LOCK_PI2 => futex::lock_pi(address, current_thread::tid(), absolute(timeout, CLOCK_REALTIME)),
+        FUTEX_LOCK_PI => futex::lock_pi(address, current_thread::tid(), absolute(timeout, CLOCK_REALTIME)),
+        FUTEX_LOCK_PI2 => futex::lock_pi(address, current_thread::tid(), absolute(timeout, clock)),
         FUTEX_UNLOCK_PI => futex::unlock_pi(address, current_thread::tid()),
         FUTEX_TRYLOCK_PI => futex::trylock_pi(address, current_thread::tid()),
         other => {

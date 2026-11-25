@@ -57,7 +57,11 @@ pub fn register() {
         write_value::<i32>(context.arg_ptr(0), 0);
         context.ret_i32(0);
     });
-    in_libc("pthread_barrierattr_destroy", |context| context.ret_i32(0));
+    in_libc("pthread_barrierattr_destroy", |context| {
+        // cite: bionic pthread_barrier.cpp#pthread_barrierattr_destroy
+        write_value::<i32>(context.arg_ptr(0), 0);
+        context.ret_i32(0);
+    });
     in_libc("pthread_barrierattr_getpshared", |context| {
         write_value::<i32>(context.arg_ptr(1), read_value::<i32>(context.arg_ptr(0)) & 1);
         context.ret_i32(0);

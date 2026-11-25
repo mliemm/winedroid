@@ -77,6 +77,7 @@ mod tests {
 
     #[test]
     fn deadlines_count_down_on_the_guest_clock() {
+        // cite: bionic bionic_time_conversions.cpp#monotonic_time_from_realtime_time
         let deadline = Deadline::after_ns(CLOCK_MONOTONIC, 500_000_000);
 
         let remaining = deadline.remaining_ns();

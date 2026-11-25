@@ -14,6 +14,7 @@ fn guest_values(bridged: &Bridged) -> (usize, i32, i32, u64) {
 
 bounded_test! {
     fn each_thread_that_enters_guest_code_gets_its_own_pthread_internal_record() {
+        // cite: bionic pthread_internal.h#pthread_internal_t, tid, cached_pid_
         let bridged = std::sync::Arc::new(Bridged::load("16k", "libfx_bridge.so"));
         let (own_record, own_tid, own_pid, _) = guest_values(&bridged);
 
@@ -49,6 +50,7 @@ bounded_test! {
 
 bounded_test! {
     fn the_stack_guard_slot_of_the_thread_pointer_holds_the_same_nonzero_canary_on_every_guest_thread() {
+        // cite: bionic tls_defines.h#TLS_SLOT_STACK_GUARD
         let bridged = std::sync::Arc::new(Bridged::load("16k", "libfx_bridge.so"));
         let other = {
             let bridged = bridged.clone();
@@ -63,6 +65,7 @@ bounded_test! {
 
 bounded_test! {
     fn the_first_attached_thread_is_primary_with_tid_equal_to_the_pid_and_others_are_not() {
+        // cite: bionic __libc_init_main_thread.cpp#__libc_init_main_thread_early
         let bridged = std::sync::Arc::new(Bridged::load("16k", "libfx_bridge.so"));
         let (_, own_tid, pid, _) = guest_values(&bridged);
         let record = current_record().unwrap();
@@ -86,6 +89,7 @@ bounded_test! {
 
 bounded_test! {
     fn attach_is_a_no_op_for_an_attached_thread_and_returns_the_same_record() {
+        // cite: bionic pthread_self.cpp#pthread_self
         let first = attach_current().unwrap();
         assert_eq!(attach_current().unwrap(), first);
         assert_eq!(current_record(), Some(first));
@@ -94,6 +98,7 @@ bounded_test! {
 
 bounded_test! {
     fn the_primary_role_is_never_handed_to_a_later_thread_after_the_primary_record_is_freed() {
+        // cite: bionic __libc_init_main_thread.cpp#__libc_init_main_thread_early
         use super::guest_thread::{claim_primary, empty_registry, release};
         let mut registry = empty_registry();
 

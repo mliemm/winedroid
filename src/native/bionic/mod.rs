@@ -35,6 +35,7 @@ pub mod pthread_barrier;
 pub mod pthread_cond;
 pub mod pthread_key;
 pub mod pthread_mutex;
+pub mod pthread_mutexattr;
 pub mod pthread_once;
 pub mod pthread_rwlock;
 pub mod pthread_sched;
@@ -105,6 +106,7 @@ pub fn register_libc_core() {
 
 fn register_thread_group() {
     pthread_attr::register();
+    pthread_mutexattr::register();
     pthread_mutex::register();
     pthread_cond::register();
     pthread_rwlock::register();

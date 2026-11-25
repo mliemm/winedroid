@@ -365,6 +365,53 @@ int fx_once_state(void)
     return *(volatile int *)&fx_static_once;
 }
 
+static pthread_once_t slow_once_control = PTHREAD_ONCE_INIT;
+static int slow_once_expected;
+static int slow_once_entered;
+static int slow_once_finished;
+
+static long milliseconds_since(const struct timespec *since)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (now.tv_sec - since->tv_sec) * 1000L + (now.tv_nsec - since->tv_nsec) / 1000000L;
+}
+
+static void slow_once_routine(void)
+{
+    struct timespec started, settle = {0, 30000000};
+    clock_gettime(CLOCK_MONOTONIC, &started);
+    while (__atomic_load_n(&slow_once_entered, __ATOMIC_SEQ_CST) < slow_once_expected && milliseconds_since(&started) < 3000)
+        sched_yield();
+    nanosleep(&settle, 0);
+    __atomic_store_n(&slow_once_finished, 1, __ATOMIC_SEQ_CST);
+}
+
+static void *slow_once_thread(void *argument)
+{
+    __atomic_add_fetch(&slow_once_entered, 1, __ATOMIC_SEQ_CST);
+    pthread_once(&slow_once_control, slow_once_routine);
+    return (void *)(long)__atomic_load_n(&slow_once_finished, __ATOMIC_SEQ_CST);
+}
+
+int fx_once_waiters_see_the_finished_initializer(int threads)
+{
+    pthread_t workers[16];
+    void *seen[16];
+    int finished_views = 0;
+    slow_once_expected = threads;
+    slow_once_entered = 0;
+    slow_once_finished = 0;
+    slow_once_control = PTHREAD_ONCE_INIT;
+    for (int index = 0; index < threads; index++)
+        pthread_create(&workers[index], 0, slow_once_thread, 0);
+    for (int index = 0; index < threads; index++) {
+        pthread_join(workers[index], &seen[index]);
+        finished_views += (long)seen[index] == 1;
+    }
+    return finished_views * 10 + (*(volatile int *)&slow_once_control == 2);
+}
+
 int fx_recursive_depth(int depth)
 {
     pthread_mutexattr_t attribute;
@@ -533,6 +580,30 @@ int fx_thread_out_is_written_before_the_routine_runs(void)
     pthread_create(&thread, 0, report_published, 0);
     pthread_join(thread, &seen);
     return (long)seen;
+}
+
+static void *touch_stack(void *argument)
+{
+    size_t bytes = (size_t)argument;
+    volatile char *block = __builtin_alloca(bytes);
+    for (size_t offset = 0; offset < bytes; offset += 4096)
+        block[offset] = (char)offset;
+    block[bytes - 1] = 1;
+    return (void *)(long)block[bytes - 1];
+}
+
+int fx_thread_touches_stack(size_t bytes, size_t stack_size)
+{
+    pthread_attr_t attribute;
+    pthread_t thread;
+    void *done = 0;
+    pthread_attr_init(&attribute);
+    if (stack_size != 0)
+        pthread_attr_setstacksize(&attribute, stack_size);
+    pthread_create(&thread, &attribute, touch_stack, (void *)bytes);
+    pthread_join(thread, &done);
+    pthread_attr_destroy(&attribute);
+    return (int)(long)done;
 }
 
 static volatile long attribute_stack_seen;
@@ -803,6 +874,92 @@ int fx_rwlock_reader_overflow_code(void)
     pthread_rwlock_init(&lock, 0);
     *(volatile int *)&lock = 0x7FFFFFFC;
     return pthread_rwlock_tryrdlock(&lock);
+}
+
+struct rw_state {
+    pthread_rwlock_t lock;
+    volatile long first;
+    volatile long second;
+    long torn;
+    int iterations;
+};
+
+static void *rw_writer(void *argument)
+{
+    struct rw_state *state = argument;
+    for (int index = 0; index < state->iterations; index++) {
+        pthread_rwlock_wrlock(&state->lock);
+        long value = state->first;
+        state->first = value + 1;
+        if ((index & 3) == 0)
+            sched_yield();
+        state->second = value + 1;
+        pthread_rwlock_unlock(&state->lock);
+    }
+    return 0;
+}
+
+static void *rw_reader(void *argument)
+{
+    struct rw_state *state = argument;
+    for (int index = 0; index < state->iterations; index++) {
+        pthread_rwlock_rdlock(&state->lock);
+        long first = state->first;
+        if ((index & 3) == 0)
+            sched_yield();
+        if (first != state->second)
+            __atomic_add_fetch(&state->torn, 1, __ATOMIC_SEQ_CST);
+        pthread_rwlock_unlock(&state->lock);
+    }
+    return 0;
+}
+
+long fx_rwlock_mixed(int kind, int readers, int writers, int iterations)
+{
+    pthread_rwlockattr_t attribute;
+    struct rw_state state;
+    pthread_t workers[16];
+    int total = readers + writers;
+    memset(&state, 0, sizeof(state));
+    state.iterations = iterations;
+    pthread_rwlockattr_init(&attribute);
+    pthread_rwlockattr_setkind_np(&attribute, kind);
+    pthread_rwlock_init(&state.lock, &attribute);
+    for (int index = 0; index < total; index++)
+        pthread_create(&workers[index], 0, index < writers ? rw_writer : rw_reader, &state);
+    for (int index = 0; index < total; index++)
+        pthread_join(workers[index], 0);
+    return state.torn * 100000000L + (state.first == state.second ? state.first : -1);
+}
+
+static int readers_through;
+
+static void *read_after_writer(void *argument)
+{
+    pthread_rwlock_t *lock = argument;
+    pthread_rwlock_rdlock(lock);
+    __atomic_add_fetch(&readers_through, 1, __ATOMIC_SEQ_CST);
+    pthread_rwlock_unlock(lock);
+    return 0;
+}
+
+int fx_rwlock_readers_wait_for_the_writer(int readers)
+{
+    pthread_rwlock_t lock;
+    pthread_t workers[16];
+    int blocked_before_unlock;
+    readers_through = 0;
+    pthread_rwlock_init(&lock, 0);
+    pthread_rwlock_wrlock(&lock);
+    for (int index = 0; index < readers; index++)
+        pthread_create(&workers[index], 0, read_after_writer, &lock);
+    while (*(volatile unsigned int *)((char *)&lock + 20) != (unsigned int)readers)
+        sched_yield();
+    blocked_before_unlock = __atomic_load_n(&readers_through, __ATOMIC_SEQ_CST) == 0;
+    pthread_rwlock_unlock(&lock);
+    for (int index = 0; index < readers; index++)
+        pthread_join(workers[index], 0);
+    return readers_through * 10 + blocked_before_unlock;
 }
 
 static volatile int futex_word;
