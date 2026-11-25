@@ -304,6 +304,12 @@ int fx_reallocarray_overflow(void)
     return reallocarray(NULL, (size_t)1 << 62, 16) == NULL ? errno : 0;
 }
 
+int fx_reallocarray_zero_returns_null(size_t count, size_t size)
+{
+    void *block = malloc(16);
+    return reallocarray(block, count, size) == NULL;
+}
+
 size_t fx_mallinfo_in_use_growth(void)
 {
     struct mallinfo before = mallinfo();

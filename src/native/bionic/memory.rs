@@ -55,6 +55,11 @@ fn reallocarray(context: &mut CallContext) {
         context.ret_ptr(0);
         return;
     };
+    if pointer != 0 && total == 0 {
+        unsafe { libc::free(pointer as *mut libc::c_void) };
+        context.ret_ptr(0);
+        return;
+    }
     let grown = unsafe { libc::realloc(pointer as *mut libc::c_void, total as usize) };
     return_allocation(context, grown);
 }
@@ -102,7 +107,7 @@ fn mallopt(context: &mut CallContext) {
         M_PURGE | M_PURGE_ALL | M_CACHE_COUNT_MAX | M_CACHE_SIZE_MAX | M_TSDS_COUNT_MAX => true,
         M_BIONIC_SET_HEAP_TAGGING_LEVEL => value == HEAP_TAGGING_NONE,
         M_BIONIC_ZERO_INIT => {
-            host_log::line("FIXME: mallopt(M_BIONIC_ZERO_INIT) is not supported; next missing primitive: malloc zero initialisation on demand");
+            host_log::line("missing-primitive mallopt(M_BIONIC_ZERO_INIT): malloc zero initialisation on demand");
             false
         }
         _ => false,

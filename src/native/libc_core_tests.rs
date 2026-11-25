@@ -176,6 +176,18 @@ fn bionic_strtol_prefix_base_and_range_rules() {
     assert_eq!((underflow.value, underflow.error), (i64::MIN, 34));
     let minimum = parse_signed("-9223372036854775808", 10);
     assert_eq!((minimum.value, minimum.error), (i64::MIN, 0));
+    for (text, base, expected, error) in [
+        ("9223372036854775807", 10, i64::MAX, 0),
+        ("9223372036854775808", 10, i64::MAX, 34),
+        ("-9223372036854775809", 10, i64::MIN, 34),
+        ("0x7fffffffffffffff", 16, i64::MAX, 0),
+        ("0x8000000000000000", 16, i64::MAX, 34),
+        ("-0x8000000000000000", 16, i64::MIN, 0),
+        ("-0x8000000000000001", 16, i64::MIN, 34),
+    ] {
+        let parsed = parse_signed(text, base);
+        assert_eq!((parsed.value, parsed.error), (expected, error), "{text} base {base}");
+    }
     let octal = parse_signed("0777", 0);
     assert_eq!(octal.value, 0o777);
     for base in [1, 37, -1] {

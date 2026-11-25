@@ -24,6 +24,14 @@ fn bionic_calloc_and_reallocarray_overflow_fail_with_enomem() {
 }
 
 #[test]
+fn bionic_reallocarray_with_a_zero_product_frees_and_returns_null() {
+    let bridged = libc_fixture();
+
+    assert_eq!(bridged.call("fx_reallocarray_zero_returns_null").int(0).int(8).invoke().unwrap().i32(), 1);
+    assert_eq!(bridged.call("fx_reallocarray_zero_returns_null").int(8).int(0).invoke().unwrap().i32(), 1);
+}
+
+#[test]
 fn bionic_memalign_returns_aligned_blocks_with_enough_usable_size() {
     let bridged = libc_fixture();
 
