@@ -96,7 +96,7 @@ impl Loader {
             state.module(root).handle
         };
         if flags & RTLD_NOLOAD == 0 {
-            self.call_constructors(guard, root);
+            self.call_constructors(guard, root)?;
         }
         Ok(handle)
     }

@@ -23,6 +23,8 @@ pub mod loader;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod module;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod quad;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod relocate;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod reloc_stream;
@@ -36,6 +38,24 @@ pub mod text_patch;
 pub mod unload;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod tls_modules;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod bridge;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod call_assign;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod guest_regs;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod guest_thread;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod pthread_internal;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod stub_table;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod thread_handlers;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod trampoline;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod va_list;
 #[cfg(test)]
 mod fixture_tests;
 #[cfg(test)]
@@ -68,3 +88,11 @@ mod image_tests;
 mod loader_protection_tests;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
 mod loader_summary_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod bridge_test_support;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod bridge_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod bridge_va_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod guest_thread_tests;

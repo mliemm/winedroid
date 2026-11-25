@@ -77,7 +77,9 @@ impl Loader {
             (local, external, destructors)
         };
         for address in destructors {
-            call_destructor(address);
+            if let Err(error) = call_destructor(address) {
+                eprintln!("destructor at {address:#x} failed: {error}");
+            }
         }
         {
             let mut state = guard.borrow_mut();

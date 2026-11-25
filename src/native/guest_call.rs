@@ -1,4 +1,11 @@
+use std::cell::RefCell;
 use std::ffi::{c_char, CString};
+
+use crate::error::{Result, WinedroidError};
+
+use super::call_assign::CallBuilder;
+use super::guest_thread::attach_current;
+use super::trampoline::{spk_call_guest, spk_unwind_to, GuestCallFrame};
 
 #[derive(Debug, Clone, Copy)]
 pub struct GuestProcessArgs {
@@ -23,18 +30,91 @@ impl Default for GuestProcessArgs {
     }
 }
 
-pub fn call_constructor(address: usize, args: &GuestProcessArgs) {
-    let function: extern "C" fn(i32, usize, usize) = unsafe { std::mem::transmute(address) };
-    function(args.argc, args.argv, args.envp);
+#[derive(Debug, Clone, Copy)]
+pub struct GuestResult {
+    x: [u64; 2],
+    q: [[u64; 2]; 4],
 }
 
-pub fn call_init(address: usize) {
+impl GuestResult {
+    pub fn i32(&self) -> i32 {
+        self.x[0] as i32
+    }
+
+    pub fn u64(&self) -> u64 {
+        self.x[0]
+    }
+
+    pub fn pair(&self) -> (u64, u64) {
+        (self.x[0], self.x[1])
+    }
+
+    pub fn f32(&self) -> f32 {
+        f32::from_bits(self.q[0][0] as u32)
+    }
+
+    pub fn f64(&self) -> f64 {
+        f64::from_bits(self.q[0][0])
+    }
+
+    pub fn quad(&self) -> u128 {
+        u128::from(self.q[0][0]) | (u128::from(self.q[0][1]) << 64)
+    }
+
+    pub fn hfa_f32(&self, members: usize) -> Vec<f32> {
+        self.q[..members].iter().map(|register| f32::from_bits(register[0] as u32)).collect()
+    }
+}
+
+thread_local! {
+    static ACTIVE: RefCell<Vec<*mut GuestCallFrame>> = const { RefCell::new(Vec::new()) };
+    static ABORT: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+pub fn invoke_frame(frame: &mut GuestCallFrame) -> Result<GuestResult> {
+    attach_current()?;
+    frame.aborted = 0;
+    ACTIVE.with(|active| active.borrow_mut().push(frame));
+    unsafe { spk_call_guest(frame) };
+    ACTIVE.with(|active| active.borrow_mut().pop());
+    if frame.aborted != 0 {
+        let message = ABORT.with(|abort| abort.borrow_mut().take()).unwrap_or_else(|| "guest call aborted".to_string());
+        return Err(WinedroidError::new(message));
+    }
+    Ok(GuestResult { x: frame.ret_x, q: frame.ret_q })
+}
+
+pub fn abort_active_call(message: String) {
+    let frame = ACTIVE.with(|active| active.borrow().last().copied());
+    let Some(frame) = frame else {
+        eprintln!("{message}");
+        std::process::abort();
+    };
+    ABORT.with(|abort| *abort.borrow_mut() = Some(message));
+    let saved = unsafe {
+        (*frame).aborted = 1;
+        (*frame).frame
+    };
+    unsafe { spk_unwind_to(saved) }
+}
+
+pub fn call_guest(address: usize, args: &[u64]) -> Result<GuestResult> {
+    let mut call = CallBuilder::new(address);
+    for argument in args {
+        call = call.int(*argument);
+    }
+    call.invoke()
+}
+
+pub fn call_constructor(address: usize, args: &GuestProcessArgs) -> Result<()> {
+    CallBuilder::new(address).i32(args.argc).ptr(args.argv).ptr(args.envp).invoke().map(|_| ())
+}
+
+pub fn call_init(address: usize) -> Result<()> {
     // cite: bionic linker_soinfo.cpp#call_function
-    let function: extern "C" fn() = unsafe { std::mem::transmute(address) };
-    function();
+    CallBuilder::new(address).invoke().map(|_| ())
 }
 
-pub fn call_destructor(address: usize) {
-    let function: extern "C" fn() = unsafe { std::mem::transmute(address) };
-    function();
+pub fn call_destructor(address: usize) -> Result<()> {
+    CallBuilder::new(address).invoke().map(|_| ())
 }

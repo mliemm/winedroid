@@ -90,7 +90,7 @@ link_as() {
     while IFS= read -r flag; do
         flags+=("$flag")
     done < <(link_flags "$page")
-    "$LLD" "${flags[@]}" -soname "lib$name.so" -L "$work/stubs" -L "$out" "$@" \
+    "$LLD" "${flags[@]}" -soname "lib$name.so" -L "${STUB_DIR:-$work/stubs}" -L "$out" "$@" \
         -o "$out/lib$name.so" "$work/$object.o"
 }
 
@@ -99,11 +99,14 @@ build_variant() {
     local out="$OUT_ROOT/$label"
     local work
     work="$(mktemp -d)"
-    mkdir -p "$out" "$work/stubs"
+    mkdir -p "$out" "$work/stubs" "$work/stubs_bridge"
     rm -f "$out"/*.so
 
     make_stub libc.so "$work/stubs" strlen memcpy malloc free snprintf \
         pthread_mutex_lock pthread_mutex_unlock __cxa_atexit __stack_chk_fail __tls_get_addr __fx_record
+    make_stub libc.so "$work/stubs_bridge" strlen malloc free __stack_chk_fail \
+        fx_probe fx_vprobe fx_get_s24 fx_get_hfa4 fx_get_ld fx_get_pair fx_nest_host fx_not_registered \
+        fx_sp_check fx_touch_errno fx_clobber_probe pthread_self gettid getpid __errno
     make_stub libdl.so "$work/stubs" dlopen dlsym dlclose dlerror
     make_stub liblog.so "$work/stubs" __android_log_print
 
@@ -127,6 +130,9 @@ build_variant() {
 
     compile fx_jni "$work"
     link fx_jni "$page" "$work" "$out" -lc
+
+    compile fx_bridge "$work"
+    STUB_DIR="$work/stubs_bridge" link fx_bridge "$page" "$work" "$out" -lc
 
     compile fx_relro "$work"
     link fx_relro "$page" "$work" "$out"

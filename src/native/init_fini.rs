@@ -1,18 +1,21 @@
+use crate::error::Result;
+
 use super::guest_call::{call_constructor, call_init};
 use super::loader::{Guard, Loader};
 use super::module::{ModuleId, State};
 
 impl Loader {
-    pub(super) fn call_constructors(&self, guard: &Guard, root: ModuleId) {
+    pub(super) fn call_constructors(&self, guard: &Guard, root: ModuleId) -> Result<()> {
         // cite: bionic linker_soinfo.cpp#call_constructors, call_array
         let mut calls = Vec::new();
         collect_constructors(&mut guard.borrow_mut(), root, &mut calls);
         for call in calls {
             match call {
-                Constructor::Init(address) => call_init(address),
-                Constructor::InitArray(address) => call_constructor(address, &self.args),
+                Constructor::Init(address) => call_init(address)?,
+                Constructor::InitArray(address) => call_constructor(address, &self.args)?,
             }
         }
+        Ok(())
     }
 }
 
