@@ -1,6 +1,7 @@
 pub const EPERM: i32 = 1;
 pub const ENOENT: i32 = 2;
 pub const EINTR: i32 = 4;
+pub const EIO: i32 = 5;
 pub const EBADF: i32 = 9;
 pub const EAGAIN: i32 = 11;
 pub const ENOMEM: i32 = 12;

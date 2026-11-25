@@ -16,6 +16,25 @@ const GUEST_CREDENTIAL_PROTECTED_ROOT_PREFIX: &str = "/data/user/0";
 const GUEST_DEVICE_PROTECTED_ROOT_PREFIX: &str = "/data/user_de/0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuestPathError {
+    OutsideMounts,
+    EscapesRoot,
+    NulByte,
+    HiddenDirectory,
+    ExternalScopeDenied,
+}
+
+#[derive(Debug)]
+pub struct GuestPathFailure {
+    pub kind: GuestPathError,
+    pub error: WinedroidError,
+}
+
+fn failure(kind: GuestPathError, message: impl Into<String>) -> GuestPathFailure {
+    GuestPathFailure { kind, error: WinedroidError::new(message) }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrivateStorageKind {
     CredentialProtected,
     DeviceProtected,
@@ -117,6 +136,10 @@ impl ResolvedGuestPath {
 
     pub fn atomic_replace(&self, bytes: &[u8]) -> io::Result<()> {
         self.root.atomic_replace(&self.components, bytes)
+    }
+
+    pub fn parent_and_leaf(&self) -> io::Result<(Directory, Option<CString>)> {
+        self.root.parent_and_leaf(&self.components)
     }
 
     pub fn directory_capability_and_leaf(&self) -> io::Result<(Directory, CString)> {
@@ -255,6 +278,15 @@ impl GuestFilesystem {
         access: ExternalStorageAccess,
         external_storage_policy: &ExternalStoragePolicy,
     ) -> Result<ResolvedGuestPath> {
+        self.resolve_typed(guest_path, access, external_storage_policy).map_err(|failure| failure.error)
+    }
+
+    pub fn resolve_typed(
+        &self,
+        guest_path: &str,
+        access: ExternalStorageAccess,
+        external_storage_policy: &ExternalStoragePolicy,
+    ) -> std::result::Result<ResolvedGuestPath, GuestPathFailure> {
         let normalized = mount_match_path(guest_path)?;
 
         if let Some(relative) =
@@ -298,9 +330,10 @@ impl GuestFilesystem {
             }
         }
 
-        Err(WinedroidError::new(format!(
-            "guest path `{guest_path}` is outside the app-private and shared-storage mounts"
-        )))
+        Err(failure(
+            GuestPathError::OutsideMounts,
+            format!("guest path `{guest_path}` is outside the app-private and shared-storage mounts"),
+        ))
     }
 
     fn resolve_under(
@@ -312,7 +345,7 @@ impl GuestFilesystem {
         enforce_external_app_scope: bool,
         access: ExternalStorageAccess,
         external_storage_policy: &ExternalStoragePolicy,
-    ) -> Result<ResolvedGuestPath> {
+    ) -> std::result::Result<ResolvedGuestPath, GuestPathFailure> {
         #[cfg(any(test, target_os = "emscripten"))]
         let mut host_path = self.test_host_root(mount).to_path_buf();
         let mut resolved_components = Vec::new();
@@ -322,9 +355,10 @@ impl GuestFilesystem {
                 "" | "." => continue,
                 ".." => {
                     if resolved_components.pop().is_none() {
-                        return Err(WinedroidError::new(format!(
-                            "guest path `{guest_path}` escapes its mounted root"
-                        )));
+                        return Err(failure(
+                            GuestPathError::EscapesRoot,
+                            format!("guest path `{guest_path}` escapes its mounted root"),
+                        ));
                     }
                     #[cfg(any(test, target_os = "emscripten"))]
                     host_path.push("..");
@@ -388,16 +422,17 @@ impl GuestFilesystem {
         guest_path: &str,
         access: ExternalStorageAccess,
         external_storage_policy: &ExternalStoragePolicy,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), GuestPathFailure> {
         let components = relative.split('/').collect::<Vec<_>>();
         let android_root_has_wrong_case = components
             .first()
             .is_some_and(|component| component.eq_ignore_ascii_case("Android"))
             && components.first().copied() != Some("Android");
         if android_root_has_wrong_case {
-            return Err(WinedroidError::new(format!(
-                "guest path `{guest_path}` uses a non-canonical Android storage directory"
-            )));
+            return Err(failure(
+                GuestPathError::HiddenDirectory,
+                format!("guest path `{guest_path}` uses a non-canonical Android storage directory"),
+            ));
         }
 
         // cite: frameworks-base Context.java#getExternalFilesDir, getExternalCacheDir, getExternalMediaDirs, getObbDir
@@ -416,18 +451,20 @@ impl GuestFilesystem {
                 || components[1].eq_ignore_ascii_case("sandbox"));
         if app_specific_tree {
             // cite: frameworks-base FileSystemProvider.java#PATTERN_HIDDEN_PATH, shouldHide
-            return Err(WinedroidError::new(format!(
-                "guest path `{guest_path}` addresses an unavailable app-specific external directory"
-            )));
+            return Err(failure(
+                GuestPathError::HiddenDirectory,
+                format!("guest path `{guest_path}` addresses an unavailable app-specific external directory"),
+            ));
         }
 
         if external_storage_policy.allows_public_path(access) {
             return Ok(());
         }
 
-        Err(WinedroidError::new(format!(
-            "guest path `{guest_path}` requires effective legacy read/write or all-files access; scoped media access requires indexed ownership and media grants"
-        )))
+        Err(failure(
+            GuestPathError::ExternalScopeDenied,
+            format!("guest path `{guest_path}` requires effective legacy read/write or all-files access; scoped media access requires indexed ownership and media grants"),
+        ))
     }
 }
 
@@ -489,9 +526,9 @@ pub fn canonical_guest_path(path: &str) -> Result<String> {
     Ok(format!("/{}", components.join("/")))
 }
 
-fn mount_match_path(path: &str) -> Result<String> {
+fn mount_match_path(path: &str) -> std::result::Result<String, GuestPathFailure> {
     if path.contains('\0') {
-        return Err(WinedroidError::new("guest path contains a NUL character"));
+        return Err(failure(GuestPathError::NulByte, "guest path contains a NUL character"));
     }
 
     let absolute = absolute_guest_path(path);

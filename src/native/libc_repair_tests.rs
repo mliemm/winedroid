@@ -105,17 +105,12 @@ fn bionic_vfprintf_prints_an_unknown_conversion_letter_through_the_width_logic()
 }
 
 #[test]
-fn bionic_vfprintf_wide_aliases_fail_explicitly_instead_of_printing_the_letter() {
-    register_all();
-    let mut list_args = [0u64; 1];
-    for conversion in ["%C", "%S", "%lc", "%ls"] {
-        let raw = GuestVaListRaw { stack: list_args.as_mut_ptr() as u64, gr_top: 0, vr_top: 0, gr_offs: 0, vr_offs: 0 };
-        let mut list = GuestVaList::from_guest(&raw as *const GuestVaListRaw as u64).unwrap();
+fn bionic_vfprintf_wide_aliases_print_utf8_for_wide_characters_and_strings() {
+    let wide_text = wide("h\u{e9}");
+    let pointer = address(&wide_text);
 
-        let error = format(conversion.as_bytes(), &mut list).unwrap_err();
-
-        assert!(error.contains("next missing primitive: printf wide"), "{conversion}: {error}");
-    }
+    assert_eq!(render("%C|%lc", &[u64::from('A' as u32), u64::from('B' as u32)]), "A|B");
+    assert_eq!(render("%S|%ls", &[pointer, pointer]), "h\u{e9}|h\u{e9}");
 }
 
 #[test]

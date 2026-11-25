@@ -11,6 +11,8 @@ pub mod elf_image;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod guest_call;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod guest_context;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod image_layout;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod image_map;
@@ -196,3 +198,9 @@ mod libc_text_tests;
 mod libc_coverage_tests;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
 mod libc_time_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod io_test_support;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod io_fs_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod io_runtime_tests;

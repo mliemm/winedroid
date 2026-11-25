@@ -9,7 +9,7 @@ from the matching file in `src/`; nothing is hand edited.
 - Sources: `src/fx_add.c`, `src/fx_reloc.c`, `src/fx_dep.c`, `src/fx_jni.c`,
   `src/fx_order_child.c`, `src/fx_order_parent.c`, `src/fx_relro.c`,
   `src/fx_bridge.c`, `src/fx_libc.c`, `src/fx_math.c`, `src/fx_dlmain.c`,
-  `src/fx_threads.c`, `src/fx_signals.c`.
+  `src/fx_threads.c`, `src/fx_signals.c`, `src/fx_io.c`, `src/fx_net.c`.
 - Headers: Bionic from the android-ref checkout (`bionic/libc/include` and the
   kernel uapi directories) plus `include/jni.h`. No Android NDK is installed.
 - `include/jni.h` is written from ART's `JNINativeInterface` table in
@@ -109,3 +109,14 @@ checked in binaries byte for byte.
   modes, exception flags, `fabsl`, `copysignl`).
 - `libfx_dlmain.so`: guest calls of `dlopen`, `dlsym`, `dlerror`, `dladdr`,
   `dlclose` and `dl_iterate_phdr` against the other fixtures.
+- `libfx_io.so`: the printf family (integers, strings, characters, pointers,
+  hex floats, positional arguments, wide `swprintf`), stdio on a real FILE
+  (`fopen`, `fprintf`, `fscanf`, `fseek`, `ftell`, `fflush`, `fwrite`,
+  `fread`, `fgetc`, `ungetc`, `getline`, `tmpfile`), `sscanf` over the integer,
+  float, string, scanset and width rules, `opendir`/`readdir`/`closedir`,
+  `stat`, anonymous and file `mmap`, `mprotect` and a read of
+  `/proc/self/maps` searching for a caller supplied needle.
+- `libfx_net.so`: a loopback TCP client and server in one process, level,
+  edge and one shot `epoll`, `eventfd`, `pipe` with `poll` and `select`,
+  `getaddrinfo` for `localhost`, `getnameinfo`, `timerfd`, `socketpair` with
+  `shutdown`, and `setsockopt`/`getsockopt` round trips.

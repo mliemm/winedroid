@@ -7,8 +7,8 @@ use std::sync::OnceLock;
 use super::fixture_header::manifest_path;
 
 const VARIANTS: [(&str, u32); 2] = [("16k", 16384), ("4k", 4096)];
-const LIBRARIES: [&str; 15] = ["fx_add", "fx_aps2", "fx_bridge", "fx_dep", "fx_dlmain", "fx_jni", "fx_libc", "fx_math", "fx_order_child", "fx_order_parent", "fx_reloc", "fx_relr", "fx_relro", "fx_signals", "fx_threads"];
-const SOURCES: [&str; 13] = ["fx_add", "fx_bridge", "fx_dep", "fx_dlmain", "fx_jni", "fx_libc", "fx_math", "fx_order_child", "fx_order_parent", "fx_reloc", "fx_relro", "fx_signals", "fx_threads"];
+const LIBRARIES: [&str; 17] = ["fx_add", "fx_aps2", "fx_bridge", "fx_dep", "fx_dlmain", "fx_io", "fx_jni", "fx_libc", "fx_math", "fx_net", "fx_order_child", "fx_order_parent", "fx_reloc", "fx_relr", "fx_relro", "fx_signals", "fx_threads"];
+const SOURCES: [&str; 15] = ["fx_add", "fx_bridge", "fx_dep", "fx_dlmain", "fx_io", "fx_jni", "fx_libc", "fx_math", "fx_net", "fx_order_child", "fx_order_parent", "fx_reloc", "fx_relro", "fx_signals", "fx_threads"];
 const FAKE_CLANG: &str = r#"#!/bin/sh
 printf 'clang %s\n' "$*" >>"$FAKE_LOG"
 case "$1" in

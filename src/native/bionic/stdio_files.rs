@@ -1,25 +1,31 @@
+use std::sync::OnceLock;
+
 use super::export::data_in_libc;
 use super::guest_mem::write_value;
+use super::linux_abi::stdio as flags;
+use super::stream;
 
-const FILE_SIZE: usize = 152;
-const FLAGS_OFFSET: usize = 16;
-const FILE_OFFSET: usize = 20;
-const COOKIE_OFFSET: usize = 48;
-const READING: i32 = 0x0004;
-const WRITING: i32 = 0x0008;
-const UNBUFFERED: i32 = 0x0002;
+static STANDARD: OnceLock<[usize; 3]> = OnceLock::new();
+
+pub fn standard(index: usize) -> usize {
+    STANDARD.get().copied().unwrap_or([0; 3])[index]
+}
 
 pub fn register() {
     // cite: bionic stdio.cpp#MAKE_STD_STREAM, __sF
-    let files = data_in_libc("__sF", 3 * FILE_SIZE);
-    for (index, flags) in [READING, WRITING, WRITING | UNBUFFERED].into_iter().enumerate() {
-        let file = files + index * FILE_SIZE;
-        write_value::<i32>(file + FLAGS_OFFSET, flags);
-        write_value::<i32>(file + FILE_OFFSET, index as i32);
-        write_value::<usize>(file + COOKIE_OFFSET, file);
+    let files = data_in_libc("__sF", 3 * stream::FILE_SIZE);
+    let stdout_buffering = if unsafe { libc::isatty(1) } == 1 { stream::IOLBF } else { stream::IOFBF };
+    let specs = [(true, false, stream::IOFBF, flags::SRD), (false, true, stdout_buffering, flags::SWR), (false, true, stream::IONBF, flags::SWR | flags::SNBF)];
+    let mut addresses = [0usize; 3];
+    for (index, (readable, writable, buffering, file_flags)) in specs.into_iter().enumerate() {
+        let file = files + index * stream::FILE_SIZE;
+        let stream = stream::create(index as i32, readable, writable, buffering, true, file_flags);
+        stream::attach(file, &stream);
+        addresses[index] = file;
     }
+    STANDARD.set(addresses).ok();
     for (index, name) in ["stdin", "stdout", "stderr"].into_iter().enumerate() {
         let cell = data_in_libc(name, 8);
-        write_value::<usize>(cell, files + index * FILE_SIZE);
+        write_value::<usize>(cell, addresses[index]);
     }
 }

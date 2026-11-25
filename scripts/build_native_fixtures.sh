@@ -102,11 +102,18 @@ build_variant() {
     local out="$OUT_ROOT/$label"
     local work
     work="$(mktemp -d)"
-    mkdir -p "$out" "$work/stubs" "$work/stubs_bridge" "$work/stubs_core" "$work/stubs_threads" "$work/stubs_signals"
+    mkdir -p "$out" "$work/stubs" "$work/stubs_bridge" "$work/stubs_core" "$work/stubs_threads" "$work/stubs_signals" "$work/stubs_io" "$work/stubs_net"
     rm -f "$out"/*.so
 
     make_stub libc.so "$work/stubs" strlen memcpy malloc free snprintf \
         pthread_mutex_lock pthread_mutex_unlock __cxa_atexit __stack_chk_fail __tls_get_addr __fx_record
+    make_stub libc.so "$work/stubs_io" \
+        __errno __fgets_chk __fread_chk __fprintf_chk __fwrite_chk __snprintf_chk __sprintf_chk __stack_chk_fail __swprintf_chk __vsnprintf_chk __vsprintf_chk \
+        close fclose feof fflush fgetc fopen fprintf fputs fread fscanf fseek ftell fwrite getline malloc free memcmp memcpy memset mmap mprotect munmap \
+        open opendir read readdir rewind snprintf sscanf stat strcmp strlen strstr swprintf tmpfile ungetc closedir
+    make_stub libc.so "$work/stubs_net" \
+        __FD_SET_chk __errno __snprintf_chk __stack_chk_fail accept bind close connect epoll_create1 epoll_ctl epoll_wait eventfd \
+        freeaddrinfo getaddrinfo getnameinfo getsockname getsockopt listen memset pipe poll read recv select send setsockopt shutdown socket socketpair strcmp timerfd_create timerfd_settime write
     make_stub libc.so "$work/stubs_bridge" strlen malloc free __stack_chk_fail \
         fx_probe fx_vprobe fx_get_s24 fx_get_hfa4 fx_get_ld fx_get_pair fx_nest_host fx_not_registered \
         fx_sp_check fx_touch_errno fx_clobber_probe fx_vshapes +fx_missing_object pthread_self gettid getpid __errno
@@ -183,6 +190,12 @@ build_variant() {
 
     compile fx_dlmain "$work"
     STUB_DIR="$work/stubs_core" link fx_dlmain "$page" "$work" "$out" -lc -ldl
+
+    compile fx_io "$work"
+    STUB_DIR="$work/stubs_io" link fx_io "$page" "$work" "$out" -lc
+
+    compile fx_net "$work"
+    STUB_DIR="$work/stubs_net" link fx_net "$page" "$work" "$out" -lc
 
     rm -rf "$work"
 }

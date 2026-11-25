@@ -7,18 +7,18 @@ use super::export::in_libc;
 use super::guest_mem::write_bytes;
 use super::sysconf_table::CONSTANTS;
 
-const AT_FLAGS: u64 = 8;
-const AT_UID: u64 = 11;
-const AT_EUID: u64 = 12;
-const AT_GID: u64 = 13;
-const AT_EGID: u64 = 14;
-const AT_PLATFORM: u64 = 15;
-const AT_HWCAP: u64 = 16;
-const AT_PAGESZ: u64 = 6;
-const AT_CLKTCK: u64 = 17;
-const AT_SECURE: u64 = 23;
-const AT_RANDOM: u64 = 25;
-const AT_HWCAP2: u64 = 26;
+pub const AT_FLAGS: u64 = 8;
+pub const AT_UID: u64 = 11;
+pub const AT_EUID: u64 = 12;
+pub const AT_GID: u64 = 13;
+pub const AT_EGID: u64 = 14;
+pub const AT_PLATFORM: u64 = 15;
+pub const AT_HWCAP: u64 = 16;
+pub const AT_PAGESZ: u64 = 6;
+pub const AT_CLKTCK: u64 = 17;
+pub const AT_SECURE: u64 = 23;
+pub const AT_RANDOM: u64 = 25;
+pub const AT_HWCAP2: u64 = 26;
 const CLOCK_TICKS: i64 = 100;
 const ARG_MAX_FLOOR: u64 = 131072;
 const STACK_DEFAULT: u64 = 8_388_608;
@@ -67,7 +67,7 @@ const HWCAP2: &[(u32, &str)] = &[
 static RANDOM_BYTES: OnceLock<usize> = OnceLock::new();
 static PLATFORM: OnceLock<usize> = OnceLock::new();
 
-fn sysctl_u64(name: &str) -> Option<u64> {
+pub fn sysctl_u64(name: &str) -> Option<u64> {
     let name = CString::new(name).ok()?;
     let mut buffer = [0u8; 8];
     let mut length = buffer.len();
@@ -130,7 +130,7 @@ pub fn sysconf(name: i32) -> Option<i64> {
     dynamic_sysconf(name).or_else(|| CONSTANTS.iter().find(|(number, _)| *number == name).map(|(_, value)| *value))
 }
 
-fn auxiliary(kind: u64) -> Option<u64> {
+pub fn auxiliary(kind: u64) -> Option<u64> {
     // cite: bionic getauxval.cpp#getauxval
     match kind {
         AT_PAGESZ => Some(PAGE_SIZE as u64),

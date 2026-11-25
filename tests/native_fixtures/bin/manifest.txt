@@ -4,9 +4,11 @@ source src/fx_add.c 1480638417 73
 source src/fx_bridge.c 3835130979 7386
 source src/fx_dep.c 982460949 562
 source src/fx_dlmain.c 2837828515 2892
+source src/fx_io.c 2785170865 6464
 source src/fx_jni.c 1057538324 2138
 source src/fx_libc.c 744471232 22326
 source src/fx_math.c 820226804 3130
+source src/fx_net.c 1536959900 8638
 source src/fx_order_child.c 4143477877 1191
 source src/fx_order_parent.c 2046232195 996
 source src/fx_reloc.c 1869183806 2514
@@ -19,9 +21,11 @@ binary 16k/libfx_aps2.so 3402982044 7648
 binary 16k/libfx_bridge.so 2136071327 13000
 binary 16k/libfx_dep.so 734394195 3648
 binary 16k/libfx_dlmain.so 4247953846 6136
+binary 16k/libfx_io.so 1273668802 11928
 binary 16k/libfx_jni.so 2919427678 4944
 binary 16k/libfx_libc.so 4065860665 38360
 binary 16k/libfx_math.so 2546408872 10760
+binary 16k/libfx_net.so 3075338523 12016
 binary 16k/libfx_order_child.so 4144083586 4616
 binary 16k/libfx_order_parent.so 3872958116 4864
 binary 16k/libfx_reloc.so 3791239422 7856
@@ -34,9 +38,11 @@ binary 4k/libfx_aps2.so 1250459304 7648
 binary 4k/libfx_bridge.so 3957136652 13000
 binary 4k/libfx_dep.so 3961699566 3648
 binary 4k/libfx_dlmain.so 493384813 6136
+binary 4k/libfx_io.so 3609426543 11928
 binary 4k/libfx_jni.so 3975334502 4944
 binary 4k/libfx_libc.so 3094425571 38360
 binary 4k/libfx_math.so 1075974379 10760
+binary 4k/libfx_net.so 3814671843 12016
 binary 4k/libfx_order_child.so 2150498198 4616
 binary 4k/libfx_order_parent.so 2182793691 4864
 binary 4k/libfx_reloc.so 3575045801 7856

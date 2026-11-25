@@ -29,6 +29,7 @@ mod error;
 mod external_storage;
 mod frame_clock;
 mod fxhash;
+mod guest_app_paths;
 mod guest_filesystem;
 mod host_bridge;
 mod host_window;

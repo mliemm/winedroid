@@ -331,6 +331,17 @@ impl Directory {
         result
     }
 
+    pub fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.fd.as_fd()
+    }
+
+    pub fn parent_and_leaf(&self, components: &[CString]) -> io::Result<(Directory, Option<CString>)> {
+        match self.target(components)? {
+            Target::Leaf(parent) => Ok((Directory { fd: Arc::new(parent.directory) }, Some(parent.leaf))),
+            Target::Directory(fd) => Ok((Directory { fd: Arc::new(fd) }, None)),
+        }
+    }
+
     pub fn open_leaf(&self, name: &CStr, flags: OFlags, mode: Mode) -> io::Result<OwnedFd> {
         validate_leaf_component(name)?;
         fs::openat(self.fd.as_ref(), name, flags, mode).map_err(io::Error::from)
