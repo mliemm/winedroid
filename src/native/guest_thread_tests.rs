@@ -40,8 +40,8 @@ fn each_thread_that_enters_guest_code_gets_its_own_pthread_internal_record() {
     assert!(tids[0] != tids[1] && tids[1] != tids[2] && tids[0] != tids[2], "{tids:?}");
     assert!(results.iter().all(|(_, _, pid, _)| *pid == own_pid));
     assert!(own_pid > 0);
-    assert!(results.iter().all(|(record, ..)| !is_record_live(*record)), "records are freed when the host thread exits");
-    assert!(is_record_live(own_record));
+    assert!(results.iter().all(|(record, tid, ..)| !is_record_live(*record, *tid)), "records are freed when the host thread exits");
+    assert!(is_record_live(own_record, own_tid));
 }
 
 #[test]
@@ -83,4 +83,15 @@ fn attach_is_a_no_op_for_an_attached_thread_and_returns_the_same_record() {
     let first = attach_current().unwrap();
     assert_eq!(attach_current().unwrap(), first);
     assert_eq!(current_record(), Some(first));
+}
+
+#[test]
+fn the_primary_role_is_never_handed_to_a_later_thread_after_the_primary_record_is_freed() {
+    use super::guest_thread::{claim_primary, empty_registry, release};
+    let mut registry = empty_registry();
+
+    assert!(claim_primary(&mut registry, 0x1000));
+    release(&mut registry, 0x1000);
+    assert!(!claim_primary(&mut registry, 0x2000), "tid equal to the pid belongs to the main thread for the whole process");
+    assert!(!claim_primary(&mut registry, 0x1000), "a reused record address is not primary either");
 }

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -14,24 +14,42 @@ struct ThreadKeys {
     art_thread: libc::pthread_key_t,
 }
 
-struct Registry {
-    records: BTreeSet<usize>,
+pub(super) struct Registry {
+    records: BTreeMap<usize, i32>,
     primary: Option<usize>,
+    primary_assigned: bool,
 }
 
 static KEYS: OnceLock<ThreadKeys> = OnceLock::new();
-static REGISTRY: Mutex<Registry> = Mutex::new(Registry { records: BTreeSet::new(), primary: None });
+static REGISTRY: Mutex<Registry> = Mutex::new(empty_registry());
 static NEXT_TID: AtomicI32 = AtomicI32::new(0);
 
 extern "C" fn free_record(record: *mut libc::c_void) {
     let address = record as usize;
     let mut registry = REGISTRY.lock().expect("guest thread registry");
+    release(&mut registry, address);
+    drop(registry);
+    unsafe { std::alloc::dealloc(record as *mut u8, record_layout()) };
+}
+
+pub(super) fn release(registry: &mut Registry, address: usize) {
     registry.records.remove(&address);
     if registry.primary == Some(address) {
         registry.primary = None;
     }
-    drop(registry);
-    unsafe { std::alloc::dealloc(record as *mut u8, record_layout()) };
+}
+
+pub(super) fn claim_primary(registry: &mut Registry, address: usize) -> bool {
+    let first = !registry.primary_assigned;
+    if first {
+        registry.primary = Some(address);
+        registry.primary_assigned = true;
+    }
+    first
+}
+
+pub(super) const fn empty_registry() -> Registry {
+    Registry { records: BTreeMap::new(), primary: None, primary_assigned: false }
 }
 
 fn record_layout() -> std::alloc::Layout {
@@ -74,8 +92,8 @@ pub fn current_record() -> Option<*mut PthreadInternal> {
     (!record.is_null()).then_some(record)
 }
 
-pub fn is_record_live(address: usize) -> bool {
-    REGISTRY.lock().expect("guest thread registry").records.contains(&address)
+pub fn is_record_live(address: usize, tid: i32) -> bool {
+    REGISTRY.lock().expect("guest thread registry").records.get(&address) == Some(&tid)
 }
 
 fn next_tid() -> i32 {
@@ -114,9 +132,10 @@ pub fn attach_current() -> Result<*mut PthreadInternal> {
     let pid = unsafe { libc::getpid() };
     let address = record as usize;
     let mut registry = REGISTRY.lock().expect("guest thread registry");
-    let primary = registry.primary.is_none();
+    let primary = claim_primary(&mut registry, address);
+    let tid = if primary { pid } else { next_tid() };
     unsafe {
-        (*record).tid = if primary { pid } else { next_tid() };
+        (*record).tid = tid;
         (*record).cached_pid = pid as u32;
         (*record).attr.flags = ATTR_FLAG_INHERIT;
         (*record).attr.stack_base = stack_base;
@@ -125,10 +144,7 @@ pub fn attach_current() -> Result<*mut PthreadInternal> {
         (*record).join_state = JOIN_NOT_JOINED;
         assert_eq!(libc::pthread_setspecific(key, record as *const libc::c_void), 0, "thread record store");
     }
-    registry.records.insert(address);
-    if primary {
-        registry.primary = Some(address);
-    }
+    registry.records.insert(address, tid);
     Ok(record)
 }
 

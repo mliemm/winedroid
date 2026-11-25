@@ -90,7 +90,8 @@ fn stub_table_lives_in_an_anonymous_read_execute_mapping_with_stable_addresses_p
     assert_eq!(host_protection_of(base), libc::PROT_READ | libc::PROT_EXEC);
     assert_eq!(host_protection_of(stub_address(8191)), libc::PROT_READ | libc::PROT_EXEC);
     assert!(first >= base && first < base + 8192 * 8);
-    assert_eq!(register_handler("strlen", |_| {}), first);
+    assert!(std::panic::catch_unwind(|| register_handler("strlen", |_| {})).is_err(), "a second handler for strlen is refused");
+    assert_eq!(handler_address("strlen"), Some(first));
     assert_eq!(register_missing("/guest/libother.so", "strlen"), first);
     let exe_text = bridge_text_address();
     assert!(exe_text < base || exe_text >= base + 16384 * 5, "stub table is not inside the host binary");
@@ -243,4 +244,43 @@ fn errno_is_restored_unless_the_handler_sets_it_and_the_guest_reads_the_host_slo
     let bridged = Bridged::load("16k", "libfx_bridge.so");
 
     assert_eq!(bridged.call("fx_errno_flow").invoke().unwrap().i32(), 5034);
+}
+
+fn local_table(slots: usize) -> Vec<std::sync::atomic::AtomicPtr<super::bridge::Entry>> {
+    (0..slots).map(|_| std::sync::atomic::AtomicPtr::new(std::ptr::null_mut())).collect()
+}
+
+#[test]
+fn a_full_stub_table_binds_further_names_to_an_explicit_overflow_entry_instead_of_panicking() {
+    let entries = local_table(4);
+    let mut ids = std::collections::HashMap::new();
+
+    let first: Vec<usize> = ["a", "b", "c"].iter().map(|name| super::bridge::bind_for_test(&entries, &mut ids, name, true)).collect();
+    let over = super::bridge::bind_for_test(&entries, &mut ids, "d", true);
+    let over_again = super::bridge::bind_for_test(&entries, &mut ids, "e", false);
+
+    assert_eq!(first, [0, 1, 2]);
+    assert_eq!((over, over_again), (3, 3));
+    assert!(super::bridge::entry_is_overflow(&entries, 3));
+    assert!(!super::bridge::entry_is_overflow(&entries, 2));
+}
+
+#[test]
+#[should_panic(expected = "native handler already registered: dup")]
+fn registering_a_second_handler_for_the_same_symbol_is_refused() {
+    let entries = local_table(4);
+    let mut ids = std::collections::HashMap::new();
+    super::bridge::bind_for_test(&entries, &mut ids, "dup", true);
+    super::bridge::bind_for_test(&entries, &mut ids, "dup", true);
+}
+
+#[test]
+fn a_handler_replaces_a_missing_binding_for_the_same_name() {
+    let entries = local_table(4);
+    let mut ids = std::collections::HashMap::new();
+    let missing = super::bridge::bind_for_test(&entries, &mut ids, "late", false);
+    let handler = super::bridge::bind_for_test(&entries, &mut ids, "late", true);
+
+    assert_eq!(missing, handler);
+    assert_eq!(super::bridge::bind_for_test(&entries, &mut ids, "late", false), handler);
 }

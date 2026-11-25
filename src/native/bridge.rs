@@ -17,9 +17,10 @@ pub type Handler = Arc<dyn Fn(&mut CallContext) + Send + Sync>;
 enum Binding {
     Handler(Handler),
     Missing { importer: String },
+    Overflow,
 }
 
-struct Entry {
+pub(super) struct Entry {
     name: String,
     binding: Binding,
 }
@@ -161,21 +162,39 @@ fn leak_entry(entry: Entry) -> *mut Entry {
     Box::into_raw(Box::new(entry))
 }
 
-fn register_binding(name: &str, binding: Binding) -> usize {
-    initialize(spk_dispatch);
-    let mut names = names().lock().expect("bridge names");
+fn bind(names: &mut Names, entries: &[AtomicPtr<Entry>], name: &str, binding: Binding) -> std::result::Result<usize, String> {
+    let overflow = entries.len() - 1;
     if let Some(&id) = names.ids.get(name) {
-        let current = unsafe { &*ENTRIES[id].load(Ordering::Acquire) };
-        if matches!(current.binding, Binding::Missing { .. }) && matches!(binding, Binding::Handler(_)) {
-            ENTRIES[id].store(leak_entry(Entry { name: name.to_string(), binding }), Ordering::Release);
+        let current = unsafe { &*entries[id].load(Ordering::Acquire) };
+        match (&current.binding, &binding) {
+            (Binding::Handler(_), Binding::Handler(_)) => return Err(format!("native handler already registered: {name}")),
+            (Binding::Missing { .. }, Binding::Handler(_)) => {
+                entries[id].store(leak_entry(Entry { name: name.to_string(), binding }), Ordering::Release);
+            }
+            _ => {}
         }
-        return stub_address(id);
+        return Ok(id);
     }
     let id = names.ids.len();
-    assert!(id < STUB_COUNT, "native import stub table is full");
-    ENTRIES[id].store(leak_entry(Entry { name: name.to_string(), binding }), Ordering::Release);
+    if id >= overflow {
+        eprintln!("FIXME: native import stub table is full, {name} cannot get a stub; next missing primitive: more native import stub slots");
+        if entries[overflow].load(Ordering::Acquire).is_null() {
+            entries[overflow].store(leak_entry(Entry { name: "native import stub table is full".to_string(), binding: Binding::Overflow }), Ordering::Release);
+        }
+        return Ok(overflow);
+    }
+    entries[id].store(leak_entry(Entry { name: name.to_string(), binding }), Ordering::Release);
     names.ids.insert(name.to_string(), id);
-    stub_address(id)
+    Ok(id)
+}
+
+fn register_binding(name: &str, binding: Binding) -> usize {
+    initialize(spk_dispatch);
+    let bound = bind(&mut names().lock().expect("bridge names"), &ENTRIES, name, binding);
+    match bound {
+        Ok(id) => stub_address(id),
+        Err(message) => panic!("{message}"),
+    }
 }
 
 pub fn register_handler(name: &str, handler: impl Fn(&mut CallContext) + Send + Sync + 'static) -> usize {
@@ -245,6 +264,7 @@ extern "C" fn spk_dispatch(id: u64, regs: *mut Regs) {
             eprintln!("FIXME: native import not implemented: {importer} {}", entry.name);
             Some(WinedroidError::new(missing_message(importer, &entry.name)).to_string())
         }
+        Binding::Overflow => Some(WinedroidError::new("native import stub table is full; next missing primitive: more native import stub slots").to_string()),
     };
     if let Some(message) = failure {
         abort_active_call(message);
@@ -267,4 +287,18 @@ impl SystemLibraryProvider for BridgeProvider {
             ImportKind::Data => unmapped_data_address(importer, name),
         }
     }
+}
+
+#[cfg(test)]
+pub(super) fn bind_for_test(entries: &[AtomicPtr<Entry>], names: &mut HashMap<String, usize>, name: &str, handler: bool) -> usize {
+    let mut scratch = Names { ids: std::mem::take(names), data: HashMap::new() };
+    let binding = if handler { Binding::Handler(Arc::new(|_| {})) } else { Binding::Missing { importer: "test".to_string() } };
+    let id = bind(&mut scratch, entries, name, binding);
+    *names = scratch.ids;
+    id.unwrap_or_else(|message| panic!("{message}"))
+}
+
+#[cfg(test)]
+pub(super) fn entry_is_overflow(entries: &[AtomicPtr<Entry>], id: usize) -> bool {
+    unsafe { entries[id].load(Ordering::Acquire).as_ref() }.is_some_and(|entry| matches!(entry.binding, Binding::Overflow))
 }

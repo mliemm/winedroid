@@ -96,3 +96,5 @@ mod bridge_tests;
 mod bridge_va_tests;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
 mod guest_thread_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod guest_call_tests;
