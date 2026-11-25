@@ -2,7 +2,8 @@ use std::ffi::CString;
 
 use super::bridge::{handler_address, native_provider, register_handler, register_missing, BridgeProvider};
 use super::bridge_test_support::take_stack_seen;
-use super::bridge_test_support::{register_all, take_atexit, take_logged, Bridged};
+use super::bionic::atexit::{append_count, registrations_within};
+use super::bridge_test_support::{register_all, take_logged, Bridged};
 use super::call_assign::CallBuilder;
 use super::link_resolution::{ImportKind, SystemLibraryProvider};
 use super::loader_test_support::{child_outcome, host_protection_of, terminating_signal_of_child};
@@ -16,6 +17,8 @@ const RELOCATING: [&str; 3] = ["libfx_reloc.so", "libfx_aps2.so", "libfx_relr.so
 fn fixture_source_fx_reloc_runs_strlen_memcpy_malloc_and_snprintf_through_bridge_handlers() {
     for variant in VARIANTS {
         for library in RELOCATING {
+            register_all();
+            let appended_before = append_count();
             let bridged = Bridged::load(variant, library);
             let label = format!("{variant}/{library}");
             let text = CString::new("hello bridge").unwrap();
@@ -44,7 +47,8 @@ fn fixture_source_fx_reloc_runs_strlen_memcpy_malloc_and_snprintf_through_bridge
             let message = CString::new("note").unwrap();
             bridged.call("fx_log").ptr(message.as_ptr() as usize).invoke().unwrap();
             assert_eq!(take_logged(), vec![(4, "fx_reloc".to_string(), "note 7".to_string())], "{label} liblog variadic");
-            assert_eq!(take_atexit().len(), 1, "{label} __cxa_atexit from the constructor");
+            let module = bridged.loader.module_info(bridged.handle).unwrap();
+            assert_eq!(registrations_within(appended_before, module.region, module.region_len).len(), 1, "{label} __cxa_atexit from the constructor");
         }
     }
 }

@@ -122,3 +122,19 @@ mod data_fault_tests;
 mod runtime_tests;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
 mod bridge_va_composite_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod libc_core_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod bionic_reference;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod libc_runtime_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod libc_system_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod libc_dl_math_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod libc_text_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod libc_coverage_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod libc_time_tests;

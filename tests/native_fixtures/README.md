@@ -8,7 +8,7 @@ from the matching file in `src/`; nothing is hand edited.
 
 - Sources: `src/fx_add.c`, `src/fx_reloc.c`, `src/fx_dep.c`, `src/fx_jni.c`,
   `src/fx_order_child.c`, `src/fx_order_parent.c`, `src/fx_relro.c`,
-  `src/fx_bridge.c`.
+  `src/fx_bridge.c`, `src/fx_libc.c`, `src/fx_math.c`, `src/fx_dlmain.c`.
 - Headers: Bionic from the android-ref checkout (`bionic/libc/include` and the
   kernel uapi directories) plus `include/jni.h`. No Android NDK is installed.
 - `include/jni.h` is written from ART's `JNINativeInterface` table in
@@ -100,3 +100,11 @@ checked in binaries byte for byte.
   RELATIVE relocations) so `PT_GNU_RELRO` covers at least one whole 16 KB host
   page in both variants, plus a plain writable `fx_relro_plain` in a segment
   after it.
+- `libfx_libc.so`: calls the Bionic libc core through its imports (printf
+  family, FORTIFY `_chk` entry points, strto*, qsort, bsearch, strerror, env,
+  random, sysconf, properties, time, locale, ctype, liblog). Several functions
+  return values the tests compare with an oracle named in the test.
+- `libfx_math.so`: libm and fenv calls (`ilogb`, `nan`, `lgamma`, rounding
+  modes, exception flags, `fabsl`, `copysignl`).
+- `libfx_dlmain.so`: guest calls of `dlopen`, `dlsym`, `dlerror`, `dladdr`,
+  `dlclose` and `dl_iterate_phdr` against the other fixtures.

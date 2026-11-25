@@ -164,6 +164,11 @@ pub fn terminating_signal_of_child(work: impl FnOnce()) -> Option<i32> {
 }
 
 pub fn child_outcome(work: impl FnOnce()) -> (Option<i32>, String) {
+    let (signal, _, output) = child_result(work);
+    (signal, output)
+}
+
+pub fn child_result(work: impl FnOnce()) -> (Option<i32>, Option<i32>, String) {
     let mut ends = [0i32; 2];
     assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
     let pid = unsafe { libc::fork() };
@@ -190,7 +195,8 @@ pub fn child_outcome(work: impl FnOnce()) -> (Option<i32>, String) {
     let mut status = 0;
     assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
     let signal = libc::WIFSIGNALED(status).then(|| libc::WTERMSIG(status));
-    (signal, String::from_utf8_lossy(&output).into_owned())
+    let code = libc::WIFEXITED(status).then(|| libc::WEXITSTATUS(status));
+    (signal, code, String::from_utf8_lossy(&output).into_owned())
 }
 
 pub fn child_exit_code(work: impl FnOnce()) -> Option<i32> {

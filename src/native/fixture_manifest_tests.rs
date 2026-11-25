@@ -10,12 +10,15 @@ use super::fixture_reference_tests::android_ref_root;
 
 const TOOL_MISSING_STATUS: i32 = 127;
 const VARIANT_DIRECTORIES: [&str; 2] = ["16k", "4k"];
-const FIXTURE_LIBRARIES: [&str; 10] = [
+const FIXTURE_LIBRARIES: [&str; 13] = [
     "libfx_add.so",
     "libfx_aps2.so",
     "libfx_bridge.so",
     "libfx_dep.so",
+    "libfx_dlmain.so",
     "libfx_jni.so",
+    "libfx_libc.so",
+    "libfx_math.so",
     "libfx_order_child.so",
     "libfx_order_parent.so",
     "libfx_reloc.so",

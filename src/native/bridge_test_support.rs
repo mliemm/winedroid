@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::sync::{Arc, Once};
 
+use super::bionic::log_sink::{start_capture, take_capture};
 use super::bridge::{register_handler, BridgeProvider, CallContext};
 use super::call_assign::CallBuilder;
 use super::dl_api::DlHandle;
@@ -8,7 +9,6 @@ use super::handler_registry::register_all_groups;
 use super::loader::Loader;
 use super::loader_test_support::fixture_dir;
 use super::quad::f64_to_quad;
-use super::va_list::GuestVaList;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Seen {
@@ -19,8 +19,6 @@ pub enum Seen {
 
 thread_local! {
     static PROBE: RefCell<Vec<Seen>> = const { RefCell::new(Vec::new()) };
-    static LOGGED: RefCell<Vec<(i32, String, String)>> = const { RefCell::new(Vec::new()) };
-    static ATEXIT: RefCell<Vec<(u64, u64, u64)>> = const { RefCell::new(Vec::new()) };
     static STACK_SEEN: RefCell<(u64, Vec<u64>)> = const { RefCell::new((0, Vec::new())) };
     static SHAPES: RefCell<(Vec<Vec<u8>>, Vec<(i32, i32)>)> = const { RefCell::new((Vec::new(), Vec::new())) };
 }
@@ -38,81 +36,14 @@ pub fn take_probe() -> Vec<Seen> {
 }
 
 pub fn take_logged() -> Vec<(i32, String, String)> {
-    LOGGED.with(|logged| std::mem::take(&mut *logged.borrow_mut()))
+    let records = take_capture().into_iter().map(|record| (record.priority, record.tag, record.message)).collect();
+    start_capture();
+    records
 }
 
-pub fn take_atexit() -> Vec<(u64, u64, u64)> {
-    ATEXIT.with(|registered| std::mem::take(&mut *registered.borrow_mut()))
-}
-
-fn c_string(pointer: usize) -> String {
-    unsafe { std::ffi::CStr::from_ptr(pointer as *const _) }.to_string_lossy().into_owned()
-}
-
-pub fn format_c(format: &str, va: &mut GuestVaList) -> String {
-    let mut out = String::new();
-    let mut chars = format.chars().peekable();
-    while let Some(letter) = chars.next() {
-        if letter != '%' {
-            out.push(letter);
-            continue;
-        }
-        let mut long = false;
-        while chars.peek() == Some(&'l') {
-            chars.next();
-            long = true;
-        }
-        match chars.next() {
-            Some('d') => out.push_str(&if long { va.next_i64().to_string() } else { va.next_i32().to_string() }),
-            Some('x') => out.push_str(&format!("{:x}", va.next_u32())),
-            Some('c') => out.push(char::from(va.next_u32() as u8)),
-            Some('s') => out.push_str(&c_string(va.next_ptr())),
-            Some('f') => out.push_str(&format!("{:.6}", va.next_f64())),
-            Some('%') => out.push('%'),
-            other => panic!("test formatter does not know %{other:?}"),
-        }
-    }
-    out
-}
-
-fn register_libc_handlers() {
-    register_handler("strlen", |context| {
-        let length = unsafe { libc::strlen(context.arg_ptr(0) as *const _) };
-        context.ret_u64(length as u64);
-    });
-    register_handler("memcpy", |context| {
-        unsafe { std::ptr::copy_nonoverlapping(context.arg_ptr(1) as *const u8, context.arg_ptr(0) as *mut u8, context.arg_u64(2) as usize) };
-        context.ret_ptr(context.arg_ptr(0));
-    });
-    register_handler("malloc", |context| {
-        let pointer = unsafe { libc::malloc(context.arg_u64(0) as usize) };
-        context.ret_ptr(pointer as usize);
-    });
-    register_handler("free", |context| unsafe { libc::free(context.arg_ptr(0) as *mut _) });
-    register_handler("snprintf", |context| {
-        let (buffer, capacity, format) = (context.arg_ptr(0), context.arg_u64(1) as usize, c_string(context.arg_ptr(2)));
-        let text = format_c(&format, &mut context.varargs(3, 0));
-        let writable = capacity.saturating_sub(1).min(text.len());
-        if capacity > 0 {
-            unsafe {
-                std::ptr::copy_nonoverlapping(text.as_ptr(), buffer as *mut u8, writable);
-                *(buffer as *mut u8).add(writable) = 0;
-            }
-        }
-        context.ret_i32(text.len() as i32);
-    });
-    register_handler("__android_log_print", |context| {
-        let (priority, tag, format) = (context.arg_i32(0), c_string(context.arg_ptr(1)), c_string(context.arg_ptr(2)));
-        let text = format_c(&format, &mut context.varargs(3, 0));
-        LOGGED.with(|logged| logged.borrow_mut().push((priority, tag, text)));
-        context.ret_i32(1);
-    });
+fn register_threading_stand_ins() {
     register_handler("pthread_mutex_lock", |context| context.ret_i32(0));
     register_handler("pthread_mutex_unlock", |context| context.ret_i32(0));
-    register_handler("__cxa_atexit", |context| {
-        ATEXIT.with(|registered| registered.borrow_mut().push((context.arg_u64(0), context.arg_u64(1), context.arg_u64(2))));
-        context.ret_i32(0);
-    });
 }
 
 fn probe_value_list(context: &mut CallContext) {
@@ -145,7 +76,7 @@ fn register_fixture_handlers() {
         }
     });
     register_handler("fx_vshapes", |context| {
-        let shapes = c_string(context.arg_ptr(0));
+        let shapes = super::bionic::guest_mem::cstr_lossy(context.arg_ptr(0));
         let mut va = match context.va_list_arg(1) {
             Ok(va) => va,
             Err(error) => return context.fail(error.to_string()),
@@ -230,7 +161,7 @@ fn register_fixture_handlers() {
 pub fn register_all() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        register_libc_handlers();
+        register_threading_stand_ins();
         register_fixture_handlers();
         register_all_groups();
     });
@@ -244,6 +175,7 @@ pub struct Bridged {
 impl Bridged {
     pub fn load(variant: &str, library: &str) -> Self {
         register_all();
+        start_capture();
         let loader = Arc::new(Loader::new(vec![fixture_dir(variant)], Box::new(BridgeProvider)).with_strict(false));
         let handle = loader.dlopen(Some(library), 2, None).unwrap_or_else(|error| panic!("{variant}/{library}: {error}"));
         Self { loader, handle }

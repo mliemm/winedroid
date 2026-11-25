@@ -33,6 +33,10 @@ impl NativeRuntime {
         RUNTIME.get()
     }
 
+    pub fn library_dirs(&self) -> &[PathBuf] {
+        &self.library_dirs
+    }
+
     pub fn loader(&self) -> &Loader {
         &self.loader
     }

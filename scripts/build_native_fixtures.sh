@@ -102,7 +102,7 @@ build_variant() {
     local out="$OUT_ROOT/$label"
     local work
     work="$(mktemp -d)"
-    mkdir -p "$out" "$work/stubs" "$work/stubs_bridge"
+    mkdir -p "$out" "$work/stubs" "$work/stubs_bridge" "$work/stubs_core"
     rm -f "$out"/*.so
 
     make_stub libc.so "$work/stubs" strlen memcpy malloc free snprintf \
@@ -111,6 +111,20 @@ build_variant() {
         fx_probe fx_vprobe fx_get_s24 fx_get_hfa4 fx_get_ld fx_get_pair fx_nest_host fx_not_registered \
         fx_sp_check fx_touch_errno fx_clobber_probe fx_vshapes +fx_missing_object pthread_self gettid getpid __errno
     make_stub libdl.so "$work/stubs" dlopen dlsym dlclose dlerror
+    make_stub libc.so "$work/stubs_core" \
+        __FD_SET_chk __assert2 __cxa_atexit __errno __memcpy_chk __memset_chk __read_chk __snprintf_chk __stack_chk_fail \
+        __strcat_chk __strchr_chk __strcpy_chk __strlen_chk __strncpy_chk2 __system_property_find __system_property_get \
+        __system_property_read __system_property_serial __vsprintf_chk abort android_set_abort_message asctime_r atoi \
+        bsearch calloc clock_gettime exit free getenv getpagesize gettimeofday gmtime_r lrand48 mallinfo malloc \
+        malloc_usable_size mallopt memalign memrchr memset putenv qsort rand realloc reallocarray setenv sleep snprintf \
+        sprintf srand srand48 strcasecmp strcasestr strcat strchr strcmp strcpy strerror strerror_r strlcat strlcpy strlen \
+        strncasecmp strstr strtod strtok_r strtol strtoul strxfrm sysconf tolower toupper isalnum ispunct isspace isxdigit isalpha isdigit setlocale newlocale uselocale freelocale __ctype_get_mb_cur_max localeconv tzset localtime_r mktime strftime ctime_r +_ctype_ +tzname +timezone +daylight timegm unsetenv usleep vsnprintf vsprintf
+    make_stub libm.so "$work/stubs_core" atan2 copysignl fabsl feclearexcept fegetenv fegetround feraiseexcept fesetenv fesetround \
+        fetestexcept fma fmax frexp hypot ilogb ilogbf ldexp lgamma lgamma_r llround lrint modf nan nanf nearbyint pow \
+        powf round scalbln sin sincos sqrtf +signgam
+    make_stub liblog.so "$work/stubs_core" __android_log_buf_write __android_log_print __android_log_set_default_tag \
+        __android_log_set_minimum_priority __android_log_write __android_log_assert __android_log_set_logger
+    make_stub libdl.so "$work/stubs_core" dl_iterate_phdr dladdr dlclose dlerror dlopen dlsym
     make_stub liblog.so "$work/stubs" __android_log_print
 
     compile fx_add "$work"
@@ -139,6 +153,15 @@ build_variant() {
 
     compile fx_relro "$work"
     link fx_relro "$page" "$work" "$out"
+
+    compile fx_libc "$work"
+    STUB_DIR="$work/stubs_core" link fx_libc "$page" "$work" "$out" -lc -llog
+
+    compile fx_math "$work"
+    STUB_DIR="$work/stubs_core" link fx_math "$page" "$work" "$out" -lc -lm
+
+    compile fx_dlmain "$work"
+    STUB_DIR="$work/stubs_core" link fx_dlmain "$page" "$work" "$out" -lc -ldl
 
     rm -rf "$work"
 }

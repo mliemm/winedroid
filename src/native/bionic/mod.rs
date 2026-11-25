@@ -1,1 +1,68 @@
+pub mod abi_types;
+pub mod atexit;
+pub mod civil;
+pub mod clocks;
+pub mod ctype;
+pub mod device_profile;
+pub mod dl;
+pub mod env;
+pub mod errno;
 pub mod errno_map;
+pub mod export;
+pub mod fatal;
+pub mod fenv;
+pub mod fortify;
+pub mod fortify_check;
+pub mod guest_mem;
+pub mod locale;
+pub mod log;
+pub mod log_sink;
+pub mod math;
+pub mod memory;
+pub mod printf;
+pub mod printf_handlers;
+pub mod prng;
+pub mod props;
+pub mod sleep;
+pub mod sort;
+pub mod stdlib;
+pub mod strerror_table;
+pub mod string;
+pub mod strtonum;
+pub mod sysconf_table;
+pub mod strftime;
+pub mod sysinfo;
+pub mod time_handlers;
+pub mod tz_state;
+pub mod tzif;
+
+use std::sync::Once;
+
+pub fn register_libc_core() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        memory::register();
+        string::register();
+        fortify::register();
+        fatal::register();
+        atexit::register();
+        errno::register();
+        printf_handlers::register();
+        ctype::register();
+        locale::register();
+        strtonum::register();
+        stdlib::register();
+        prng::register();
+        sort::register();
+        env::register();
+        sysinfo::register();
+        props::register();
+        time_handlers::register();
+        tz_state::register();
+        strftime::register();
+        log::register();
+        dl::register();
+        fenv::register();
+        math::register();
+    });
+}

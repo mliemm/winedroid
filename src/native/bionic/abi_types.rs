@@ -1,0 +1,32 @@
+pub const EPERM: i32 = 1;
+pub const ENOENT: i32 = 2;
+pub const EINTR: i32 = 4;
+pub const EBADF: i32 = 9;
+pub const EAGAIN: i32 = 11;
+pub const ENOMEM: i32 = 12;
+pub const EFAULT: i32 = 14;
+pub const EINVAL: i32 = 22;
+pub const ERANGE: i32 = 34;
+pub const ENAMETOOLONG: i32 = 36;
+pub const EOVERFLOW: i32 = 75;
+pub const EILSEQ: i32 = 84;
+
+pub const SSIZE_MAX: u64 = i64::MAX as u64;
+pub const PAGE_SIZE: usize = 16384;
+
+pub const TIMESPEC_SIZE: usize = 16;
+pub const TIMEVAL_SIZE: usize = 16;
+pub const TM_SIZE: usize = 56;
+pub const TM_GMTOFF_OFFSET: usize = 40;
+pub const TM_ZONE_OFFSET: usize = 48;
+pub const LCONV_SIZE: usize = 96;
+pub const MALLINFO_SIZE: usize = 80;
+pub const UTSNAME_FIELD: usize = 65;
+pub const UTSNAME_SIZE: usize = 390;
+pub const RLIMIT_SIZE: usize = 16;
+pub const DL_INFO_SIZE: usize = 32;
+pub const DL_PHDR_INFO_SIZE: usize = 64;
+pub const LOG_MESSAGE_SIZE: usize = 48;
+pub const PROP_VALUE_MAX: usize = 92;
+pub const PROP_NAME_MAX: usize = 32;
+pub const PROP_INFO_HEADER: usize = 96;

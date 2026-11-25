@@ -31,13 +31,14 @@ pub(super) struct Entry {
 struct Names {
     ids: HashMap<String, usize>,
     data: HashMap<String, usize>,
+    owners: HashMap<String, &'static str>,
 }
 
 static ENTRIES: [AtomicPtr<Entry>; STUB_COUNT] = [const { AtomicPtr::new(std::ptr::null_mut()) }; STUB_COUNT];
 static NAMES: OnceLock<Mutex<Names>> = OnceLock::new();
 
 fn names() -> &'static Mutex<Names> {
-    NAMES.get_or_init(|| Mutex::new(Names { ids: HashMap::new(), data: HashMap::new() }))
+    NAMES.get_or_init(|| Mutex::new(Names { ids: HashMap::new(), data: HashMap::new(), owners: HashMap::new() }))
 }
 
 pub struct CallContext<'a> {
@@ -221,6 +222,23 @@ pub fn register_handler(name: &str, handler: impl Fn(&mut CallContext) + Send + 
     register_binding(name, Binding::Handler(Arc::new(handler)))
 }
 
+pub fn register_handler_in(soname: &'static str, name: &str, handler: impl Fn(&mut CallContext) + Send + Sync + 'static) -> usize {
+    claim_owner(soname, name);
+    register_handler(name, handler)
+}
+
+fn claim_owner(soname: &'static str, name: &str) {
+    let mut names = names().lock().expect("bridge names");
+    if let Some(previous) = names.owners.insert(name.to_string(), soname) {
+        panic!("native export {name} is already owned by {previous}, cannot be owned by {soname}");
+    }
+}
+
+pub fn register_data_in(soname: &'static str, name: &str, bytes: usize) -> usize {
+    claim_owner(soname, name);
+    register_data(name, bytes)
+}
+
 pub fn register_missing(importer: &str, name: &str) -> usize {
     register_binding(name, Binding::Missing { importer: importer.to_string() })
 }
@@ -239,6 +257,10 @@ pub fn register_data(name: &str, bytes: usize) -> usize {
         assert!(!storage.is_null(), "data object allocation failed");
         storage as usize
     })
+}
+
+fn owner_allows(soname: &str, name: &str) -> bool {
+    names().lock().expect("bridge names").owners.get(name).is_none_or(|owner| *owner == soname)
 }
 
 fn data_address(name: &str) -> Option<usize> {
@@ -308,6 +330,9 @@ impl SystemLibraryProvider for BridgeProvider {
         if !is_system_soname(soname) {
             return None;
         }
+        if !owner_allows(soname, name) {
+            return None;
+        }
         data_address(name).or_else(|| handler_address(name))
     }
 
@@ -321,7 +346,7 @@ impl SystemLibraryProvider for BridgeProvider {
 
 #[cfg(test)]
 pub(super) fn bind_for_test(entries: &[AtomicPtr<Entry>], names: &mut HashMap<String, usize>, name: &str, handler: bool) -> usize {
-    let mut scratch = Names { ids: std::mem::take(names), data: HashMap::new() };
+    let mut scratch = Names { ids: std::mem::take(names), data: HashMap::new(), owners: HashMap::new() };
     let binding = if handler { Binding::Handler(Arc::new(|_| {})) } else { Binding::Missing { importer: "test".to_string() } };
     let id = bind(&mut scratch, entries, name, binding);
     *names = scratch.ids;
