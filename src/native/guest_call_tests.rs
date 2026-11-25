@@ -5,7 +5,7 @@ use std::sync::Once;
 use super::bridge::{handler_address, register_handler, register_missing};
 use super::call_assign::CallBuilder;
 use super::guest_call::active_depth;
-use super::loader_test_support::terminating_signal_of_child;
+use super::loader_test_support::{child_outcome, terminating_signal_of_child};
 
 extern "C" {
     fn sys_icache_invalidate(start: *mut libc::c_void, length: usize);
@@ -130,13 +130,66 @@ fn a_failure_after_a_completed_inner_call_unwinds_the_outer_call_not_the_finishe
 }
 
 #[test]
-fn a_missing_import_reached_without_an_active_guest_call_aborts_the_process() {
+fn a_missing_import_reached_without_an_active_guest_call_aborts_and_names_library_symbol_and_thread() {
     let address = register_missing("/guest/libhost_thread.so", "fx_missing_without_active_call");
 
-    let signal = terminating_signal_of_child(|| {
-        let function: extern "C" fn() = unsafe { std::mem::transmute(address) };
-        function();
-    });
+    let (signal, stderr) = std::thread::Builder::new()
+        .name("native-missing-probe".to_string())
+        .spawn(move || {
+            child_outcome(|| {
+                let function: extern "C" fn() = unsafe { std::mem::transmute(address) };
+                function();
+            })
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 
     assert_eq!(signal, Some(libc::SIGABRT));
+    assert!(stderr.contains("FIXME: native import not implemented: /guest/libhost_thread.so fx_missing_without_active_call"), "{stderr}");
+    assert!(stderr.contains("no active guest call on thread native-missing-probe"), "{stderr}");
+}
+
+thread_local! {
+    static DEPTHS: std::cell::RefCell<Vec<(&'static str, usize)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn note_depth(label: &'static str) {
+    DEPTHS.with(|depths| depths.borrow_mut().push((label, active_depth())));
+}
+
+fn register_three_levels() -> usize {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        register_handler("fx_level_c", |context| {
+            note_depth("c");
+            context.fail("level c failed");
+        });
+        register_handler("fx_level_b", |context| {
+            note_depth("b");
+            let failed = CallBuilder::new(handler_address("fx_level_c").unwrap()).invoke().is_err();
+            note_depth("b after c");
+            context.ret_i32(i32::from(failed));
+        });
+        register_handler("fx_level_a", |context| {
+            note_depth("a");
+            let inner = CallBuilder::new(handler_address("fx_level_b").unwrap()).invoke().map(|result| result.i32());
+            note_depth("a after b");
+            context.ret_i32(inner.unwrap_or(-1));
+        });
+    });
+    handler_address("fx_level_a").unwrap()
+}
+
+#[test]
+fn a_failure_three_calls_deep_unwinds_only_the_innermost_call_and_the_active_stack_follows_each_level() {
+    let top = register_three_levels();
+    DEPTHS.with(|depths| depths.borrow_mut().clear());
+
+    let result = CallBuilder::new(top).invoke().unwrap().i32();
+
+    assert_eq!(result, 1, "level b saw its inner call fail and level a saw level b succeed");
+    let depths = DEPTHS.with(|depths| std::mem::take(&mut *depths.borrow_mut()));
+    assert_eq!(depths, [("a", 1), ("b", 2), ("c", 3), ("b after c", 2), ("a after b", 1)]);
+    assert_eq!(active_depth(), 0);
 }

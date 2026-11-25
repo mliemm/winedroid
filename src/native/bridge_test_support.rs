@@ -4,10 +4,10 @@ use std::sync::{Arc, Once};
 use super::bridge::{register_handler, BridgeProvider, CallContext};
 use super::call_assign::CallBuilder;
 use super::dl_api::DlHandle;
+use super::handler_registry::register_all_groups;
 use super::loader::Loader;
 use super::loader_test_support::fixture_dir;
 use super::quad::f64_to_quad;
-use super::thread_handlers::register_thread_handlers;
 use super::va_list::GuestVaList;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -21,6 +21,16 @@ thread_local! {
     static PROBE: RefCell<Vec<Seen>> = const { RefCell::new(Vec::new()) };
     static LOGGED: RefCell<Vec<(i32, String, String)>> = const { RefCell::new(Vec::new()) };
     static ATEXIT: RefCell<Vec<(u64, u64, u64)>> = const { RefCell::new(Vec::new()) };
+    static STACK_SEEN: RefCell<(u64, Vec<u64>)> = const { RefCell::new((0, Vec::new())) };
+    static SHAPES: RefCell<(Vec<Vec<u8>>, Vec<(i32, i32)>)> = const { RefCell::new((Vec::new(), Vec::new())) };
+}
+
+pub fn take_stack_seen() -> (u64, Vec<u64>) {
+    STACK_SEEN.with(|seen| std::mem::take(&mut *seen.borrow_mut()))
+}
+
+pub fn take_shapes() -> (Vec<Vec<u8>>, Vec<(i32, i32)>) {
+    SHAPES.with(|shapes| std::mem::take(&mut *shapes.borrow_mut()))
 }
 
 pub fn take_probe() -> Vec<Seen> {
@@ -134,6 +144,29 @@ fn register_fixture_handlers() {
             Err(error) => context.fail(error.to_string()),
         }
     });
+    register_handler("fx_vshapes", |context| {
+        let shapes = c_string(context.arg_ptr(0));
+        let mut va = match context.va_list_arg(1) {
+            Ok(va) => va,
+            Err(error) => return context.fail(error.to_string()),
+        };
+        let (mut values, mut offsets) = (Vec::new(), Vec::new());
+        for shape in shapes.chars() {
+            let bytes = match shape {
+                'i' => va.next_i64().to_le_bytes().to_vec(),
+                'A' => va.next_composite(16, 16, None),
+                'S' => va.next_composite(16, 8, None),
+                'H' => va.next_composite(16, 8, Some((8, 2))),
+                'F' => va.next_composite(12, 4, Some((4, 3))),
+                'B' => va.next_composite(32, 8, None),
+                other => panic!("test handler does not know shape {other}"),
+            };
+            values.push(bytes);
+            offsets.push((va.raw().gr_offs, va.raw().vr_offs));
+        }
+        SHAPES.with(|record| *record.borrow_mut() = (values, offsets));
+        context.ret_i64(shapes.len() as i64);
+    });
     register_handler("fx_get_s24", |context| {
         let bytes: Vec<u8> = [1i64, 2, 3].iter().flat_map(|value| value.to_le_bytes()).collect();
         context.ret_sret(&bytes);
@@ -159,14 +192,28 @@ fn register_fixture_handlers() {
     });
     register_handler("fx_sp_check", |context| {
         let aligned = context.stack_pointer() % 16 == 0;
+        let words = (0..10).map(|index| context.stack_u64(index)).collect();
+        STACK_SEEN.with(|seen| *seen.borrow_mut() = (context.stack_pointer(), words));
         context.ret_i32(i32::from(aligned));
     });
-    register_handler("fx_touch_errno", |context| {
-        if context.arg_i32(0) == 0 {
-            unsafe { *libc::__error() = 99 };
-        } else {
-            context.set_errno(34);
+    register_handler("fx_touch_errno", |context| match context.arg_i32(0) {
+        0 => unsafe { *libc::__error() = 99 },
+        1 => context.set_errno(34),
+        2 => {
+            let mut ends = [0i32; 2];
+            unsafe {
+                assert_eq!(libc::pipe(ends.as_mut_ptr()), 0);
+                libc::fcntl(ends[0], libc::F_SETFL, libc::O_NONBLOCK);
+                let mut byte = 0u8;
+                assert_eq!(libc::read(ends[0], &mut byte as *mut u8 as *mut _, 1), -1);
+                let host_errno = *libc::__error();
+                libc::close(ends[0]);
+                libc::close(ends[1]);
+                context.set_errno_from_host(host_errno);
+            }
         }
+        3 => context.set_errno_from_host(libc::EPROCLIM),
+        _ => context.set_errno(1000),
     });
     register_handler("fx_clobber_probe", |_| {
         let mut accumulator = [0u64; 32];
@@ -185,7 +232,7 @@ pub fn register_all() {
     ONCE.call_once(|| {
         register_libc_handlers();
         register_fixture_handlers();
-        register_thread_handlers();
+        register_all_groups();
     });
 }
 

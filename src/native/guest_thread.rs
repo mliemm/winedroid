@@ -4,15 +4,10 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::error::{Result, WinedroidError};
 
+use super::data_fault::ensure_alternate_stack;
 use super::pthread_internal::{PthreadInternal, ATTR_FLAG_INHERIT, JOIN_NOT_JOINED};
+use super::thread_block::{block, host_thread_pointer, set_slot, slot_word, SLOT_ART_THREAD_SELF, SLOT_STACK_GUARD, SLOT_THREAD_ID};
 
-const MAX_TSD_KEY: usize = 4095;
-const STACK_GUARD_SLOT: usize = 5;
-
-struct ThreadKeys {
-    record: libc::pthread_key_t,
-    art_thread: libc::pthread_key_t,
-}
 
 pub(super) struct Registry {
     records: BTreeMap<usize, i32>,
@@ -20,12 +15,13 @@ pub(super) struct Registry {
     primary_assigned: bool,
 }
 
-static KEYS: OnceLock<ThreadKeys> = OnceLock::new();
+static RECORD_KEY: OnceLock<libc::pthread_key_t> = OnceLock::new();
 static REGISTRY: Mutex<Registry> = Mutex::new(empty_registry());
 static NEXT_TID: AtomicI32 = AtomicI32::new(0);
 
 extern "C" fn free_record(record: *mut libc::c_void) {
     let address = record as usize;
+    set_slot(SLOT_THREAD_ID, 0);
     let mut registry = REGISTRY.lock().expect("guest thread registry");
     release(&mut registry, address);
     drop(registry);
@@ -56,39 +52,20 @@ fn record_layout() -> std::alloc::Layout {
     std::alloc::Layout::new::<PthreadInternal>()
 }
 
-fn keys() -> &'static ThreadKeys {
-    KEYS.get_or_init(|| {
-        let mut record: libc::pthread_key_t = 0;
-        let mut art_thread: libc::pthread_key_t = 0;
-        unsafe {
-            assert_eq!(libc::pthread_key_create(&mut record, Some(free_record)), 0, "thread record key");
-            assert_eq!(libc::pthread_key_create(&mut art_thread, None), 0, "art thread key");
-        }
-        assert!(record as usize <= MAX_TSD_KEY && art_thread as usize <= MAX_TSD_KEY, "thread keys do not fit an LDR immediate");
-        ThreadKeys { record, art_thread }
+fn record_key() -> libc::pthread_key_t {
+    *RECORD_KEY.get_or_init(|| {
+        let mut key: libc::pthread_key_t = 0;
+        assert_eq!(unsafe { libc::pthread_key_create(&mut key, Some(free_record)) }, 0, "thread record key");
+        key
     })
 }
 
-pub fn record_key() -> usize {
-    keys().record as usize
-}
-
-pub fn art_thread_key() -> usize {
-    keys().art_thread as usize
-}
-
 pub fn thread_pointer() -> usize {
-    let value: usize;
-    unsafe { std::arch::asm!("mrs {}, tpidrro_el0", out(reg) value, options(nomem, nostack, preserves_flags)) };
-    value
-}
-
-pub fn slot_word(slot: usize) -> u64 {
-    unsafe { *(thread_pointer() as *const u64).add(slot) }
+    host_thread_pointer()
 }
 
 pub fn current_record() -> Option<*mut PthreadInternal> {
-    let record = unsafe { *(thread_pointer() as *const u64).add(record_key()) } as *mut PthreadInternal;
+    let record = slot_word(SLOT_THREAD_ID) as *mut PthreadInternal;
     (!record.is_null()).then_some(record)
 }
 
@@ -119,13 +96,7 @@ pub fn attach_current() -> Result<*mut PthreadInternal> {
     if let Some(record) = current_record() {
         return Ok(record);
     }
-    // cite: bionic tls_defines.h#TLS_SLOT_STACK_GUARD
-    if slot_word(STACK_GUARD_SLOT) != 0 {
-        return Err(WinedroidError::new(
-            "guest code on a thread whose stack guard slot is not zero; next missing primitive: guest code on a workqueue thread",
-        ));
-    }
-    let key = keys().record;
+    ensure_alternate_stack();
     let record = unsafe { std::alloc::alloc_zeroed(record_layout()) } as *mut PthreadInternal;
     assert!(!record.is_null(), "thread record allocation failed");
     let (stack_base, stack_size) = stack_bounds();
@@ -142,8 +113,10 @@ pub fn attach_current() -> Result<*mut PthreadInternal> {
         (*record).attr.stack_size = stack_size;
         (*record).stack_top = stack_base + stack_size;
         (*record).join_state = JOIN_NOT_JOINED;
-        assert_eq!(libc::pthread_setspecific(key, record as *const libc::c_void), 0, "thread record store");
+        assert_eq!(libc::pthread_setspecific(record_key(), record as *const libc::c_void), 0, "thread record store");
     }
+    set_slot(SLOT_THREAD_ID, address as u64);
+    set_slot(SLOT_STACK_GUARD, block().canary());
     registry.records.insert(address, tid);
     Ok(record)
 }
@@ -162,5 +135,5 @@ pub fn is_primary(record: *mut PthreadInternal) -> bool {
 }
 
 pub fn art_thread_slot_is_null() -> bool {
-    unsafe { *(thread_pointer() as *const u64).add(art_thread_key()) == 0 }
+    slot_word(SLOT_ART_THREAD_SELF) == 0
 }

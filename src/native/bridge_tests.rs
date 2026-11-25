@@ -1,6 +1,7 @@
 use std::ffi::CString;
 
 use super::bridge::{handler_address, native_provider, register_handler, register_missing, BridgeProvider};
+use super::bridge_test_support::take_stack_seen;
 use super::bridge_test_support::{register_all, take_atexit, take_logged, Bridged};
 use super::call_assign::CallBuilder;
 use super::link_resolution::{ImportKind, SystemLibraryProvider};
@@ -109,7 +110,7 @@ fn bridge_provider_resolves_registered_names_data_objects_and_missing_imports_wi
     assert_eq!(provider.export("libc.so", "strlen"), handler_address("strlen"));
     assert_eq!(provider.export("libfoo.so", "strlen"), None);
     let guard = provider.export("libc.so", "__stack_chk_guard").unwrap();
-    assert_eq!(unsafe { *(guard as *const u64) }, 0);
+    assert_eq!(unsafe { *(guard as *const u64) }, super::thread_block::block().canary());
 
     let missing = provider.unresolved("/guest/libx.so", "never_registered_function", ImportKind::Function);
     assert_eq!(provider.unresolved("/guest/liby.so", "never_registered_function", ImportKind::Function), missing);
@@ -208,6 +209,26 @@ fn stack_pointer_is_sixteen_byte_aligned_for_every_stack_argument_count() {
         previous = Some(sp);
     }
     assert_eq!(bridged.call("fx_call_sp_import").invoke().unwrap().i32(), 1, "stub entered with an aligned sp");
+}
+
+#[test]
+fn a_handler_sees_a_sixteen_byte_aligned_sp_that_points_at_the_first_stack_argument_for_every_stack_word_count() {
+    register_all();
+    let stub = handler_address("fx_sp_check").unwrap();
+    for stack_words in 0..10u64 {
+        let mut call = CallBuilder::new(stub);
+        for value in 0..8 + stack_words {
+            call = call.int(if value < 8 { value } else { 1000 + value });
+        }
+
+        let aligned = call.invoke().unwrap().i32();
+
+        let (sp, words) = take_stack_seen();
+        assert_eq!(aligned, 1, "{stack_words} stack words: handler sp {sp:#x} is not 16 byte aligned");
+        assert_eq!(sp % 16, 0, "{stack_words} stack words: handler sp {sp:#x} is not 16 byte aligned");
+        let expected: Vec<u64> = (0..stack_words).map(|index| 1008 + index).collect();
+        assert_eq!(words[..stack_words as usize], expected[..], "{stack_words} stack words: sp {sp:#x} does not point at the first stack argument");
+    }
 }
 
 #[test]

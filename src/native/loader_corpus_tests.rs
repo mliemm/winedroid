@@ -222,3 +222,25 @@ fn bionic_phdr_table_protect_gnu_relro_makes_whole_host_pages_of_a_corpus_librar
         assert_eq!(host_protection_of(info.region + page as usize), libc::PROT_READ, "RELRO page at image offset {page:#x}");
     }
 }
+
+#[test]
+fn measured_tiktok_executable_segments_hold_87182_thread_pointer_reads_each_with_one_veneer() {
+    use super::elf_image::ElfImage;
+    use super::image_map::MappedImage;
+
+    let Some(paths) = corpus_libraries() else { return };
+    let mut reads = 0;
+    for path in paths {
+        let data = fs::read(&path).unwrap();
+        if !is_arm64_elf(&data) {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let elf = ElfImage::parse(&name, &data).or_else(|_| ElfImage::parse(&name, &without_interpreter(data.clone()))).unwrap();
+        let image = MappedImage::map(&name, &data, &elf).unwrap();
+        assert_eq!(image.layout().veneer_len % 16, 0, "{name}");
+        reads += image.layout().veneer_len / 16;
+    }
+
+    assert_eq!(reads, 87182);
+}

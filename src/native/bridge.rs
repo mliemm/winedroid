@@ -4,6 +4,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::error::{Result, WinedroidError};
 
+use super::data_fault;
+use super::host_log;
+use super::bionic::errno_map::{is_linux_errno, linux_from_darwin};
 use super::guest_call::abort_active_call;
 use super::guest_regs::Regs;
 use super::link_resolution::{ImportKind, SystemLibraryProvider};
@@ -150,7 +153,24 @@ impl<'a> CallContext<'a> {
     }
 
     pub fn set_errno(&mut self, linux_code: i32) {
+        if !is_linux_errno(linux_code) {
+            self.fail(format!(
+                "handler {} set errno {linux_code}, which is not a Linux errno; next missing primitive: errno {linux_code}",
+                self.symbol
+            ));
+            return;
+        }
         self.errno = Some(linux_code);
+    }
+
+    pub fn set_errno_from_host(&mut self, darwin_code: i32) {
+        match linux_from_darwin(darwin_code) {
+            Some(linux_code) => self.errno = Some(linux_code),
+            None => self.fail(format!(
+                "host errno {darwin_code} in {} has no Linux errno; next missing primitive: errno {darwin_code}",
+                self.symbol
+            )),
+        }
     }
 
     pub fn fail(&mut self, message: impl Into<String>) {
@@ -229,10 +249,10 @@ fn unmapped_data_address(importer: &str, name: &str) -> usize {
     let key = format!("unresolved:{name}");
     let mut names = names().lock().expect("bridge names");
     *names.data.entry(key).or_insert_with(|| {
-        let page = unsafe { libc::mmap(std::ptr::null_mut(), 16384, libc::PROT_NONE, libc::MAP_PRIVATE | libc::MAP_ANON, -1, 0) };
-        assert_ne!(page, libc::MAP_FAILED, "unresolved data page mapping failed for {importer} {name}");
-        eprintln!("{}", missing_data_message(importer, name));
-        page as usize
+        let message = missing_data_message(importer, name);
+        let address = data_fault::reserve(message.clone()).unwrap_or_else(|| panic!("no unresolved data slot left for {importer} {name}"));
+        eprintln!("{message}");
+        address
     })
 }
 
@@ -249,7 +269,7 @@ fn run_handler(entry: &Entry, handler: &Handler, regs: &mut Regs) -> Option<Stri
     let mut context = CallContext::new(regs, &entry.name);
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(&mut context)));
     if outcome.is_err() {
-        eprintln!("host handler panicked in {} lr={:#x}", entry.name, context.regs.lr);
+        host_log::line(&format!("host handler panicked in {} lr={:#x}", entry.name, context.regs.lr));
         std::process::abort();
     }
     unsafe { *libc::__error() = context.errno.unwrap_or(saved_errno) };
@@ -259,7 +279,7 @@ fn run_handler(entry: &Entry, handler: &Handler, regs: &mut Regs) -> Option<Stri
 extern "C" fn spk_dispatch(id: u64, regs: *mut Regs) {
     let entry = unsafe { ENTRIES[id as usize].load(Ordering::Acquire).as_ref() };
     let Some(entry) = entry else {
-        eprintln!("native stub {id} has no binding");
+        host_log::line(&format!("native stub {id} has no binding"));
         std::process::abort();
     };
     let regs = unsafe { &mut *regs };
@@ -277,7 +297,7 @@ extern "C" fn spk_dispatch(id: u64, regs: *mut Regs) {
 }
 
 pub fn native_provider() -> BridgeProvider {
-    super::thread_handlers::register_thread_handlers();
+    super::handler_registry::register_all_groups();
     BridgeProvider
 }
 

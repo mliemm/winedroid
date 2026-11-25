@@ -65,7 +65,10 @@ make_stub() {
     : >"$source"
     local name
     for name in "$@"; do
-        printf 'void %s(void) {}\n' "$name" >>"$source"
+        case "$name" in
+            +*) printf 'char %s[16];\n' "${name#+}" >>"$source" ;;
+            *) printf 'void %s(void) {}\n' "$name" >>"$source" ;;
+        esac
     done
     "$CLANG" "--target=$TARGET" -ffreestanding -nostdinc -fPIC -O1 -c "$source" -o "$source.o"
     "$LLD" -shared --build-id=none -soname "$soname" -o "$out_dir/$soname" "$source.o"
@@ -106,7 +109,7 @@ build_variant() {
         pthread_mutex_lock pthread_mutex_unlock __cxa_atexit __stack_chk_fail __tls_get_addr __fx_record
     make_stub libc.so "$work/stubs_bridge" strlen malloc free __stack_chk_fail \
         fx_probe fx_vprobe fx_get_s24 fx_get_hfa4 fx_get_ld fx_get_pair fx_nest_host fx_not_registered \
-        fx_sp_check fx_touch_errno fx_clobber_probe pthread_self gettid getpid __errno
+        fx_sp_check fx_touch_errno fx_clobber_probe fx_vshapes +fx_missing_object pthread_self gettid getpid __errno
     make_stub libdl.so "$work/stubs" dlopen dlsym dlclose dlerror
     make_stub liblog.so "$work/stubs" __android_log_print
 

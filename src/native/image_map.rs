@@ -1,7 +1,11 @@
 use crate::error::{Result, WinedroidError};
 
-use super::elf_image::ElfImage;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use super::elf_image::{ElfImage, PF_X};
 use super::image_layout::{ImageLayout, PageRange};
+use super::text_patch::count_thread_pointer_reads;
+use super::tp_veneer::VENEER_BYTES;
 
 extern "C" {
     fn sys_icache_invalidate(start: *mut libc::c_void, length: usize);
@@ -15,6 +19,7 @@ pub fn host_page_size() -> u64 {
 pub struct MappedImage {
     region: *mut u8,
     layout: ImageLayout,
+    veneer_used: AtomicU64,
 }
 
 unsafe impl Send for MappedImage {}
@@ -22,7 +27,12 @@ unsafe impl Sync for MappedImage {}
 
 impl MappedImage {
     pub fn map(name: &str, data: &[u8], image: &ElfImage) -> Result<Self> {
-        let layout = ImageLayout::plan(image, host_page_size())?;
+        let reads: usize = image
+            .loads()
+            .filter(|load| load.flags & PF_X != 0)
+            .map(|load| count_thread_pointer_reads(&data[load.offset as usize..(load.offset + load.filesz) as usize]))
+            .sum();
+        let layout = ImageLayout::plan(image, host_page_size())?.with_veneers((reads * VENEER_BYTES) as u64);
         let region = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
@@ -39,13 +49,21 @@ impl MappedImage {
                 layout.region_len
             )));
         }
-        let mapped = Self { region: region as *mut u8, layout };
+        let mapped = Self { region: region as *mut u8, layout, veneer_used: AtomicU64::new(0) };
         for load in image.loads() {
             let source = &data[load.offset as usize..(load.offset + load.filesz) as usize];
             let target = mapped.bytes_mut(load.vaddr, load.filesz)?;
             target.copy_from_slice(source);
         }
         Ok(mapped)
+    }
+
+    pub fn reserve_veneer(&self, bytes: usize) -> Result<usize> {
+        let start = self.veneer_used.fetch_add(bytes as u64, Ordering::SeqCst);
+        if start + bytes as u64 > self.layout.veneer_len {
+            return Err(WinedroidError::new("thread pointer veneer area is exhausted; next missing primitive: more thread pointer veneers"));
+        }
+        Ok(self.region as usize + self.layout.veneer_start as usize + start as usize)
     }
 
     pub fn layout(&self) -> &ImageLayout {

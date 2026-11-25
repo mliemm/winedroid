@@ -7,6 +7,7 @@ use super::fixture_elf::{FixtureElf, R_AARCH64_ABS64, R_AARCH64_GLOB_DAT, R_AARC
 use super::loader::Loader;
 use super::loader_test_support::{dlopen_without_constructors, fixture_dir, loader_for, take_recorded, unresolved_import_address};
 use super::tls_modules;
+use super::tp_veneer_tests::veneer_for;
 
 const ADDEND: u64 = 0x10;
 const VARIANTS: [&str; 2] = ["16k", "4k"];
@@ -153,8 +154,9 @@ fn bionic_text_patcher_leaves_words_outside_every_fde_untouched_and_patches_func
         let reloc = loader.dlopen(Some("libfx_reloc.so"), 2, None).unwrap();
         let function = symbol(&loader, reloc, "fx_tls_next") as *const u32;
         let code: Vec<u32> = (0..48).map(|index| unsafe { *function.add(index) }).collect();
-        assert!(code.iter().any(|word| word & 0xFFFF_FFE0 == 0xD53B_D060), "{variant} mrs tpidrro_el0 in fx_tls_next");
         assert!(code.iter().all(|word| word & 0xFFFF_FFE0 != 0xD53B_D040), "{variant} no mrs tpidr_el0 left in fx_tls_next");
+        let sites: Vec<usize> = (0..code.len()).filter(|index| veneer_for(function as usize + 4 * index, code[*index]).is_some()).collect();
+        assert_eq!(sites.len(), 2, "{variant} both mrs in fx_tls_next became a branch to a thread pointer veneer");
     }
 }
 
@@ -278,7 +280,7 @@ fn bionic_text_patcher_patches_whole_segments_when_pt_gnu_eh_frame_is_an_empty_p
     let handle = loader.dlopen(Some("libfx_order_child.so"), 2, None).unwrap();
     let pool = symbol(&loader, handle, "fx_pool_words") as *const u32;
 
-    assert_eq!(unsafe { *pool }, 0xD53BD060, "no FDE ranges, so the whole executable segment is rewritten");
+    assert!(veneer_for(pool as usize, unsafe { *pool }).is_some(), "no FDE ranges, so the whole executable segment is rewritten");
     assert_eq!(unsafe { *pool.add(1) }, 0xD503201F);
     fs::remove_dir_all(dir).unwrap();
 }

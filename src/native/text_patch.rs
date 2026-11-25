@@ -3,9 +3,10 @@ use crate::error::{Result, WinedroidError};
 use super::elf_image::{ElfImage, PF_X};
 use super::image_map::MappedImage;
 use super::loader::ImagePatcher;
+use super::thread_block::block;
+use super::tp_veneer::redirect_site;
 
 const MRS_TPIDR_EL0: u32 = 0xD53B_D040;
-const MRS_TPIDRRO_EL0: u32 = 0xD53B_D060;
 const MSR_TPIDR_EL0: u32 = 0xD51B_D040;
 const REGISTER_MASK: u32 = 0xFFFF_FFE0;
 const SHADOW_STACK_PUSH: u32 = 0xF800_865E;
@@ -33,13 +34,21 @@ fn writes_x18(word: u32) -> bool {
         || word & ORR_X18_IMMEDIATE_MASK == ORR_X18_IMMEDIATE
 }
 
-pub fn patch_words(code: &mut [u8]) -> Result<PatchCounts> {
+pub fn count_thread_pointer_reads(code: &[u8]) -> usize {
+    code.chunks_exact(4)
+        .filter(|chunk| u32::from_le_bytes((*chunk).try_into().expect("4 bytes")) & REGISTER_MASK == MRS_TPIDR_EL0)
+        .count()
+}
+
+pub type Redirect<'a> = &'a mut dyn FnMut(usize, u32) -> Result<u32>;
+
+pub fn patch_words(code: &mut [u8], base: usize, redirect: Redirect) -> Result<PatchCounts> {
     let mut counts = PatchCounts::default();
-    for chunk in code.chunks_exact_mut(4) {
+    for (index, chunk) in code.chunks_exact_mut(4).enumerate() {
         let word = u32::from_le_bytes(chunk.try_into().expect("4 bytes"));
         let replacement = if word & REGISTER_MASK == MRS_TPIDR_EL0 {
             counts.thread_pointer_reads += 1;
-            MRS_TPIDRRO_EL0 | (word & 0x1f)
+            redirect(base + index * 4, word & 0x1f)?
         } else if word & REGISTER_MASK == MSR_TPIDR_EL0 {
             return Err(WinedroidError::new(
                 "guest code writes tpidr_el0; next missing primitive: msr tpidr_el0",
@@ -160,6 +169,7 @@ fn function_ranges(image: &MappedImage, elf: &ElfImage) -> Result<Option<Vec<(u6
 impl ImagePatcher for TextPatcher {
     fn patch(&self, image: &MappedImage, elf: &ElfImage) -> Result<PatchCounts> {
         let functions = function_ranges(image, elf)?;
+        let bias = block().bias();
         let mut total = PatchCounts::default();
         for load in elf.loads().filter(|load| load.flags & PF_X != 0) {
             let segment = (load.vaddr, load.vaddr + load.filesz);
@@ -172,7 +182,8 @@ impl ImagePatcher for TextPatcher {
                 None => vec![segment],
             };
             for (start, end) in spans {
-                let counts = patch_words(image.bytes_mut(start, (end - start) & !3)?)?;
+                let mut redirect = |site: usize, register: u32| redirect_site(image, site, register, bias);
+                let counts = patch_words(image.bytes_mut(start, (end - start) & !3)?, image.address(start), &mut redirect)?;
                 total.thread_pointer_reads += counts.thread_pointer_reads;
                 total.shadow_stack_ops += counts.shadow_stack_ops;
                 total.x18_writes += counts.x18_writes;
@@ -193,22 +204,36 @@ mod tests {
             .collect()
     }
 
+    fn keep(_: usize, register: u32) -> Result<u32> {
+        Ok(0xD53B_D060 | register)
+    }
+
     #[test]
-    fn aarch64_mrs_tpidr_el0_becomes_tpidrro_el0_keeping_the_destination_register() {
+    fn aarch64_mrs_tpidr_el0_is_handed_to_the_redirect_with_its_site_and_destination_register() {
         let mut code = words(&[0xD53BD048, 0xD53BD040, 0xD503201F, 0xD53BD05E]);
-        let counts = patch_words(&mut code).unwrap();
+        let mut seen = Vec::new();
+        let mut record = |site: usize, register: u32| {
+            seen.push((site, register));
+            keep(site, register)
+        };
+        let counts = patch_words(&mut code, 0x1000, &mut record).unwrap();
 
         assert_eq!(counts.thread_pointer_reads, 3);
-        assert_eq!(
-            code,
-            words(&[0xD53BD068, 0xD53BD060, 0xD503201F, 0xD53BD07E])
-        );
+        assert_eq!(seen, vec![(0x1000, 8), (0x1004, 0), (0x100c, 30)]);
+        assert_eq!(code, words(&[0xD53BD068, 0xD53BD060, 0xD503201F, 0xD53BD07E]));
+    }
+
+    #[test]
+    fn aarch64_thread_pointer_reads_are_counted_in_the_file_bytes_before_mapping() {
+        let code = words(&[0xD53BD048, 0xD53BD060, 0xD53BD05F, 0xD503201F]);
+
+        assert_eq!(count_thread_pointer_reads(&code), 2);
     }
 
     #[test]
     fn aarch64_shadow_call_stack_push_and_pop_become_nops() {
         let mut code = words(&[0xF800865E, 0xF85F8E5E, 0xF800865F]);
-        let counts = patch_words(&mut code).unwrap();
+        let counts = patch_words(&mut code, 0, &mut keep).unwrap();
 
         assert_eq!(counts.shadow_stack_ops, 2);
         assert_eq!(code, words(&[0xD503201F, 0xD503201F, 0xF800865F]));
@@ -216,7 +241,7 @@ mod tests {
 
     #[test]
     fn aarch64_msr_tpidr_el0_is_an_explicit_error() {
-        let error = patch_words(&mut words(&[0xD51BD041]))
+        let error = patch_words(&mut words(&[0xD51BD041]), 0, &mut keep)
             .unwrap_err()
             .to_string();
 
@@ -227,7 +252,7 @@ mod tests {
     fn aarch64_mov_into_x18_is_counted_and_left_in_place() {
         let mut code = words(&[0xAA0003F2, 0xAA0103F2, 0xD2800012, 0xAA0003F3, 0xD2800013]);
         let before = code.clone();
-        let counts = patch_words(&mut code).unwrap();
+        let counts = patch_words(&mut code, 0, &mut keep).unwrap();
 
         assert_eq!(counts.x18_writes, 3);
         assert_eq!(code, before);
@@ -246,7 +271,7 @@ mod tests {
         let others = [0x9280_0013, 0xB240_03F3, 0xAA12_03E0];
         let mut code = words(&[writes.as_slice(), others.as_slice()].concat());
         let before = code.clone();
-        let counts = patch_words(&mut code).unwrap();
+        let counts = patch_words(&mut code, 0, &mut keep).unwrap();
 
         assert_eq!(counts.x18_writes, writes.len());
         assert_eq!(code, before);

@@ -253,6 +253,13 @@ int fx_errno_flow(void)
     return unchanged * 1000 + errno;
 }
 
+int fx_errno_after(int mode)
+{
+    errno = 0;
+    fx_touch_errno(mode);
+    return errno;
+}
+
 unsigned long fx_canary_slot(void)
 {
     unsigned long value;
@@ -268,4 +275,76 @@ __attribute__((noinline, optnone)) int fx_canary_overflow(unsigned count)
         cursor[index] = 0x41;
     }
     return cursor[0];
+}
+
+struct fx_a16 {
+    __int128 value;
+};
+
+struct fx_f3 {
+    float v[3];
+};
+
+struct fx_b32 {
+    long v[4];
+};
+
+extern long fx_vshapes(const char *shapes, va_list list);
+extern int fx_missing_object;
+
+long fx_call_vshapes(const char *shapes, ...)
+{
+    va_list list;
+    va_start(list, shapes);
+    long result = fx_vshapes(shapes, list);
+    va_end(list);
+    return result;
+}
+
+int fx_read_missing_object(void)
+{
+    return fx_missing_object;
+}
+
+unsigned long fx_tp_value(void)
+{
+    unsigned long value;
+    __asm__ volatile("mrs %0, tpidr_el0" : "=r"(value));
+    return value;
+}
+
+unsigned long fx_tp_slot(long index)
+{
+    unsigned long *tp;
+    __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tp));
+    return tp[index];
+}
+
+void fx_tp_store(long index, unsigned long value)
+{
+    unsigned long *tp;
+    __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tp));
+    tp[index] = value;
+}
+
+unsigned long fx_tp_thread_id(void)
+{
+    unsigned long value;
+    __asm__ volatile("mrs %0, tpidr_el0\n\tldr %0, [%0, #8]" : "=r"(value));
+    return value;
+}
+
+unsigned long fx_tp_art_thread(void)
+{
+    unsigned long value;
+    __asm__ volatile("mrs %0, tpidr_el0\n\tldr %0, [%0, #56]" : "=r"(value));
+    return value;
+}
+
+unsigned long fx_tp_thread_id_after_call(void)
+{
+    unsigned long *tp;
+    __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tp));
+    fx_clobber_probe();
+    return tp[1];
 }

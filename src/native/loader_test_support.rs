@@ -155,6 +155,48 @@ pub fn terminating_signal_of_child(work: impl FnOnce()) -> Option<i32> {
     libc::WIFSIGNALED(status).then(|| libc::WTERMSIG(status))
 }
 
+pub fn child_outcome(work: impl FnOnce()) -> (Option<i32>, String) {
+    let mut ends = [0i32; 2];
+    assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0, "fork failed");
+    if pid == 0 {
+        unsafe {
+            libc::close(ends[0]);
+            libc::dup2(ends[1], 2);
+        }
+        work();
+        unsafe { libc::_exit(0) };
+    }
+    unsafe { libc::close(ends[1]) };
+    let mut output = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        let count = unsafe { libc::read(ends[0], chunk.as_mut_ptr() as *mut _, chunk.len()) };
+        if count <= 0 {
+            break;
+        }
+        output.extend_from_slice(&chunk[..count as usize]);
+    }
+    unsafe { libc::close(ends[0]) };
+    let mut status = 0;
+    assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+    let signal = libc::WIFSIGNALED(status).then(|| libc::WTERMSIG(status));
+    (signal, String::from_utf8_lossy(&output).into_owned())
+}
+
+pub fn child_exit_code(work: impl FnOnce()) -> Option<i32> {
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0, "fork failed");
+    if pid == 0 {
+        work();
+        unsafe { libc::_exit(0) };
+    }
+    let mut status = 0;
+    assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+    libc::WIFEXITED(status).then(|| libc::WEXITSTATUS(status))
+}
+
 pub fn is_mapped(address: usize) -> bool {
     const VM_REGION_BASIC_INFO_64: i32 = 9;
     let mut at = address as u64;

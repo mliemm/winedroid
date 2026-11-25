@@ -1,4 +1,6 @@
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod data_fault;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod dl_api;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod dl_lock;
@@ -12,6 +14,10 @@ pub mod guest_call;
 pub mod image_layout;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod image_map;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod handler_registry;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod host_log;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod init_fini;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
@@ -39,6 +45,8 @@ pub mod unload;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod tls_modules;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod bionic;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod bridge;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod call_assign;
@@ -49,7 +57,13 @@ pub mod guest_thread;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod pthread_internal;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod runtime;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod stub_table;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod thread_block;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod tp_veneer;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod thread_handlers;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
@@ -98,3 +112,13 @@ mod bridge_va_tests;
 mod guest_thread_tests;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
 mod guest_call_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod tp_veneer_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod errno_map_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod data_fault_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod runtime_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod bridge_va_composite_tests;

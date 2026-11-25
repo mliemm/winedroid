@@ -12,6 +12,8 @@ pub struct ImageLayout {
     pub shift: u64,
     pub region_len: u64,
     pub host_page: u64,
+    pub veneer_start: u64,
+    pub veneer_len: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +43,18 @@ impl ImageLayout {
             shift,
             region_len: round_up(shift + hi - lo, host_page),
             host_page,
+            veneer_start: 0,
+            veneer_len: 0,
         })
+    }
+
+    pub fn with_veneers(mut self, bytes: u64) -> Self {
+        if bytes > 0 {
+            self.veneer_start = self.region_len;
+            self.veneer_len = bytes;
+            self.region_len += round_up(bytes, self.host_page);
+        }
+        self
     }
 
     pub fn region_offset(&self, vaddr: u64) -> u64 {
@@ -59,6 +72,9 @@ impl ImageLayout {
                 let slot = &mut flags[page as usize];
                 *slot = Some(slot.unwrap_or(0) | load.flags);
             }
+        }
+        for page in (self.veneer_start / self.host_page)..(self.veneer_start + self.veneer_len).div_ceil(self.host_page) {
+            flags[page as usize] = Some(PF_X);
         }
         let mut ranges: Vec<PageRange> = Vec::new();
         for (index, union) in flags.iter().enumerate() {

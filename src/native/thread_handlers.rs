@@ -1,9 +1,8 @@
 use std::sync::Once;
 
 use super::bridge::{register_data, register_handler, CallContext};
-use super::guest_thread::{attach_current, slot_word};
-
-const STACK_GUARD_SLOT: usize = 5;
+use super::guest_thread::attach_current;
+use super::thread_block::block;
 
 fn thread_record(context: &mut CallContext) -> Option<*mut super::pthread_internal::PthreadInternal> {
     match attach_current() {
@@ -53,5 +52,5 @@ fn register_all_thread_handlers() {
         std::process::abort();
     });
     let guard = register_data("__stack_chk_guard", 8);
-    unsafe { *(guard as *mut u64) = slot_word(STACK_GUARD_SLOT) };
+    unsafe { *(guard as *mut u64) = block().canary() };
 }

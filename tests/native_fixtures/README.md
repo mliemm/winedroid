@@ -89,8 +89,13 @@ checked in binaries byte for byte.
   sret, HFA, pair and long double returning imports, a naked `sp` probe, a
   callee saved register loop, recursion through a host handler, a call of an
   unregistered import, `pthread_self`, `gettid`, `getpid`, `errno`, and a
-  stack guard overflow. It links against a throwaway `libc.so` stub that
-  also names the `fx_*` imports.
+  stack guard overflow, a variadic guest function that forwards its `va_list`
+  to a host import (`fx_call_vshapes`, used with `int`, 16 byte aligned,
+  homogeneous float aggregate and 32 byte struct arguments), a read of an
+  unresolved data import (`fx_read_missing_object`), raw thread pointer reads
+  of Bionic TLS slots (`fx_tp_*`), and an errno probe (`fx_errno_after`). It
+  links against a throwaway `libc.so` stub that also names the `fx_*` imports;
+  names written with a leading `+` in the build script become data objects.
 - `libfx_relro.so`: a 32 KB `.data.rel.ro` table of function pointers (4096
   RELATIVE relocations) so `PT_GNU_RELRO` covers at least one whole 16 KB host
   page in both variants, plus a plain writable `fx_relro_plain` in a segment

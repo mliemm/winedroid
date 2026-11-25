@@ -183,6 +183,9 @@ std::arch::global_asm!(
     "bl {block}",
     "mrs x1, tpidrro_el0",
     "sub x0, x0, x1",
+    "adrp x1, {bias}@PAGE",
+    "ldr x1, [x1, {bias}@PAGEOFF]",
+    "sub x0, x0, x1",
     "ldp q0, q1, [sp, #160]",
     "ldp q2, q3, [sp, #192]",
     "ldp q4, q5, [sp, #224]",
@@ -218,9 +221,13 @@ std::arch::global_asm!(
     "str x1, [sp, #-16]!",
     "mrs x1, tpidrro_el0",
     "sub x0, x0, x1",
+    "adrp x1, {bias}@PAGE",
+    "ldr x1, [x1, {bias}@PAGEOFF]",
+    "sub x0, x0, x1",
     "ldr x1, [sp], #16",
     "ret",
     block = sym tls_block_address,
+    bias = sym super::thread_block::GUEST_TP_BIAS,
 );
 
 extern "C" {

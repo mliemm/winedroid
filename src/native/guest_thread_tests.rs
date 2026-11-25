@@ -1,6 +1,7 @@
 use super::bridge_test_support::Bridged;
 use super::guest_thread::{attach_current, current_record, is_primary, is_record_live, set_primary};
 use super::pthread_internal::PthreadInternal;
+use super::thread_block::block;
 
 fn guest_values(bridged: &Bridged) -> (usize, i32, i32, u64) {
     let record = bridged.call("fx_self_record").invoke().unwrap().u64() as usize;
@@ -45,15 +46,16 @@ fn each_thread_that_enters_guest_code_gets_its_own_pthread_internal_record() {
 }
 
 #[test]
-fn the_stack_guard_slot_of_the_thread_pointer_reads_zero_on_every_guest_thread() {
+fn the_stack_guard_slot_of_the_thread_pointer_holds_the_same_nonzero_canary_on_every_guest_thread() {
     let bridged = std::sync::Arc::new(Bridged::load("16k", "libfx_bridge.so"));
     let other = {
         let bridged = bridged.clone();
         std::thread::spawn(move || bridged.call("fx_canary_slot").invoke().unwrap().u64()).join().unwrap()
     };
 
-    assert_eq!(guest_values(&bridged).3, 0);
-    assert_eq!(other, 0);
+    assert_eq!(guest_values(&bridged).3, block().canary());
+    assert_eq!(other, block().canary());
+    assert_ne!(other, 0);
 }
 
 #[test]

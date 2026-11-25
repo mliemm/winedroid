@@ -5,6 +5,7 @@ use crate::error::{Result, WinedroidError};
 
 use super::call_assign::CallBuilder;
 use super::guest_thread::attach_current;
+use super::host_log;
 use super::trampoline::{spk_call_guest, spk_unwind_to, GuestCallFrame};
 
 #[derive(Debug, Clone, Copy)]
@@ -89,10 +90,17 @@ pub(super) fn active_depth() -> usize {
     ACTIVE.with(|active| active.borrow().len())
 }
 
+fn current_thread_label() -> String {
+    let mut host_id = 0u64;
+    unsafe { libc::pthread_threadid_np(0, &mut host_id) };
+    let thread = std::thread::current();
+    format!("thread {} (id {host_id})", thread.name().unwrap_or("unnamed"))
+}
+
 pub fn abort_active_call(message: String) {
     let frame = ACTIVE.with(|active| active.borrow().last().copied());
     let Some(frame) = frame else {
-        eprintln!("{message}");
+        host_log::line(&format!("{message}; no active guest call on {}", current_thread_label()));
         std::process::abort();
     };
     ABORT.with(|abort| *abort.borrow_mut() = Some(message));
