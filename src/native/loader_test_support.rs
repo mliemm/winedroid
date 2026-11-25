@@ -143,11 +143,19 @@ pub fn host_protection_of(address: usize) -> i32 {
     info[0]
 }
 
+fn run_child_work(work: impl FnOnce()) {
+    if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)) {
+        let text = panic.downcast_ref::<String>().cloned().or_else(|| panic.downcast_ref::<&str>().map(|text| text.to_string())).unwrap_or_default();
+        super::host_log::line(&format!("child test body panicked: {text}"));
+        unsafe { libc::_exit(101) };
+    }
+}
+
 pub fn terminating_signal_of_child(work: impl FnOnce()) -> Option<i32> {
     let pid = unsafe { libc::fork() };
     assert!(pid >= 0, "fork failed");
     if pid == 0 {
-        work();
+        run_child_work(work);
         unsafe { libc::_exit(0) };
     }
     let mut status = 0;
@@ -165,7 +173,7 @@ pub fn child_outcome(work: impl FnOnce()) -> (Option<i32>, String) {
             libc::close(ends[0]);
             libc::dup2(ends[1], 2);
         }
-        work();
+        run_child_work(work);
         unsafe { libc::_exit(0) };
     }
     unsafe { libc::close(ends[1]) };
@@ -189,7 +197,7 @@ pub fn child_exit_code(work: impl FnOnce()) -> Option<i32> {
     let pid = unsafe { libc::fork() };
     assert!(pid >= 0, "fork failed");
     if pid == 0 {
-        work();
+        run_child_work(work);
         unsafe { libc::_exit(0) };
     }
     let mut status = 0;

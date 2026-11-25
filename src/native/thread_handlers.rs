@@ -2,6 +2,7 @@ use std::sync::Once;
 
 use super::bridge::{register_data, register_handler, CallContext};
 use super::guest_thread::attach_current;
+use super::host_log;
 use super::thread_block::block;
 
 fn thread_record(context: &mut CallContext) -> Option<*mut super::pthread_internal::PthreadInternal> {
@@ -48,7 +49,7 @@ fn register_all_thread_handlers() {
     });
     register_handler("__stack_chk_fail", |_| {
         // cite: bionic __stack_chk_fail.cpp#__stack_chk_fail
-        eprintln!("stack corruption detected (-fstack-protector)");
+        host_log::line("stack corruption detected (-fstack-protector)");
         std::process::abort();
     });
     let guard = register_data("__stack_chk_guard", 8);

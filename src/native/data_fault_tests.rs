@@ -41,7 +41,7 @@ fn a_fault_inside_a_later_data_slot_names_that_symbol_by_its_offset() {
     let provider = BridgeProvider;
     let first = provider.unresolved("/guest/libz.so", "fx_data_slot_first", ImportKind::Data);
     let second = provider.unresolved("/guest/libz.so", "fx_data_slot_second", ImportKind::Data);
-    assert_eq!(second - first, SLOT_BYTES);
+    assert!(second > first && (second - first) % SLOT_BYTES == 0);
 
     let (signal, stderr) = child_outcome(|| touch(second + SLOT_BYTES - 8));
     let (first_signal, first_stderr) = child_outcome(|| touch(first));

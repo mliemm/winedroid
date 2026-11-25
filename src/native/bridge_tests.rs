@@ -5,7 +5,7 @@ use super::bridge_test_support::take_stack_seen;
 use super::bridge_test_support::{register_all, take_atexit, take_logged, Bridged};
 use super::call_assign::CallBuilder;
 use super::link_resolution::{ImportKind, SystemLibraryProvider};
-use super::loader_test_support::{host_protection_of, terminating_signal_of_child};
+use super::loader_test_support::{child_outcome, host_protection_of, terminating_signal_of_child};
 use super::quad::f64_to_quad;
 use super::stub_table::{stub_address, table_base};
 
@@ -74,11 +74,12 @@ fn bionic_stack_chk_fail_aborts_when_a_guest_overflow_overwrites_the_canary() {
     let fine = bridged.call("fx_canary_overflow").int(8).invoke().unwrap().i32();
     assert_eq!(fine, 0x41);
 
-    let signal = terminating_signal_of_child(|| {
+    let (signal, stderr) = child_outcome(|| {
         let _ = bridged.call("fx_canary_overflow").int(64).invoke();
     });
 
     assert_eq!(signal, Some(libc::SIGABRT));
+    assert!(stderr.contains("stack corruption detected"), "{stderr}");
 }
 
 #[test]

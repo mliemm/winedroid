@@ -52,3 +52,27 @@ fn a_library_loaded_through_the_runtime_runs_constructors_and_answers_call_guest
     assert_eq!(runtime.call_guest(address("fx_strlen"), &[text.as_ptr() as u64]).unwrap().u64(), 4);
     assert_eq!(runtime.call_guest(address("fx_copy_sum"), &[[1u8, 2, 3, 4].as_ptr() as u64, 4]).unwrap().i32(), 10);
 }
+
+const FRESH_PROCESS: &str = "WINEDROID_FRESH_RUNTIME_PROCESS";
+const FRESH_TEST: &str = "native::runtime_tests::initialize_alone_installs_every_handler_group_in_a_fresh_process";
+
+#[test]
+fn initialize_alone_installs_every_handler_group_in_a_fresh_process() {
+    if std::env::var_os(FRESH_PROCESS).is_some() {
+        NativeRuntime::initialize(vec![fixture_dir("16k")]).unwrap();
+        for name in ["pthread_self", "gettid", "getpid", "__errno", "__stack_chk_fail"] {
+            assert!(handler_address(name).is_some(), "{name} handler");
+        }
+        assert!(BridgeProvider.export("libc.so", "__stack_chk_guard").is_some(), "thread data object");
+        return;
+    }
+
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", FRESH_TEST, "--test-threads=1", "--nocapture"])
+        .env(FRESH_PROCESS, "1")
+        .output()
+        .unwrap();
+    let report = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+
+    assert!(output.status.success() && report.contains("1 passed"), "{report}");
+}

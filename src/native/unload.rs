@@ -1,6 +1,7 @@
 use crate::error::{Result, WinedroidError};
 
 use super::dl_api::set_dl_error;
+use super::host_log;
 use super::guest_call::call_destructor;
 use super::init_fini::destructor_addresses;
 use super::loader::{Guard, Loader};
@@ -78,7 +79,7 @@ impl Loader {
         };
         for address in destructors {
             if let Err(error) = call_destructor(address) {
-                eprintln!("destructor at {address:#x} failed: {error}");
+                host_log::line(&format!("destructor at {address:#x} failed: {error}"));
             }
         }
         {

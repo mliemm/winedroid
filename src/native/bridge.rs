@@ -197,7 +197,7 @@ fn bind(names: &mut Names, entries: &[AtomicPtr<Entry>], name: &str, binding: Bi
     }
     let id = names.ids.len();
     if id >= overflow {
-        eprintln!("FIXME: native import stub table is full, {name} cannot get a stub; next missing primitive: more native import stub slots");
+        host_log::line(&format!("FIXME: native import stub table is full, {name} cannot get a stub; next missing primitive: more native import stub slots"));
         if entries[overflow].load(Ordering::Acquire).is_null() {
             entries[overflow].store(leak_entry(Entry { name: "native import stub table is full".to_string(), binding: Binding::Overflow }), Ordering::Release);
         }
@@ -251,7 +251,7 @@ fn unmapped_data_address(importer: &str, name: &str) -> usize {
     *names.data.entry(key).or_insert_with(|| {
         let message = missing_data_message(importer, name);
         let address = data_fault::reserve(message.clone()).unwrap_or_else(|| panic!("no unresolved data slot left for {importer} {name}"));
-        eprintln!("{message}");
+        host_log::line(&message);
         address
     })
 }
@@ -286,7 +286,7 @@ extern "C" fn spk_dispatch(id: u64, regs: *mut Regs) {
     let failure = match &entry.binding {
         Binding::Handler(handler) => run_handler(entry, handler, regs),
         Binding::Missing { importer } => {
-            eprintln!("FIXME: native import not implemented: {importer} {}", entry.name);
+            host_log::line(&format!("FIXME: native import not implemented: {importer} {}", entry.name));
             Some(WinedroidError::new(missing_message(importer, &entry.name)).to_string())
         }
         Binding::Overflow => Some(WinedroidError::new("native import stub table is full; next missing primitive: more native import stub slots").to_string()),
