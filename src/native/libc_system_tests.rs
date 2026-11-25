@@ -220,6 +220,7 @@ fn bionic_clock_gettime_translates_linux_clock_ids_and_rejects_unsupported_ones(
     let (_, first_seconds, first_nanoseconds) = clock(&bridged, 1);
     let (_, second_seconds, second_nanoseconds) = clock(&bridged, 1);
     assert!((second_seconds, second_nanoseconds) >= (first_seconds, first_nanoseconds), "monotonic does not step back");
+    assert!(first_seconds < now / 2, "monotonic counts from boot, not from the epoch");
     let (code, boot_seconds, _) = clock(&bridged, 7);
     assert!(code == 0 && boot_seconds > 0, "boottime reads the host clock that includes sleep");
     assert_eq!(clock(&bridged, 10).0, 22, "CLOCK_SGI_CYCLE is not supported");
