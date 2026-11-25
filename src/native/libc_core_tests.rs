@@ -36,6 +36,13 @@ fn bionic_vfprintf_formats_integers_strings_flags_and_precision_from_guest_varar
 }
 
 #[test]
+fn bionic_vfprintf_applies_integer_precision_as_minimum_digits_and_ignores_the_zero_flag_then() {
+    let (text, _) = call_text("fx_snprintf_int_precision", 128);
+
+    assert_eq!(text, "00042|     007||0ff     |     005|3");
+}
+
+#[test]
 fn bionic_vfprintf_formats_floating_point_conversions() {
     let (text, _) = call_text("fx_snprintf_floats", 128);
 
@@ -251,6 +258,17 @@ fn upstream_freebsd_qsort_comparator_call_sequence_with_equal_keys() {
 
     let (sorted, calls, hash, _) = sort_with_sequence(&[3, 1, 3, 1, 3, 1, 2, 2, 2, 0, 0, 0]);
     assert_eq!((sorted, calls, hash), (vec![0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3], 23, 0xf824_5cc2_46b2_d9f6));
+}
+
+#[test]
+fn upstream_freebsd_qsort_orders_equal_sized_partitions_by_recursing_on_the_left_first() {
+    let input = [11, 23, 28, 4, 28, 20, 24, 26, 0, 13, 22, 16, 9, 14, 11, 13, 27, 18, 18, 13, 28];
+
+    let (sorted, calls, hash, _) = sort_with_sequence(&input);
+
+    let mut expected = input.to_vec();
+    expected.sort_unstable();
+    assert_eq!((sorted, calls, hash), (expected, 63, 0x2f0e_90dd_b588_07ad));
 }
 
 #[test]

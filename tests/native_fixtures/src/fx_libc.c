@@ -64,6 +64,11 @@ int fx_snprintf_floats(char *buffer, size_t size)
     return snprintf(buffer, size, "%e|%g|%G|%.0f|%10.3e|%a", 12345.678, 0.0001, 1e-10, 2.5, -0.000123, 1.0);
 }
 
+int fx_snprintf_int_precision(char *buffer, size_t size)
+{
+    return snprintf(buffer, size, "%.5d|%8.3d|%.0d|%-8.3x|%08.3d|%.0d", 42, 7, 0, 255, 5, 3);
+}
+
 int fx_snprintf_truncated(char *buffer)
 {
     return snprintf(buffer, 4, "abcdefgh");

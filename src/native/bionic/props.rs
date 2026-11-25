@@ -33,10 +33,6 @@ fn tokens(name: &[u8]) -> Vec<(usize, Vec<u8>)> {
     name.split(|byte| *byte == b'.').map(|token| (token.len(), token.to_vec())).collect()
 }
 
-fn has_empty_token(name: &[u8]) -> bool {
-    name.split(|byte| *byte == b'.').any(<[u8]>::is_empty)
-}
-
 fn allocate(name: &[u8], value: &[u8]) -> usize {
     // cite: bionic prop_info.h#prop_info
     let long = value.len() >= PROP_VALUE_MAX && name.starts_with(b"ro.");
@@ -113,9 +109,6 @@ pub fn get(name: &str) -> Option<String> {
 
 fn find(name: &[u8]) -> usize {
     // cite: bionic prop_area.cpp#find_property
-    if has_empty_token(name) {
-        return 0;
-    }
     store().lock().expect("property store").properties.get(name).map_or(0, |property| property.info)
 }
 

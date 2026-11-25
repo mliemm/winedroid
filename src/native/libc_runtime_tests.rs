@@ -79,6 +79,9 @@ fn bionic_strerror_r_truncates_with_erange_and_formats_unknown_numbers() {
     assert_eq!((result, c_text(&buffer)), (34, "No s".to_string()));
     let result = bridged.call("fx_strerror_r").i32(2).ptr(address_of(&mut buffer)).int(32).invoke().unwrap().i32();
     assert_eq!((result, c_text(&buffer)), (0, "No such file or directory".to_string()));
+    let exact = bridged.call("fx_strerror_r").i32(2).ptr(address_of(&mut buffer)).int(26).invoke().unwrap().i32();
+    let one_short = bridged.call("fx_strerror_r").i32(2).ptr(address_of(&mut buffer)).int(25).invoke().unwrap().i32();
+    assert_eq!((exact, one_short), (0, 34), "the terminator needs the last byte");
     bridged.call("fx_strerror_r").i32(4242).ptr(address_of(&mut buffer)).int(32).invoke().unwrap();
     assert_eq!(c_text(&buffer), "Unknown error 4242");
 }
