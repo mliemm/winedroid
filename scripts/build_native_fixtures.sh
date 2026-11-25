@@ -80,6 +80,12 @@ compile() {
     "$CLANG" "${COMPILE_FLAGS[@]}" "$@" -c "$FIXTURES/src/$name.c" -o "$work/$name.o"
 }
 
+compile_cxx() {
+    local name="$1" work="$2"
+    shift 2
+    "$CLANG" "${COMPILE_FLAGS[@]}" -nostdinc++ -fno-rtti -fexceptions "$@" -c "$FIXTURES/src/$name.cc" -o "$work/$name.o"
+}
+
 link() {
     local name="$1" page="$2" work="$3" out="$4"
     shift 4
@@ -102,7 +108,8 @@ build_variant() {
     local out="$OUT_ROOT/$label"
     local work
     work="$(mktemp -d)"
-    mkdir -p "$out" "$work/stubs" "$work/stubs_bridge" "$work/stubs_core" "$work/stubs_threads" "$work/stubs_signals" "$work/stubs_io" "$work/stubs_net"
+    mkdir -p "$out" "$work/stubs" "$work/stubs_bridge" "$work/stubs_core" "$work/stubs_threads" "$work/stubs_signals" "$work/stubs_io" "$work/stubs_net" \
+        "$work/stubs_phdr" "$work/stubs_unwind" "$work/stubs_cxx"
     rm -f "$out"/*.so
 
     make_stub libc.so "$work/stubs" strlen memcpy malloc free snprintf \
@@ -148,6 +155,14 @@ build_variant() {
         __android_log_set_minimum_priority __android_log_write __android_log_assert __android_log_set_logger
     make_stub libdl.so "$work/stubs_core" dl_iterate_phdr dladdr dlclose dlerror dlopen dlsym
     make_stub liblog.so "$work/stubs" __android_log_print
+    make_stub libdl.so "$work/stubs_phdr" dl_iterate_phdr dlopen dlsym dlclose dlerror
+    make_stub libc.so "$work/stubs_phdr" __stack_chk_fail
+    make_stub libc.so "$work/stubs_unwind" __stack_chk_fail abort \
+        _Unwind_RaiseException _Unwind_Resume _Unwind_Backtrace _Unwind_GetIP _Unwind_GetCFA _Unwind_GetRegionStart \
+        _Unwind_GetLanguageSpecificData _Unwind_FindEnclosingFunction _Unwind_SetGR _Unwind_SetIP
+    make_stub libc.so "$work/stubs_cxx" __stack_chk_fail abort
+    make_stub libc++_shared.so "$work/stubs_cxx" __cxa_allocate_exception __cxa_throw __cxa_begin_catch __cxa_end_catch \
+        __gxx_personality_v0 +_ZTVN10__cxxabiv117__class_type_infoE
 
     compile fx_add "$work"
     link fx_add "$page" "$work" "$out"
@@ -197,6 +212,15 @@ build_variant() {
     compile fx_net "$work"
     STUB_DIR="$work/stubs_net" link fx_net "$page" "$work" "$out" -lc
 
+    compile fx_phdr "$work"
+    STUB_DIR="$work/stubs_phdr" link fx_phdr "$page" "$work" "$out" -lc -ldl
+
+    compile fx_unwind "$work" -O0 -fexceptions -funwind-tables
+    STUB_DIR="$work/stubs_unwind" link fx_unwind "$page" "$work" "$out" -lc
+
+    compile_cxx fx_cxx "$work" -O0 -funwind-tables
+    STUB_DIR="$work/stubs_cxx" link fx_cxx "$page" "$work" "$out" -lc++_shared -lc
+
     rm -rf "$work"
 }
 
@@ -206,7 +230,7 @@ write_manifest() {
         printf 'clang %s\n' "$("$CLANG" --version | head -n 1)"
         printf 'ld.lld %s\n' "$("$LLD" --version | head -n 1)"
         local file
-        for file in "$FIXTURES"/src/*.c "$FIXTURES"/include/jni.h; do
+        for file in "$FIXTURES"/src/*.c "$FIXTURES"/src/*.cc "$FIXTURES"/include/jni.h; do
             printf 'source %s %s\n' "${file#"$FIXTURES"/}" "$(cksum <"$file" | cut -d' ' -f1,2)"
         done
         for file in "$OUT_ROOT"/16k/*.so "$OUT_ROOT"/4k/*.so; do

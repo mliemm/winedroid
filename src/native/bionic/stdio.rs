@@ -126,7 +126,13 @@ pub fn standard(index: usize) -> usize {
     stdio_files::standard(index)
 }
 
+pub extern "C" fn flush_all_streams() {
+    // cite: bionic stdio.cpp#__libc_stdio_cleanup
+    stream::flush_all();
+}
+
 pub fn register() {
+    super::atexit::set_stdio_cleanup(flush_all_streams);
     for name in ["fopen", "fopen64"] {
         in_libc(name, move |context: &mut CallContext| match (path_argument(context.arg_ptr(0)), path_argument(context.arg_ptr(1))) {
             (Ok(path), Ok(mode)) => match open_stream(path, mode) {

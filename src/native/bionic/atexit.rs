@@ -24,6 +24,7 @@ struct Table {
 static TABLE: Mutex<Table> = Mutex::new(Table { entries: Vec::new(), appends: 0 });
 static DEPTH: AtomicUsize = AtomicUsize::new(0);
 static EXIT_FUNCTION: Mutex<extern "C" fn(i32)> = Mutex::new(host_exit);
+static STDIO_CLEANUP: Mutex<Option<extern "C" fn()>> = Mutex::new(None);
 
 extern "C" fn host_exit(status: i32) {
     unsafe { libc::_exit(status) }
@@ -31,6 +32,10 @@ extern "C" fn host_exit(status: i32) {
 
 pub fn set_exit_function(function: extern "C" fn(i32)) {
     *EXIT_FUNCTION.lock().expect("exit function") = function;
+}
+
+pub fn set_stdio_cleanup(function: extern "C" fn()) {
+    *STDIO_CLEANUP.lock().expect("stdio cleanup") = Some(function);
 }
 
 pub fn registration_count() -> usize {
@@ -90,10 +95,29 @@ pub fn finalize(dso: u64) -> Result<(), String> {
     DEPTH.fetch_add(1, Ordering::SeqCst);
     let outcome = finalize_entries(dso);
     let outermost = DEPTH.fetch_sub(1, Ordering::SeqCst) == 1;
-    if outermost && dso != 0 {
-        TABLE.lock().expect("atexit table").entries.retain(Option::is_some);
+    if outermost {
+        if dso != 0 {
+            TABLE.lock().expect("atexit table").entries.retain(Option::is_some);
+        }
+        finish_dso(dso);
     }
     outcome
+}
+
+#[cfg(test)]
+pub fn run_finish_dso(dso: u64) {
+    finish_dso(dso);
+}
+
+fn finish_dso(dso: u64) {
+    // cite: bionic atexit.cpp#__cxa_finalize
+    if dso != 0 {
+        super::atfork::unregister(dso);
+        return;
+    }
+    if let Some(cleanup) = *STDIO_CLEANUP.lock().expect("stdio cleanup") {
+        cleanup();
+    }
 }
 
 fn finalize_entries(dso: u64) -> Result<(), String> {

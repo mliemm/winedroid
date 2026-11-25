@@ -210,4 +210,83 @@ pub fn register() {
         let different = (0..context.arg_u64(2) as usize).find(|index| at(left, *index) != at(right, *index));
         context.ret_i32(different.map_or(0, |index| if at(left, index) > at(right, index) { 1 } else { -1 }));
     });
+    in_libc("wcsncat", |context| {
+        // cite: bionic wcsncat.c#wcsncat
+        let (destination, source, limit) = (context.arg_ptr(0), context.arg_ptr(1), context.arg_u64(2) as usize);
+        let mut end = destination + length(destination) * 4;
+        let mut index = 0;
+        while index < limit && at(source, index) != 0 {
+            write_value::<u32>(end, at(source, index));
+            end += 4;
+            index += 1;
+        }
+        write_value::<u32>(end, 0);
+        context.ret_ptr(destination);
+    });
+    in_libc("wcstok", |context| {
+        // cite: bionic wcstok.c#wcstok
+        context.ret_ptr(tokenize(context.arg_ptr(0), context.arg_ptr(1), context.arg_ptr(2)));
+    });
+}
+
+fn is_delimiter(delim: usize, wanted: u32) -> bool {
+    let mut index = 0;
+    loop {
+        let value = at(delim, index);
+        index += 1;
+        if value == 0 {
+            return false;
+        }
+        if value == wanted {
+            return true;
+        }
+    }
+}
+
+fn ends_token(delim: usize, wanted: u32) -> bool {
+    let mut index = 0;
+    loop {
+        let value = at(delim, index);
+        index += 1;
+        if value == wanted {
+            return true;
+        }
+        if value == 0 {
+            return false;
+        }
+    }
+}
+
+fn tokenize(start: usize, delim: usize, last: usize) -> usize {
+    let mut cursor = if start != 0 { start } else { read_value::<usize>(last) };
+    if cursor == 0 {
+        return 0;
+    }
+    let mut character;
+    loop {
+        character = at(cursor, 0);
+        cursor += 4;
+        if !is_delimiter(delim, character) {
+            break;
+        }
+    }
+    if character == 0 {
+        write_value::<usize>(last, 0);
+        return 0;
+    }
+    let token = cursor - 4;
+    loop {
+        character = at(cursor, 0);
+        cursor += 4;
+        if ends_token(delim, character) {
+            let next = if character == 0 {
+                0
+            } else {
+                write_value::<u32>(cursor - 4, 0);
+                cursor
+            };
+            write_value::<usize>(last, next);
+            return token;
+        }
+    }
 }

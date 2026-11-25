@@ -44,6 +44,18 @@ struct Task {
     needed_by: Option<ModuleId>,
 }
 
+fn carries_own_unwinder(symbols: &SymbolTable, image: &MappedImage) -> bool {
+    // cite: bionic libc.map.txt#_Unwind_GetIP
+    let defines = |name: &str| symbols.lookup(image, name).ok().flatten().is_some();
+    let imports = |wanted: &str| {
+        (1..symbols.count()).any(|index| {
+            let Ok(symbol) = symbols.symbol(image, index) else { return false };
+            symbol.shndx == super::symbol_table::SHN_UNDEF && symbols.name_bytes(image, &symbol).ok() == Some(wanted.as_bytes())
+        })
+    };
+    (defines("__gxx_personality_v0") || defines("__gcc_personality_v0")) && !imports("_Unwind_GetIP")
+}
+
 impl Loader {
     pub fn new(library_dirs: Vec<PathBuf>, provider: Box<dyn SystemLibraryProvider>) -> Self {
         Self {
@@ -225,7 +237,8 @@ impl Loader {
             let init_address = mapped.address(segment.init_vaddr);
             tls_modules::register(segment, init_address)
         });
-        Ok(GuestImage { elf, mapped, dynamic, symbols, tls_module })
+        let foreign_unwinder = carries_own_unwinder(&symbols, &mapped);
+        Ok(GuestImage { elf, mapped, dynamic, symbols, tls_module, foreign_unwinder })
     }
 
     fn record_patch(&self, path: &str, counts: PatchCounts) {

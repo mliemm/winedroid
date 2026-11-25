@@ -26,6 +26,8 @@ ALLOWED_REPOSITORIES = (
 C_LIKE_LANGUAGES = {
     ".c": "c",
     ".h": "c",
+    ".cc": "c",
+    ".cpp": "c",
     ".java": "java",
     ".rs": "rust",
 }

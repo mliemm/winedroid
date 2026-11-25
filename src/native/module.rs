@@ -22,6 +22,7 @@ pub struct GuestImage {
     pub dynamic: DynamicInfo,
     pub symbols: SymbolTable,
     pub tls_module: u32,
+    pub foreign_unwinder: bool,
 }
 
 pub struct Module {
@@ -165,6 +166,7 @@ impl State {
 
     pub fn remove_modules(&mut self, ids: &[ModuleId]) {
         // cite: bionic linker.cpp#soinfo_unload_impl
+        super::unwind::fde::forget(ids);
         for id in ids {
             if let Some(module) = self.modules.remove(id) {
                 self.handles.remove(&module.handle);

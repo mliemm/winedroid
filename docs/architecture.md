@@ -86,6 +86,8 @@ Layer responsibilities:
   files, clipboard, notifications, and platform-specific glue.
 - `native`: ABI selection, ELF loading, JNI, linker behavior, Bionic-compatible
   runtime, and CPU translation hooks.
+- `unwind`: the guest unwinder: FDE lookup, the DWARF CFI interpreter, and the
+  `_Unwind_*` phase machine.
 - `launch`: app startup/session setup only.
 
 Runtime contract
@@ -147,11 +149,59 @@ New app support is trace-driven, generic, and grounded in the real Android
 sources. The canonical workflow, coding rules, source-of-truth policy, and
 testing harness live in [AGENTS.md](../AGENTS.md).
 
+Unwinding and dynamic loading
+-----------------------------
+
+A guest C++ library brings its own exception machinery. `libc++_shared.so`
+carries a hidden copy of libunwind and libc++abi, imports no `_Unwind_*`
+symbol, and finds the module that owns a program counter through
+`dl_iterate_phdr` and that module's `PT_GNU_EH_FRAME` segment. That path is the
+primary one and needs only the shim's `dl_iterate_phdr`, which reports
+`dlpi_addr`, `dlpi_name`, the mapped phdr array, `dlpi_phnum` as a 16 bit
+field, `dlpi_adds`, `dlpi_subs`, `dlpi_tls_modid` and `dlpi_tls_data`.
+`dlpi_tls_data` is the block of the calling thread and stays null until that
+thread materializes it, matching Bionic's `should_alloc=false` read.
+
+The shim also implements the arm64 `_Unwind_*` surface that Bionic's libc.so
+exports, for C libraries built with `-fexceptions` that link no C++ runtime.
+That unwinder interprets DWARF CFI itself over guest `.eh_frame` records. It
+runs on guest memory only: the four entries that capture or install a full
+register set are raw assembly (`src/native/unwind/entry.rs`), FDEs come from
+`__register_frame` blocks or from each loaded module's `.eh_frame_hdr`, and the
+CFI interpreter restores registers by carrying each frame's live values forward
+and overwriting only the registers a row gives a rule for.
+
+Both unwinders share no context. A context created by the shim carries a magic
+word, and an accessor handed anything else refuses with
+`next missing primitive: cross-unwinder _Unwind_Context` instead of
+interpreting a foreign object. A personality that lives in a module which
+carries its own unwinder is refused with
+`next missing primitive: unwinding through a personality that uses its own
+unwinder`, because it would read the shim's context as its own cursor type.
+The mixed case, a C library that throws with a personality resolving to
+libc.so and then passes through a `libc++_shared` frame, is therefore refused
+rather than silently mis-unwound.
+
+Known limits of this layer, all explicit refusals rather than fallbacks:
+
+- `dl_iterate_phdr` lists the 13 system sonames with `dlpi_phdr = 0` and
+  `dlpi_phnum = 0`. They have no mapped guest phdr table, and a phdr reader
+  treats an empty array as inert. There is no entry for a guest executable or
+  the vdso.
+- The iteration snapshots the module list, so a module loaded inside the
+  callback is not visited in that pass.
+- A walk ends at the boundary of a host shim frame, because stub code has no
+  CFI. The guest's own unwinder ends there too.
+- `%Lf`, `%Lg`, `%Le`, `%La` and `%ls` in the printf engine remain explicit
+  missing primitive errors, so `std::cout << (long double)` and
+  `std::cout << (wchar_t const*)` fail with a named primitive.
+- `__emutls_get_address` is not exported, matching `bionic/libc/libc.map.txt`.
+  Resolution depends on a guest library that defines it, as on Android.
+
 Optimization policy
 -------------------
 
 Do not optimize first. Correctness and boundaries matter more right now.
-
 Allowed now:
 
 - smaller modules

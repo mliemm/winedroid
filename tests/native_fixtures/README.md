@@ -9,7 +9,8 @@ from the matching file in `src/`; nothing is hand edited.
 - Sources: `src/fx_add.c`, `src/fx_reloc.c`, `src/fx_dep.c`, `src/fx_jni.c`,
   `src/fx_order_child.c`, `src/fx_order_parent.c`, `src/fx_relro.c`,
   `src/fx_bridge.c`, `src/fx_libc.c`, `src/fx_math.c`, `src/fx_dlmain.c`,
-  `src/fx_threads.c`, `src/fx_signals.c`, `src/fx_io.c`, `src/fx_net.c`.
+  `src/fx_threads.c`, `src/fx_signals.c`, `src/fx_io.c`, `src/fx_net.c`,
+  `src/fx_phdr.c`, `src/fx_unwind.c`, `src/fx_cxx.cc`.
 - Headers: Bionic from the android-ref checkout (`bionic/libc/include` and the
   kernel uapi directories) plus `include/jni.h`. No Android NDK is installed.
 - `include/jni.h` is written from ART's `JNINativeInterface` table in
@@ -120,3 +121,18 @@ checked in binaries byte for byte.
   edge and one shot `epoll`, `eventfd`, `pipe` with `poll` and `select`,
   `getaddrinfo` for `localhost`, `getnameinfo`, `timerfd`, `socketpair` with
   `shutdown`, and `setsockopt`/`getsockopt` round trips.
+- `libfx_phdr.so`: walks `dl_iterate_phdr` and records, for every module, the
+  load bias, the name, `dlpi_phnum`, the first `PT_LOAD` found in the returned
+  phdr array, the `PT_GNU_EH_FRAME` `p_vaddr`, `dlpi_adds`, `dlpi_subs`,
+  `dlpi_tls_modid` and `dlpi_tls_data`. It has a PT_TLS segment so a thread
+  that touches the thread local materializes a block.
+- `libfx_unwind.so`: compiled at `-O0` with `-fexceptions` so clang emits the
+  `zPLR` CIE and a `.gcc_except_table`. It defines `__gcc_personality_v0`
+  itself, raises with `_Unwind_RaiseException`, installs a handler in the
+  throwing frame and two frames up, installs clang's own landing pad for a
+  `cleanup` local and then resumes into the handler, and walks frames with
+  `_Unwind_Backtrace`.
+- `libfx_cxx.cc`: compiled with `-nostdinc++ -fno-rtti -fexceptions` at `-O0`
+  and linked against a throwaway `libc++_shared.so` stub, so its `zPLR` CIE
+  and catch block name the C++ ABI symbols that the real `libc++_shared.so`
+  from an app provides. It throws and catches a class by reference.

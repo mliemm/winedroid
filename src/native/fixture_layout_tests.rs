@@ -6,7 +6,7 @@ use super::fixture_elf::{FixtureElf, DT_GNU_HASH, DT_HASH, PF_W, PF_X, PT_GNU_EH
 
 const HOST_PAGE: u64 = 0x4000;
 const VARIANTS: [&str; 2] = ["16k", "4k"];
-const LIBRARIES: [&str; 9] = [
+const PAGE_LIBRARIES: [&str; 9] = [
     "libfx_add.so",
     "libfx_aps2.so",
     "libfx_dep.so",
@@ -16,6 +16,20 @@ const LIBRARIES: [&str; 9] = [
     "libfx_reloc.so",
     "libfx_relr.so",
     "libfx_relro.so",
+];
+const LIBRARIES: [&str; 12] = [
+    "libfx_add.so",
+    "libfx_aps2.so",
+    "libfx_cxx.so",
+    "libfx_dep.so",
+    "libfx_jni.so",
+    "libfx_order_child.so",
+    "libfx_order_parent.so",
+    "libfx_phdr.so",
+    "libfx_reloc.so",
+    "libfx_relr.so",
+    "libfx_relro.so",
+    "libfx_unwind.so",
 ];
 
 fn fixture_bytes(variant: &str, name: &str) -> Vec<u8> {
@@ -59,7 +73,7 @@ fn bionic_elf_common_h_dt_gnu_hash_is_the_only_symbol_hash_table_in_every_fixtur
 
 #[test]
 fn fixture_build_command_4k_variants_put_executable_and_writable_bytes_in_one_16k_host_page() {
-    for name in LIBRARIES {
+    for name in PAGE_LIBRARIES {
         let elf = FixtureElf::parse(&fixture_bytes("4k", name));
         let shared: Vec<u64> = host_pages_with(&elf, PF_X)
             .intersection(&host_pages_with(&elf, PF_W))
@@ -72,7 +86,7 @@ fn fixture_build_command_4k_variants_put_executable_and_writable_bytes_in_one_16
 
 #[test]
 fn fixture_build_command_16k_variants_never_share_a_16k_host_page_between_rx_and_rw() {
-    for name in LIBRARIES {
+    for name in PAGE_LIBRARIES {
         let elf = FixtureElf::parse(&fixture_bytes("16k", name));
         let shared: Vec<u64> = host_pages_with(&elf, PF_X)
             .intersection(&host_pages_with(&elf, PF_W))

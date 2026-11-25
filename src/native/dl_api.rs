@@ -85,6 +85,8 @@ pub struct ModuleInfo {
     pub tls: Option<TlsSegment>,
     pub tls_module: u32,
     pub children: Vec<String>,
+    pub phdr_count: u16,
+    pub eh_frame_hdr_vaddr: u64,
 }
 
 fn find_containing_library(state: &State, address: usize) -> Option<ModuleId> {
@@ -244,6 +246,16 @@ impl Loader {
         0
     }
 
+    pub fn module_images(&self) -> Vec<(ModuleId, Arc<GuestImage>, String)> {
+        let guard = self.lock.lock();
+        let state = guard.borrow();
+        state
+            .modules
+            .values()
+            .filter_map(|module| module.guest.clone().map(|guest| (module.id, guest, module.path.clone())))
+            .collect()
+    }
+
     pub fn module_info(&self, handle: u64) -> Option<ModuleInfo> {
         let guard = self.lock.lock();
         let state = guard.borrow();
@@ -261,6 +273,8 @@ impl Loader {
             tls: guest.elf.tls(),
             tls_module: guest.tls_module,
             children: module.children.iter().map(|child| state.module(*child).soname.clone()).collect(),
+            phdr_count: guest.elf.phdrs.len() as u16,
+            eh_frame_hdr_vaddr: guest.elf.eh_frame_hdr().map_or(0, |header| header.vaddr),
         })
     }
 

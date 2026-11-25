@@ -7,8 +7,14 @@ use std::sync::OnceLock;
 use super::fixture_header::manifest_path;
 
 const VARIANTS: [(&str, u32); 2] = [("16k", 16384), ("4k", 4096)];
-const LIBRARIES: [&str; 17] = ["fx_add", "fx_aps2", "fx_bridge", "fx_dep", "fx_dlmain", "fx_io", "fx_jni", "fx_libc", "fx_math", "fx_net", "fx_order_child", "fx_order_parent", "fx_reloc", "fx_relr", "fx_relro", "fx_signals", "fx_threads"];
-const SOURCES: [&str; 15] = ["fx_add", "fx_bridge", "fx_dep", "fx_dlmain", "fx_io", "fx_jni", "fx_libc", "fx_math", "fx_net", "fx_order_child", "fx_order_parent", "fx_reloc", "fx_relro", "fx_signals", "fx_threads"];
+const LIBRARIES: [&str; 20] = [
+    "fx_add", "fx_aps2", "fx_bridge", "fx_cxx", "fx_dep", "fx_dlmain", "fx_io", "fx_jni", "fx_libc", "fx_math", "fx_net", "fx_order_child",
+    "fx_order_parent", "fx_phdr", "fx_reloc", "fx_relr", "fx_relro", "fx_signals", "fx_threads", "fx_unwind",
+];
+const SOURCES: [&str; 18] = [
+    "fx_add.c", "fx_bridge.c", "fx_cxx.cc", "fx_dep.c", "fx_dlmain.c", "fx_io.c", "fx_jni.c", "fx_libc.c", "fx_math.c", "fx_net.c",
+    "fx_order_child.c", "fx_order_parent.c", "fx_phdr.c", "fx_reloc.c", "fx_relro.c", "fx_signals.c", "fx_threads.c", "fx_unwind.c",
+];
 const FAKE_CLANG: &str = r#"#!/bin/sh
 printf 'clang %s\n' "$*" >>"$FAKE_LOG"
 case "$1" in
@@ -133,7 +139,7 @@ fn fixture_build_script_compiles_every_source_per_variant_with_stack_protector_a
 
     assert_eq!(compiles.len(), SOURCES.len() * VARIANTS.len());
     for source in SOURCES {
-        assert_eq!(compiles.iter().filter(|line| line.contains(&format!("/src/{source}.c"))).count(), VARIANTS.len(), "{source}");
+        assert_eq!(compiles.iter().filter(|line| line.contains(&format!("/src/{source}"))).count(), VARIANTS.len(), "{source}");
     }
     for line in compiles {
         for flag in ["--target=aarch64-linux-android29", "-fstack-protector-strong", "-fno-emulated-tls", "-fPIC", "-ffreestanding"] {

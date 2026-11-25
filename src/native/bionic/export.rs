@@ -1,4 +1,4 @@
-use super::super::bridge::{register_data_in, register_handler_in, CallContext};
+use super::super::bridge::{register_data_in, register_handler_in, register_raw_in, CallContext};
 
 pub const LIBC: &str = "libc.so";
 pub const LIBM: &str = "libm.so";
@@ -8,6 +8,10 @@ pub const LIBSTDCXX: &str = "libstdc++.so";
 
 pub fn in_libc(name: &str, handler: impl Fn(&mut CallContext) + Send + Sync + 'static) {
     register_handler_in(LIBC, name, handler);
+}
+
+pub fn in_libc_raw(name: &str, address: usize) {
+    register_raw_in(LIBC, name, address);
 }
 
 pub fn in_libm(name: &str, handler: impl Fn(&mut CallContext) + Send + Sync + 'static) {

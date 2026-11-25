@@ -93,6 +93,8 @@ pub mod thread_handlers;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod trampoline;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod unwind;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod va_list;
 #[cfg(test)]
 mod fixture_tests;
@@ -198,6 +200,14 @@ mod libc_text_tests;
 mod libc_coverage_tests;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
 mod libc_time_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod unwind_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod phdr_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod cxx_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod cxx_corpus_tests;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
 mod io_test_support;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]

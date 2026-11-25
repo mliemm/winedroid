@@ -92,15 +92,18 @@ pub mod stdlib;
 pub mod strerror_table;
 pub mod string;
 pub mod strtonum;
+pub mod strtold;
 pub mod syscall;
 pub mod sysconf_table;
 pub mod stdio_files;
 pub mod strftime;
 pub mod sysinfo;
+pub mod syslog;
 pub mod time_handlers;
 pub mod tls_handlers;
 pub mod tz_state;
 pub mod tzif;
+pub mod unwind;
 pub mod wide;
 pub mod wide_float;
 
@@ -140,6 +143,9 @@ pub fn register_libc_core() {
         stdio_files::register();
         register_io_group();
         wide_float::register();
+        strtold::register();
+        syslog::register();
+        unwind::register();
         register_thread_group();
     });
 }

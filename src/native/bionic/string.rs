@@ -144,6 +144,10 @@ fn register_length_and_compare() {
     in_libc("strcmp", |context| context.ret_i32(unsafe { libc::strcmp(text(context.arg_ptr(0)), text(context.arg_ptr(1))) }));
     in_libc("strncmp", |context| context.ret_i32(unsafe { libc::strncmp(text(context.arg_ptr(0)), text(context.arg_ptr(1)), context.arg_u64(2) as usize) }));
     in_libc("strcoll", |context| context.ret_i32(unsafe { libc::strcmp(text(context.arg_ptr(0)), text(context.arg_ptr(1))) }));
+    in_libc("strcoll_l", |context| {
+        // cite: bionic string_l.cpp#strcoll_l
+        context.ret_i32(unsafe { libc::strcmp(text(context.arg_ptr(0)), text(context.arg_ptr(1))) });
+    });
     in_libc("strcasecmp", |context| {
         let (left, right) = (cstr_bytes(context.arg_ptr(0)), cstr_bytes(context.arg_ptr(1)));
         context.ret_i32(compare_ascii_fold(left, right, left.len().max(right.len()) + 1));
@@ -153,6 +157,17 @@ fn register_length_and_compare() {
         context.ret_i32(compare_ascii_fold(left, right, (context.arg_u64(2) as usize).min(left.len().max(right.len()) + 1)));
     });
     in_libc("strxfrm", |context| {
+        let source = cstr_bytes(context.arg_ptr(1));
+        let capacity = context.arg_u64(2) as usize;
+        if capacity > 0 {
+            let copied = source.len().min(capacity - 1);
+            write_bytes(context.arg_ptr(0), &source[..copied]);
+            write_value::<u8>(context.arg_ptr(0) + copied, 0);
+        }
+        context.ret_u64(source.len() as u64);
+    });
+    in_libc("strxfrm_l", |context| {
+        // cite: bionic string_l.cpp#strxfrm_l
         let source = cstr_bytes(context.arg_ptr(1));
         let capacity = context.arg_u64(2) as usize;
         if capacity > 0 {

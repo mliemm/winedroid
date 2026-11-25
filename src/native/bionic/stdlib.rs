@@ -40,6 +40,13 @@ fn register_floats() {
             context.ret_f64(value);
         })
     });
+    in_libc("strtod_l", |context| {
+        // cite: bionic stdlib_l.cpp#strtod_l
+        parsed_float(context, |context| {
+            let value = unsafe { libc::strtod(context.arg_ptr(0) as *const _, context.arg_ptr(1) as *mut *mut libc::c_char) };
+            context.ret_f64(value);
+        })
+    });
     in_libc("strtof", |context| {
         parsed_float(context, |context| {
             let value = unsafe { libc::strtof(context.arg_ptr(0) as *const _, context.arg_ptr(1) as *mut *mut libc::c_char) };

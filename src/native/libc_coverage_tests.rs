@@ -20,6 +20,12 @@ const CORE_LIBC: &[&str] = &[
     "isspace", "tolower", "toupper", "_ctype_", "setlocale", "newlocale", "uselocale", "localeconv", "sysconf", "getpagesize", "getauxval", "uname", "gethostname",
     "__system_property_get", "__system_property_find", "__system_property_read", "__system_property_read_callback", "snprintf", "sprintf", "vsnprintf", "vsprintf",
     "clock_gettime", "gettimeofday", "time", "nanosleep", "usleep", "sleep", "gmtime_r", "timegm", "isnan", "isinf", "ldexp", "__fpclassifyd",
+    "strtold", "strtold_l", "wcstold", "wcstold_l", "strtod_l", "strcoll_l", "strxfrm_l", "wcsncat", "wcstok", "wcsftime", "wcsftime_l",
+    "syslog", "vsyslog", "openlog", "closelog", "setlogmask",
+    "_Unwind_Backtrace", "_Unwind_DeleteException", "_Unwind_Find_FDE", "_Unwind_FindEnclosingFunction", "_Unwind_ForcedUnwind", "_Unwind_GetCFA",
+    "_Unwind_GetDataRelBase", "_Unwind_GetGR", "_Unwind_GetIP", "_Unwind_GetIPInfo", "_Unwind_GetLanguageSpecificData", "_Unwind_GetRegionStart",
+    "_Unwind_GetTextRelBase", "_Unwind_RaiseException", "_Unwind_Resume", "_Unwind_Resume_or_Rethrow", "_Unwind_SetGR", "_Unwind_SetIP",
+    "__register_frame", "__deregister_frame",
 ];
 
 const CORE_LIBM: &[&str] = &[

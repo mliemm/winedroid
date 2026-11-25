@@ -1,7 +1,8 @@
 use super::abi_types::{ERANGE, TM_GMTOFF_OFFSET, TM_ZONE_OFFSET};
 use super::civil::{read_tm, BrokenDown};
 use super::export::in_libc;
-use super::guest_mem::{cstr_bytes, read_value, write_cstr_truncated};
+use super::guest_mem::{cstr_bytes, read_value, write_cstr_truncated, write_value};
+use super::mbstate;
 use super::tz_state::mktime_copy;
 
 const WEEKDAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -247,5 +248,87 @@ pub fn register() {
                 }
             }
         });
+    }
+    for name in ["wcsftime", "wcsftime_l"] {
+        in_libc(name, wcsftime);
+    }
+}
+
+fn wide_to_utf8(pointer: usize) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    let mut state = [0u8; 4];
+    let mut index = 0;
+    loop {
+        let code = read_value::<u32>(pointer + index * 4);
+        if code == 0 {
+            return Ok(bytes);
+        }
+        let outcome = mbstate::encode(&mut state, code, &mut bytes);
+        if outcome.errno.is_some() {
+            return Err(format!("wcsftime cannot encode the format code point {code:#x}; next missing primitive: wide format code point {code:#x}"));
+        }
+        index += 1;
+    }
+}
+
+fn utf8_to_wide(bytes: &[u8]) -> Result<Vec<u32>, String> {
+    let mut wide = Vec::new();
+    let mut state = [0u8; 4];
+    let mut index = 0;
+    while index < bytes.len() {
+        let mut output = None;
+        let outcome = mbstate::decode(&mut state, Some(&bytes[index..]), &mut output);
+        match output {
+            Some(code) => {
+                wide.push(code);
+                index += outcome.value as usize;
+            }
+            None => return Err(format!("wcsftime produced a byte sequence that is not valid UTF-8 at offset {index}; next missing primitive: wide time formatting")),
+        }
+    }
+    Ok(wide)
+}
+
+fn wcsftime(context: &mut super::super::bridge::CallContext) {
+    // cite: bionic wcsftime.c#wcsftime
+    let (buffer, capacity, format_pointer, tm_pointer) = (context.arg_ptr(0), context.arg_u64(1) as usize, context.arg_ptr(2), context.arg_ptr(3));
+    let tm = read_full_tm(tm_pointer);
+    let format_bytes = if format_pointer == 0 {
+        b"%c".to_vec()
+    } else {
+        match wide_to_utf8(format_pointer) {
+            Ok(bytes) => bytes,
+            Err(message) => return context.fail(message),
+        }
+    };
+    let byte_capacity = capacity.saturating_mul(4).saturating_add(4);
+    let text = match format(&format_bytes, &tm, byte_capacity) {
+        Ok(text) => text,
+        Err(code) => {
+            truncate_wide(buffer, capacity);
+            context.set_errno(code);
+            context.ret_u64(0);
+            return;
+        }
+    };
+    let wide = match utf8_to_wide(&text) {
+        Ok(wide) => wide,
+        Err(message) => return context.fail(message),
+    };
+    if wide.len() >= capacity {
+        truncate_wide(buffer, capacity);
+        context.ret_u64(0);
+        return;
+    }
+    for (index, code) in wide.iter().enumerate() {
+        write_value::<u32>(buffer + index * 4, *code);
+    }
+    write_value::<u32>(buffer + wide.len() * 4, 0);
+    context.ret_u64(wide.len() as u64);
+}
+
+fn truncate_wide(buffer: usize, capacity: usize) {
+    if capacity > 0 {
+        write_value::<u32>(buffer + (capacity - 1) * 4, 0);
     }
 }
