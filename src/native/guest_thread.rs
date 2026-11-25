@@ -5,8 +5,12 @@ use std::sync::{Mutex, OnceLock};
 use crate::error::{Result, WinedroidError};
 
 use super::data_fault::ensure_alternate_stack;
-use super::pthread_internal::{PthreadInternal, ATTR_FLAG_INHERIT, JOIN_NOT_JOINED};
-use super::thread_block::{block, host_thread_pointer, set_slot, slot_word, SLOT_ART_THREAD_SELF, SLOT_STACK_GUARD, SLOT_THREAD_ID};
+use super::bionic::pthread_key;
+use super::host_log;
+use super::pthread_internal::{PthreadInternal, ATTR_FLAG_DETACHED, ATTR_FLAG_INHERIT, JOIN_DETACHED};
+use super::thread_exit;
+use super::thread_list;
+use super::thread_block::{block, host_thread_pointer, set_slot, slot_word, SLOT_ART_THREAD_SELF, SLOT_BIONIC_TLS, SLOT_STACK_GUARD, SLOT_THREAD_ID};
 
 
 pub(super) struct Registry {
@@ -21,11 +25,48 @@ static NEXT_TID: AtomicI32 = AtomicI32::new(0);
 
 extern "C" fn free_record(record: *mut libc::c_void) {
     let address = record as usize;
+    if thread_exit::has_pending_guest_storage(address) {
+        host_log::line("FIXME: guest thread storage destructors skipped for a host created thread; next missing primitive: guest thread exit for host created threads");
+    }
     set_slot(SLOT_THREAD_ID, 0);
     let mut registry = REGISTRY.lock().expect("guest thread registry");
     release(&mut registry, address);
     drop(registry);
-    unsafe { std::alloc::dealloc(record as *mut u8, record_layout()) };
+    thread_list::forget(address);
+    free_memory(address);
+}
+
+pub(super) fn free_memory(address: usize) {
+    let record = address as *mut PthreadInternal;
+    unsafe {
+        libc::free((*record).bionic_tls as *mut libc::c_void);
+        std::alloc::dealloc(record as *mut u8, record_layout());
+    }
+}
+
+pub(super) fn unregister(address: usize) {
+    release(&mut REGISTRY.lock().expect("guest thread registry"), address);
+}
+
+pub(super) fn register_created(address: usize, tid: i32) {
+    REGISTRY.lock().expect("guest thread registry").records.insert(address, tid);
+}
+
+pub fn is_live_address(address: usize) -> bool {
+    REGISTRY.lock().expect("guest thread registry").records.contains_key(&address)
+}
+
+pub fn tid_of(address: usize) -> Option<i32> {
+    REGISTRY.lock().expect("guest thread registry").records.get(&address).copied()
+}
+
+pub fn live_records() -> Vec<(usize, i32)> {
+    REGISTRY.lock().expect("guest thread registry").records.iter().map(|(address, tid)| (*address, *tid)).collect()
+}
+
+pub fn detach_current() -> Result<()> {
+    let record = attach_current()? as usize;
+    thread_exit::run_guest_storage(record, 0).map_err(WinedroidError::new)
 }
 
 pub(super) fn release(registry: &mut Registry, address: usize) {
@@ -73,7 +114,7 @@ pub fn is_record_live(address: usize, tid: i32) -> bool {
     REGISTRY.lock().expect("guest thread registry").records.get(&address) == Some(&tid)
 }
 
-fn next_tid() -> i32 {
+pub(super) fn next_tid() -> i32 {
     let pid = unsafe { libc::getpid() };
     loop {
         let seen = NEXT_TID.load(Ordering::SeqCst);
@@ -85,21 +126,43 @@ fn next_tid() -> i32 {
     }
 }
 
-fn stack_bounds() -> (u64, u64) {
+pub(super) fn stack_bounds() -> (u64, u64) {
     let host = unsafe { libc::pthread_self() };
     let top = unsafe { libc::pthread_get_stackaddr_np(host) } as u64;
     let size = unsafe { libc::pthread_get_stacksize_np(host) } as u64;
     (top - size, size)
 }
 
+pub(super) fn install_slots(record: *mut PthreadInternal, requested_stack: Option<u64>) {
+    ensure_alternate_stack();
+    let (host_base, host_size) = stack_bounds();
+    let top = host_base + host_size;
+    unsafe {
+        match requested_stack {
+            Some(size) if (*record).attr.stack_base == 0 => {
+                (*record).attr.stack_base = top - size;
+                (*record).attr.stack_size = size;
+            }
+            Some(_) => {}
+            None => {
+                (*record).attr.stack_base = host_base;
+                (*record).attr.stack_size = host_size;
+            }
+        }
+        (*record).stack_top = (*record).attr.stack_base + (*record).attr.stack_size;
+        (*record).bionic_tls = pthread_key::new_block() as u64;
+    }
+    set_slot(SLOT_BIONIC_TLS, unsafe { (*record).bionic_tls });
+    set_slot(SLOT_THREAD_ID, record as u64);
+    set_slot(SLOT_STACK_GUARD, block().canary());
+}
+
 pub fn attach_current() -> Result<*mut PthreadInternal> {
     if let Some(record) = current_record() {
         return Ok(record);
     }
-    ensure_alternate_stack();
     let record = unsafe { std::alloc::alloc_zeroed(record_layout()) } as *mut PthreadInternal;
     assert!(!record.is_null(), "thread record allocation failed");
-    let (stack_base, stack_size) = stack_bounds();
     let pid = unsafe { libc::getpid() };
     let address = record as usize;
     let mut registry = REGISTRY.lock().expect("guest thread registry");
@@ -108,17 +171,18 @@ pub fn attach_current() -> Result<*mut PthreadInternal> {
     unsafe {
         (*record).tid = tid;
         (*record).cached_pid = pid as u32;
-        (*record).attr.flags = ATTR_FLAG_INHERIT;
-        (*record).attr.stack_base = stack_base;
-        (*record).attr.stack_size = stack_size;
-        (*record).stack_top = stack_base + stack_size;
-        (*record).join_state = JOIN_NOT_JOINED;
+        (*record).attr.flags = ATTR_FLAG_INHERIT | ATTR_FLAG_DETACHED;
+        (*record).join_state = JOIN_DETACHED;
         assert_eq!(libc::pthread_setspecific(record_key(), record as *const libc::c_void), 0, "thread record store");
     }
-    set_slot(SLOT_THREAD_ID, address as u64);
-    set_slot(SLOT_STACK_GUARD, block().canary());
+    install_slots(record, None);
+    thread_list::remember(address, unsafe { libc::pthread_self() }, false);
     registry.records.insert(address, tid);
     Ok(record)
+}
+
+pub(super) fn install_created(record: *mut PthreadInternal) {
+    install_slots(record, Some(unsafe { (*record).attr.stack_size }));
 }
 
 pub fn set_primary() -> Result<()> {

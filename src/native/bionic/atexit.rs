@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
@@ -23,10 +22,6 @@ struct Table {
 static TABLE: Mutex<Table> = Mutex::new(Table { entries: Vec::new(), appends: 0 });
 static DEPTH: AtomicUsize = AtomicUsize::new(0);
 static EXIT_FUNCTION: Mutex<extern "C" fn(i32)> = Mutex::new(host_exit);
-
-thread_local! {
-    static THREAD_DESTRUCTORS: RefCell<Vec<(u64, u64)>> = const { RefCell::new(Vec::new()) };
-}
 
 extern "C" fn host_exit(status: i32) {
     unsafe { libc::_exit(status) }
@@ -117,12 +112,8 @@ fn finalize_entries(dso: u64) -> Result<(), String> {
 }
 
 pub fn run_thread_destructors() -> Result<(), String> {
-    // cite: bionic __cxa_thread_atexit_impl.cpp#__cxa_thread_atexit_impl
-    loop {
-        let next = THREAD_DESTRUCTORS.with(|list| list.borrow_mut().pop());
-        let Some((function, argument)) = next else { return Ok(()) };
-        call_registered(Registration { function, argument, dso: 0, sequence: 0, thread: std::thread::current().id() })?;
-    }
+    // cite: bionic __cxa_thread_atexit_impl.cpp#__cxa_thread_finalize
+    super::super::thread_exit::finalize_thread_locals(super::current_thread::record())
 }
 
 fn exit_process(context: &mut CallContext) {
@@ -144,8 +135,9 @@ pub fn register() {
         }
     });
     in_libc("__cxa_thread_atexit_impl", |context| {
-        let (function, argument) = (context.arg_u64(0), context.arg_u64(1));
-        THREAD_DESTRUCTORS.with(|list| list.borrow_mut().push((function, argument)));
+        // cite: bionic __cxa_thread_atexit_impl.cpp#__cxa_thread_atexit_impl
+        let (function, argument, dso) = (context.arg_u64(0), context.arg_u64(1), context.arg_u64(2));
+        super::super::thread_exit::add_thread_local_destructor(super::current_thread::record(), function, argument, dso);
         context.ret_i32(0);
     });
     in_libc("exit", exit_process);

@@ -102,7 +102,7 @@ build_variant() {
     local out="$OUT_ROOT/$label"
     local work
     work="$(mktemp -d)"
-    mkdir -p "$out" "$work/stubs" "$work/stubs_bridge" "$work/stubs_core"
+    mkdir -p "$out" "$work/stubs" "$work/stubs_bridge" "$work/stubs_core" "$work/stubs_threads"
     rm -f "$out"/*.so
 
     make_stub libc.so "$work/stubs" strlen memcpy malloc free snprintf \
@@ -110,6 +110,18 @@ build_variant() {
     make_stub libc.so "$work/stubs_bridge" strlen malloc free __stack_chk_fail \
         fx_probe fx_vprobe fx_get_s24 fx_get_hfa4 fx_get_ld fx_get_pair fx_nest_host fx_not_registered \
         fx_sp_check fx_touch_errno fx_clobber_probe fx_vshapes +fx_missing_object pthread_self gettid getpid __errno
+    make_stub libc.so "$work/stubs_threads" \
+        __cxa_thread_atexit_impl __errno __pthread_cleanup_pop __pthread_cleanup_push __stack_chk_fail clock_gettime gettid memset nanosleep \
+        pthread_attr_destroy pthread_attr_getstack pthread_attr_init pthread_attr_setdetachstate pthread_attr_setstacksize \
+        pthread_barrier_destroy pthread_barrier_init pthread_barrier_wait pthread_cond_broadcast pthread_cond_init pthread_cond_signal \
+        pthread_cond_timedwait pthread_cond_wait pthread_condattr_init pthread_condattr_setclock pthread_create pthread_detach \
+        pthread_getattr_np pthread_getname_np pthread_getspecific pthread_join pthread_key_create pthread_key_delete pthread_mutex_destroy \
+        pthread_mutex_init pthread_mutex_lock pthread_mutex_trylock pthread_mutex_unlock pthread_mutexattr_destroy pthread_mutexattr_init \
+        pthread_mutexattr_setprotocol pthread_mutexattr_settype pthread_once pthread_rwlock_init pthread_rwlock_rdlock pthread_rwlock_timedwrlock \
+        pthread_rwlock_tryrdlock pthread_rwlock_trywrlock pthread_rwlock_unlock pthread_rwlock_wrlock pthread_rwlockattr_init \
+        pthread_rwlockattr_setkind_np pthread_self pthread_setname_np pthread_setspecific pthread_spin_destroy pthread_spin_init \
+        pthread_spin_lock pthread_spin_trylock pthread_spin_unlock sched_yield sem_clockwait sem_init sem_post sem_timedwait sem_trywait sem_wait \
+        strcmp syscall pthread_exit
     make_stub libdl.so "$work/stubs" dlopen dlsym dlclose dlerror
     make_stub libc.so "$work/stubs_core" \
         __FD_SET_chk __assert2 __cxa_atexit __errno __memcpy_chk __memset_chk __read_chk __snprintf_chk __stack_chk_fail \
@@ -159,6 +171,9 @@ build_variant() {
 
     compile fx_math "$work"
     STUB_DIR="$work/stubs_core" link fx_math "$page" "$work" "$out" -lc -lm
+
+    compile fx_threads "$work" -mno-outline-atomics
+    STUB_DIR="$work/stubs_threads" link fx_threads "$page" "$work" "$out" -lc
 
     compile fx_dlmain "$work"
     STUB_DIR="$work/stubs_core" link fx_dlmain "$page" "$work" "$out" -lc -ldl

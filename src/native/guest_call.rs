@@ -75,9 +75,14 @@ thread_local! {
 pub fn invoke_frame(frame: &mut GuestCallFrame) -> Result<GuestResult> {
     attach_current()?;
     frame.aborted = 0;
-    ACTIVE.with(|active| active.borrow_mut().push(frame));
+    let depth = ACTIVE.with(|active| {
+        let mut active = active.borrow_mut();
+        let depth = active.len();
+        active.push(frame);
+        depth
+    });
     unsafe { spk_call_guest(frame) };
-    ACTIVE.with(|active| active.borrow_mut().pop());
+    ACTIVE.with(|active| active.borrow_mut().truncate(depth));
     if frame.aborted != 0 {
         let message = ABORT.with(|abort| abort.borrow_mut().take()).unwrap_or_else(|| "guest call aborted".to_string());
         return Err(WinedroidError::new(message));
@@ -98,7 +103,11 @@ fn current_thread_label() -> String {
 }
 
 pub fn abort_active_call(message: String) {
-    let frame = ACTIVE.with(|active| active.borrow().last().copied());
+    let unwind_to_outermost = super::thread_exit::exit_requested();
+    let frame = ACTIVE.with(|active| {
+        let active = active.borrow();
+        if unwind_to_outermost { active.first().copied() } else { active.last().copied() }
+    });
     let Some(frame) = frame else {
         host_log::line(&format!("{message}; no active guest call on {}", current_thread_label()));
         std::process::abort();

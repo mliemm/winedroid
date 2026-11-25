@@ -1,6 +1,9 @@
 pub const PTHREAD_INTERNAL_SIZE: usize = 784;
 
 pub const JOIN_NOT_JOINED: i32 = 0;
+pub const JOIN_EXITED_NOT_JOINED: i32 = 1;
+pub const JOIN_JOINED: i32 = 2;
+pub const JOIN_DETACHED: i32 = 3;
 pub const ATTR_FLAG_DETACHED: u32 = 1;
 pub const ATTR_FLAG_INHERIT: u32 = 4;
 

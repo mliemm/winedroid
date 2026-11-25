@@ -53,6 +53,10 @@ pub mod call_assign;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod guest_regs;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod futex;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod futex_syscall;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod guest_thread;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod pthread_internal;
@@ -62,6 +66,12 @@ pub mod runtime;
 pub mod stub_table;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod thread_block;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod thread_exit;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod thread_list;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod thread_start;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod tp_veneer;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
@@ -112,6 +122,8 @@ mod bridge_va_tests;
 mod guest_thread_tests;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
 mod guest_call_tests;
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod thread_tests;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
 mod tp_veneer_tests;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]

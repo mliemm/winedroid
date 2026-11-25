@@ -103,14 +103,18 @@ pub fn existing_block_address(module_id: u32) -> Option<usize> {
 }
 
 pub fn block_address(module_id: u32) -> usize {
+    block_address_checked(module_id).unwrap_or_else(|message| panic!("{message}"))
+}
+
+pub fn block_address_checked(module_id: u32) -> Result<usize, String> {
     // cite: bionic bionic_elf_tls.cpp#__tls_get_addr
     if let Some(address) = existing_block_address(module_id) {
-        return address;
+        return Ok(address);
     }
     let module = module_id
         .checked_sub(1)
         .and_then(|index| REGISTRY.lock().expect("tls registry").get(index as usize).cloned().flatten())
-        .unwrap_or_else(|| panic!("TLS module {module_id} is not registered"));
+        .ok_or_else(|| format!("TLS module {module_id} is not registered; next missing primitive: TLS module {module_id}"))?;
     let alignment = (module.segment.alignment as usize).max(16);
     let mut pointer: *mut libc::c_void = std::ptr::null_mut();
     let size = (module.segment.size as usize).max(1);
@@ -127,7 +131,7 @@ pub fn block_address(module_id: u32) -> usize {
         }
         blocks.entries[module_id as usize - 1] = Some(Block { pointer: pointer as *mut u8, generation: module.generation });
     });
-    pointer as usize
+    Ok(pointer as usize)
 }
 
 #[repr(C)]

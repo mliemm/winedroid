@@ -10,7 +10,7 @@ use super::fixture_reference_tests::android_ref_root;
 
 const TOOL_MISSING_STATUS: i32 = 127;
 const VARIANT_DIRECTORIES: [&str; 2] = ["16k", "4k"];
-const FIXTURE_LIBRARIES: [&str; 13] = [
+const FIXTURE_LIBRARIES: [&str; 14] = [
     "libfx_add.so",
     "libfx_aps2.so",
     "libfx_bridge.so",
@@ -24,6 +24,7 @@ const FIXTURE_LIBRARIES: [&str; 13] = [
     "libfx_reloc.so",
     "libfx_relr.so",
     "libfx_relro.so",
+    "libfx_threads.so",
 ];
 
 fn crc_feed(crc: u32, byte: u8) -> u32 {

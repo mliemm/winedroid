@@ -79,7 +79,10 @@ fn guest_thread_pointer_is_the_host_tsd_base_plus_the_block_bias_and_every_slot_
     assert_eq!(slot(1), record, "TLS_SLOT_THREAD_ID is the pthread_internal_t of the thread");
     assert_eq!(slot(5), block().canary(), "TLS_SLOT_STACK_GUARD");
     assert_ne!(block().canary(), 0);
-    for empty in [-1i64, 0, 2, 3, 4, 6, 7] {
+    let keys = unsafe { (*(record as *const crate::native::pthread_internal::PthreadInternal)).bionic_tls };
+    assert_ne!(keys, 0);
+    assert_eq!(slot(-1), keys, "TLS_SLOT_BIONIC_TLS points at the key table block");
+    for empty in [0i64, 2, 3, 4, 6, 7] {
         assert_eq!(slot(empty), 0, "slot {empty}");
     }
 }

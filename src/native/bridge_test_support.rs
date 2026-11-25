@@ -41,11 +41,6 @@ pub fn take_logged() -> Vec<(i32, String, String)> {
     records
 }
 
-fn register_threading_stand_ins() {
-    register_handler("pthread_mutex_lock", |context| context.ret_i32(0));
-    register_handler("pthread_mutex_unlock", |context| context.ret_i32(0));
-}
-
 fn probe_value_list(context: &mut CallContext) {
     let mut va = context.varargs(1, 0);
     let mut seen = vec![Seen::Int(va.next_i64()), Seen::Real(va.next_f64()), Seen::Int(i64::from(va.next_i32()))];
@@ -161,7 +156,6 @@ fn register_fixture_handlers() {
 pub fn register_all() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        register_threading_stand_ins();
         register_fixture_handlers();
         register_all_groups();
     });
