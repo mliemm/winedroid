@@ -368,6 +368,43 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/util/concurrent/locks/Condition;"
+                | "Ljava/util/concurrent/locks/ReentrantLock$ConditionObject;"
+        ) && matches!(method.name.as_str(), "await" | "awaitUninterruptibly")
+            && method.proto.descriptor_is("()V")
+        {
+            // cite: libcore Condition.java#await
+            let invocation = invocation?;
+            if !dex_value_is_object_like(&invocation.arguments[0]) {
+                return None;
+            }
+            let thread = self.runtime.borrow().current_guest_thread.clone();
+            self.runtime
+                .borrow_mut()
+                .condition_waiters
+                .entry(map_identity_key(&invocation.arguments[0]))
+                .or_default()
+                .push(thread);
+
+            return Some(DexExecutionResult::Parked(DexParkedExecution::empty()));
+        }
+
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/util/concurrent/locks/Condition;"
+                | "Ljava/util/concurrent/locks/ReentrantLock$ConditionObject;"
+        ) && matches!(method.name.as_str(), "signal" | "signalAll")
+            && method.proto.descriptor_is("()V")
+        {
+            // cite: libcore Condition.java#signal, signalAll
+            let invocation = invocation?;
+            self.condition_signal(invocation, method.name == "signalAll")?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
         if method.matches_builtin_signature(
             "Ljava/util/concurrent/locks/ReentrantLock;",
             "newCondition",
@@ -1126,22 +1163,26 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(DexValue::Null));
         }
 
-        if method.matches_builtin_signature(
-            "Ljava/lang/ref/WeakReference;",
-            "<init>",
-            "(Ljava/lang/Object;)V",
-        ) {
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/lang/ref/WeakReference;" | "Ljava/lang/ref/SoftReference;"
+        ) && method.name == "<init>"
+            && method.proto.descriptor_is("(Ljava/lang/Object;)V")
+        {
             let invocation = invocation?;
             self.initialize_weak_reference(invocation)?;
 
             return Some(DexExecutionResult::Void);
         }
 
-        if method.matches_builtin_signature(
-            "Ljava/lang/ref/WeakReference;",
-            "<init>",
-            "(Ljava/lang/Object;Ljava/lang/ref/ReferenceQueue;)V",
-        ) {
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/lang/ref/WeakReference;" | "Ljava/lang/ref/SoftReference;"
+        ) && method.name == "<init>"
+            && method
+                .proto
+                .descriptor_is("(Ljava/lang/Object;Ljava/lang/ref/ReferenceQueue;)V")
+        {
             let invocation = invocation?;
             self.initialize_weak_reference_with_queue(invocation)?;
 
@@ -1290,6 +1331,35 @@ impl DexProgram {
             if !self.write_stored_instance_field(lock, &field, child) {
                 return None;
             }
+        }
+
+        Some(())
+    }
+}
+
+impl DexProgram {
+    fn condition_signal(&self, invocation: &DexInvocation, all: bool) -> Option<()> {
+        if invocation.arguments.len() != 1 {
+            return None;
+        }
+        let condition_key = map_identity_key(&invocation.arguments[0]);
+        let mut runtime = self.runtime.borrow_mut();
+        let mut waiters = runtime
+            .condition_waiters
+            .remove(&condition_key)
+            .unwrap_or_default();
+        let wake = if all {
+            std::mem::take(&mut waiters)
+        } else if waiters.is_empty() {
+            Vec::new()
+        } else {
+            vec![waiters.remove(0)]
+        };
+        if !waiters.is_empty() {
+            runtime.condition_waiters.insert(condition_key, waiters);
+        }
+        for thread in wake {
+            runtime.unpark_thread(&thread);
         }
 
         Some(())

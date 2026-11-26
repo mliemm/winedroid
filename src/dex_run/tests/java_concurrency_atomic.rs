@@ -3314,3 +3314,84 @@ fn libcore_semaphore_constructor_stores_permits_and_rejects_negative_counts() {
         "Ljava/lang/IllegalArgumentException;"
     ));
 }
+
+#[test]
+fn libcore_soft_reference_constructor_keeps_the_referent() {
+    // cite: libcore SoftReference.java#SoftReference
+    let program = DexProgram::new(Vec::new());
+    let constructor = builtin_method(
+        "Ljava/lang/ref/SoftReference;",
+        "<init>",
+        "V",
+        &["Ljava/lang/Object;"],
+    );
+    let get = builtin_method(
+        "Ljava/lang/ref/Reference;",
+        "get",
+        "Ljava/lang/Object;",
+        &[],
+    );
+    let reference = program.allocate_object("Ljava/lang/ref/SoftReference;".to_owned());
+    let referent = program.allocate_object("Ljava/lang/Object;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![reference.clone(), referent.clone()]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&get, Some(&test_invocation(vec![reference]))),
+        Some(DexExecutionResult::Value(referent))
+    );
+}
+
+#[test]
+fn libcore_condition_await_parks_and_signal_all_resumes_the_waiter() {
+    // cite: libcore Condition.java#await, signalAll
+    let program = DexProgram::new(Vec::new());
+    let await_method = builtin_method("Ljava/util/concurrent/locks/Condition;", "await", "V", &[]);
+    let signal_all = builtin_method(
+        "Ljava/util/concurrent/locks/Condition;",
+        "signalAll",
+        "V",
+        &[],
+    );
+    let condition = program
+        .allocate_object("Ljava/util/concurrent/locks/ReentrantLock$ConditionObject;".to_owned());
+    let worker = program.allocate_object("Ljava/lang/Thread;".to_owned());
+
+    let parked = program.with_current_guest_thread(worker.clone(), || {
+        program.invoke_builtin_method(
+            &await_method,
+            Some(&test_invocation(vec![condition.clone()])),
+        )
+    });
+    assert!(matches!(parked, Some(DexExecutionResult::Parked(_))));
+    assert_eq!(
+        program
+            .runtime
+            .borrow()
+            .condition_waiters
+            .get(&map_identity_key(&condition))
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&signal_all, Some(&test_invocation(vec![condition.clone()]))),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program
+            .runtime
+            .borrow()
+            .condition_waiters
+            .get(&map_identity_key(&condition)),
+        None
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&signal_all, Some(&test_invocation(vec![condition]))),
+        Some(DexExecutionResult::Void)
+    );
+}

@@ -1815,6 +1815,28 @@ impl DexProgram {
         }
     }
 
+    // cite: libcore List.java#add
+    pub(super) fn insert_list_value(&self, invocation: &DexInvocation) -> Option<()> {
+        let [list, DexValue::Int(index), value] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        if !dex_value_is_object_like(list) {
+            return None;
+        }
+        let index = usize::try_from(*index).ok()?;
+        let mut runtime = self.runtime.borrow_mut();
+        let values = runtime
+            .list_entries
+            .entry(map_identity_key(list))
+            .or_default();
+        if index > values.len() {
+            return None;
+        }
+        values.insert(index, value.clone());
+
+        Some(())
+    }
+
     pub(super) fn add_collection_value(&self, invocation: &DexInvocation) -> Option<()> {
         if invocation.arguments.len() != 2 {
             return None;
@@ -6393,6 +6415,7 @@ pub(super) fn is_supported_set_class(class_descriptor: &str) -> bool {
             | "Ljava/util/TreeSet;"
             | "Ljava/util/concurrent/ConcurrentSkipListSet;"
             | "Ljava/util/concurrent/CopyOnWriteArraySet;"
+            | "Ljava/util/concurrent/ConcurrentHashMap$KeySetView;"
             | "Ls/e;"
     )
 }

@@ -315,6 +315,8 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         "Ljava/lang/reflect/AccessibleObject;" => Some("Ljava/lang/Object;"),
         // cite: libcore WeakReference.java#WeakReference
         "Ljava/lang/ref/WeakReference;" => Some("Ljava/lang/ref/Reference;"),
+        // cite: libcore SoftReference.java#SoftReference
+        "Ljava/lang/ref/SoftReference;" => Some("Ljava/lang/ref/Reference;"),
         // cite: libcore Reference.java#Reference
         "Ljava/lang/ref/Reference;" => Some("Ljava/lang/Object;"),
         "Lorg/json/JSONException;" => Some("Ljava/lang/Exception;"),
@@ -417,6 +419,8 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         "Ljava/util/Hashtable;" => Some("Ljava/util/Dictionary;"),
         // cite: libcore Dictionary.java#Dictionary
         "Ljava/util/Dictionary;" => Some("Ljava/lang/Object;"),
+        // cite: libcore ConcurrentHashMap.java#newKeySet, KeySetView
+        "Ljava/util/concurrent/ConcurrentHashMap$KeySetView;" => Some("Ljava/lang/Object;"),
         // cite: libcore Runtime.java#Runtime
         "Ljava/lang/Runtime;" => Some("Ljava/lang/Object;"),
         // cite: libcore Process.java#Process
@@ -484,6 +488,8 @@ pub(super) fn bootstrap_direct_interface_descriptors(
             "Ljava/lang/invoke/TypeDescriptor$OfField;",
             "Ljava/io/Serializable;",
         ],
+        // cite: libcore ConcurrentHashMap.java#KeySetView
+        "Ljava/util/concurrent/ConcurrentHashMap$KeySetView;" => &["Ljava/util/Set;"],
         // cite: libcore ReentrantLock.java#ConditionObject
         "Ljava/util/concurrent/locks/ReentrantLock$ConditionObject;" => {
             &["Ljava/util/concurrent/locks/Condition;"]

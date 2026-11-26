@@ -2054,3 +2054,43 @@ fn libcore_concurrent_hash_map_put_if_absent_keeps_the_first_value() {
         );
     }
 }
+
+#[test]
+fn libcore_concurrent_hash_map_new_key_set_returns_a_mutable_set_view() {
+    // cite: libcore ConcurrentHashMap.java#newKeySet, KeySetView
+    let program = DexProgram::new(Vec::new());
+    let new_key_set = builtin_method(
+        "Ljava/util/concurrent/ConcurrentHashMap;",
+        "newKeySet",
+        "Ljava/util/concurrent/ConcurrentHashMap$KeySetView;",
+        &[],
+    );
+    let add = builtin_method("Ljava/util/Set;", "add", "Z", &["Ljava/lang/Object;"]);
+    let contains = builtin_method("Ljava/util/Set;", "contains", "Z", &["Ljava/lang/Object;"]);
+    let Some(DexExecutionResult::Value(set)) =
+        program.invoke_builtin_method(&new_key_set, Some(&test_invocation(Vec::new())))
+    else {
+        panic!("newKeySet should return a set view");
+    };
+    assert!(program.value_matches_type(&set, "Ljava/util/Set;"));
+    let value = DexValue::String(std::rc::Rc::from("key"));
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &add,
+            Some(&test_invocation(vec![set.clone(), value.clone()]))
+        ),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &add,
+            Some(&test_invocation(vec![set.clone(), value.clone()]))
+        ),
+        Some(DexExecutionResult::Int(0))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&contains, Some(&test_invocation(vec![set, value]))),
+        Some(DexExecutionResult::Int(1))
+    );
+}

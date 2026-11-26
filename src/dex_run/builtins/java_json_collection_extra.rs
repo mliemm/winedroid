@@ -114,6 +114,22 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Lorg/json/JSONObject;"
+            && method.name == "optJSONObject"
+            && method
+                .proto
+                .descriptor_is("(Ljava/lang/String;)Lorg/json/JSONObject;")
+        {
+            // cite: libcore JSONObject.java#optJSONObject
+            let invocation = invocation?;
+            let value = self.json_object_opt(invocation)?;
+            if !self.value_matches_type(&value, "Lorg/json/JSONObject;") {
+                return Some(DexExecutionResult::Value(DexValue::Null));
+            }
+
+            return Some(DexExecutionResult::Value(value));
+        }
+
+        if method.class_descriptor == "Lorg/json/JSONObject;"
             && method.name == "opt"
             && method
                 .proto

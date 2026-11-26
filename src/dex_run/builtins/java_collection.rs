@@ -666,8 +666,33 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(value));
         }
 
-        if method.class_descriptor == "Ljava/util/List;"
-            && method.name == "clear"
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/util/List;"
+                | "Ljava/util/AbstractList;"
+                | "Ljava/util/ArrayList;"
+                | "Ljava/util/LinkedList;"
+                | "Ljava/util/concurrent/CopyOnWriteArrayList;"
+        ) && method.name == "add"
+            && method.proto.descriptor_is("(ILjava/lang/Object;)V")
+        {
+            // cite: libcore List.java#add
+            let invocation = invocation?;
+            self.insert_list_value(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/util/List;"
+                | "Ljava/util/Collection;"
+                | "Ljava/util/AbstractCollection;"
+                | "Ljava/util/AbstractList;"
+                | "Ljava/util/AbstractSequentialList;"
+                | "Ljava/util/ArrayList;"
+                | "Ljava/util/LinkedList;"
+        ) && method.name == "clear"
             && method.proto.descriptor_is("()V")
         {
             let invocation = invocation?;
@@ -787,6 +812,23 @@ impl DexProgram {
             let value = self.map_entry_value(invocation)?;
 
             return Some(DexExecutionResult::Value(value));
+        }
+
+        if method.class_descriptor == "Ljava/util/concurrent/ConcurrentHashMap;"
+            && method.name == "newKeySet"
+            && method
+                .proto
+                .descriptor_is("()Ljava/util/concurrent/ConcurrentHashMap$KeySetView;")
+        {
+            // cite: libcore ConcurrentHashMap.java#newKeySet, KeySetView
+            let view = self
+                .allocate_object("Ljava/util/concurrent/ConcurrentHashMap$KeySetView;".to_owned());
+            self.runtime
+                .borrow_mut()
+                .list_entries
+                .insert(map_identity_key(&view), Vec::new());
+
+            return Some(DexExecutionResult::Value(view));
         }
 
         if is_supported_map_class(&method.class_descriptor)

@@ -3114,3 +3114,65 @@ fn libcore_collections_add_all_appends_every_array_element() {
         Some(&vec![DexValue::Int(1), DexValue::Int(2)])
     );
 }
+
+#[test]
+fn libcore_linked_list_clear_removes_every_element() {
+    // cite: libcore AbstractCollection.java#clear
+    let program = DexProgram::new(Vec::new());
+    let clear = builtin_method("Ljava/util/LinkedList;", "clear", "V", &[]);
+    let list = program.allocate_object("Ljava/util/LinkedList;".to_owned());
+    program.runtime.borrow_mut().list_entries.insert(
+        map_identity_key(&list),
+        vec![DexValue::Int(1), DexValue::Int(2)],
+    );
+
+    assert_eq!(
+        program.invoke_builtin_method(&clear, Some(&test_invocation(vec![list.clone()]))),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program
+            .runtime
+            .borrow()
+            .list_entries
+            .get(&map_identity_key(&list)),
+        Some(&Vec::new())
+    );
+}
+
+#[test]
+fn libcore_copy_on_write_array_list_inserts_at_an_index() {
+    // cite: libcore List.java#add
+    let program = DexProgram::new(Vec::new());
+    let add_at = builtin_method(
+        "Ljava/util/concurrent/CopyOnWriteArrayList;",
+        "add",
+        "V",
+        &["I", "Ljava/lang/Object;"],
+    );
+    let list = program.allocate_object("Ljava/util/concurrent/CopyOnWriteArrayList;".to_owned());
+    program.runtime.borrow_mut().list_entries.insert(
+        map_identity_key(&list),
+        vec![DexValue::Int(1), DexValue::Int(3)],
+    );
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &add_at,
+            Some(&test_invocation(vec![
+                list.clone(),
+                DexValue::Int(1),
+                DexValue::Int(2)
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program
+            .runtime
+            .borrow()
+            .list_entries
+            .get(&map_identity_key(&list)),
+        Some(&vec![DexValue::Int(1), DexValue::Int(2), DexValue::Int(3)])
+    );
+}
