@@ -12,6 +12,9 @@ pub const PF_W: u32 = 2;
 
 const EM_AARCH64: u16 = 183;
 const PHDR_SIZE: usize = 56;
+const SHDR_SIZE: usize = 64;
+const SHF_ALLOC: u64 = 0x2;
+const SHF_EXECINSTR: u64 = 0x4;
 const MAX_PHNUM: usize = 65536 / PHDR_SIZE;
 const MAX_IMAGE_SIZE: u64 = 1 << 30;
 const PAGE: u64 = 4096;
@@ -57,6 +60,7 @@ pub struct TlsSegment {
 pub struct ElfImage {
     pub phdrs: Vec<Phdr>,
     pub phoff: u64,
+    pub code_sections: Vec<(u64, u64)>,
 }
 
 pub fn is_arm64_elf(data: &[u8]) -> bool {
@@ -64,6 +68,31 @@ pub fn is_arm64_elf(data: &[u8]) -> bool {
         && data[..4] == *b"\x7fELF"
         && data[4] == 2
         && le_u16(data, 18) == Some(EM_AARCH64)
+}
+
+fn code_sections(data: &[u8]) -> Vec<(u64, u64)> {
+    // cite: bionic linker_phdr.cpp#ReadSectionHeaders
+    let table = le_u64(data, 40).unwrap_or(0);
+    let count = usize::from(le_u16(data, 60).unwrap_or(0));
+    if table == 0 || usize::from(le_u16(data, 58).unwrap_or(0)) != SHDR_SIZE {
+        return Vec::new();
+    }
+    (0..count)
+        .filter_map(|index| {
+            let at = usize::try_from(table)
+                .ok()?
+                .checked_add(index * SHDR_SIZE)?;
+            let flags = le_u64(data, at.checked_add(8)?)?;
+            if flags & (SHF_ALLOC | SHF_EXECINSTR) != SHF_ALLOC | SHF_EXECINSTR {
+                return None;
+            }
+            let start = le_u64(data, at.checked_add(16)?)?;
+            Some((
+                start,
+                start.checked_add(le_u64(data, at.checked_add(32)?)?)?,
+            ))
+        })
+        .collect()
 }
 
 fn floor_page(value: u64) -> u64 {
@@ -155,7 +184,11 @@ impl ElfImage {
                 align: field64(48),
             });
         }
-        let image = Self { phdrs, phoff };
+        let image = Self {
+            phdrs,
+            phoff,
+            code_sections: code_sections(data),
+        };
         image.validate(name, data.len() as u64)?;
         Ok(image)
     }

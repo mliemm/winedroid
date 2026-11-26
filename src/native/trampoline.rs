@@ -18,7 +18,7 @@ pub struct GuestCallFrame {
     pub frame: u64,
     pub aborted: u64,
     pub stack_top: u64,
-    pub padding: u64,
+    pub serial: u64,
 }
 
 const _: () = assert!(std::mem::size_of::<GuestCallFrame>() == GUEST_CALL_SIZE);

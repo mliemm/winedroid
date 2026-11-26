@@ -444,3 +444,145 @@ bounded_test! {
         assert!(output.contains("abort handler ran"), "{output}");
     }
 }
+
+fn jumpers(session: &Session, signals: &[i32]) {
+    for signal in signals {
+        session.installed.borrow_mut().push(*signal);
+        assert_eq!(
+            session
+                .call("fx_install_jumper")
+                .i32(*signal)
+                .invoke()
+                .unwrap()
+                .i32(),
+            0
+        );
+    }
+}
+
+bounded_test! {
+    fn bionic_longjmp_returns_its_value_to_the_setjmp_site_and_turns_zero_into_one() {
+        // cite: bionic setjmp.S#setjmp, _setjmp, siglongjmp
+        each_session(|session| {
+            assert_eq!(session.call("fx_jump_values").invoke().unwrap().u64(), 50_107);
+        });
+    }
+}
+
+bounded_test! {
+    fn bionic_siglongjmp_restores_x19_to_x28_d8_to_d15_and_sp() {
+        // cite: bionic setjmp.S#_JB_X30_SP, _JB_X20_X21, _JB_D8_D9
+        each_session(|session| {
+            assert_eq!(session.call("fx_registers_survive_longjmp").invoke().unwrap().u64(), 19);
+        });
+    }
+}
+
+bounded_test! {
+    fn bionic_siglongjmp_out_of_a_fault_handler_restores_the_mask_only_when_sigsetjmp_saved_it() {
+        // cite: bionic setjmp.S#sigsetjmp, siglongjmp
+        each_session(|session| {
+            jumpers(session, &[11]);
+            let recover = |save_mask: i32| session.call("fx_recover_from_fault").i32(save_mask).invoke().unwrap().i32();
+
+            assert_eq!(recover(1), 110);
+            assert_eq!(recover(1), 110, "a second fault is delivered again");
+            assert_eq!(recover(0), 111, "SIGSEGV stays blocked without a saved mask");
+            assert_eq!(session.int("fx_seen_count"), 3);
+        });
+    }
+}
+
+bounded_test! {
+    fn bionic_siglongjmp_out_of_a_raised_signal_handler_or_an_abort_handler_resumes_the_guest() {
+        // cite: bionic raise.cpp#raise
+        // cite: bionic abort.cpp#abort
+        each_session(|session| {
+            jumpers(session, &[10]);
+            assert_eq!(session.call("fx_recover_from_raise").i32(10).invoke().unwrap().i32(), 100);
+            jumpers(session, &[6]);
+            assert_eq!(session.int("fx_recover_from_abort"), 6);
+        });
+    }
+}
+
+bounded_test! {
+    fn bionic_siglongjmp_from_a_nested_handler_abandons_the_outer_handler() {
+        // cite: bionic setjmp.S#siglongjmp
+        each_session(|session| {
+            session.installed.borrow_mut().extend([10, 11, 12]);
+            let nested = |fault: i32| session.call("fx_jump_past_an_outer_handler").i32(fault).invoke().unwrap().i32();
+
+            assert_eq!(nested(0), 120_010);
+            assert_eq!(nested(1), 110_010);
+        });
+    }
+}
+
+bounded_test! {
+    fn bionic_siglongjmp_discards_a_handler_queued_underneath_the_jumping_one() {
+        // cite: bionic setjmp.S#siglongjmp
+        each_session(|session| {
+            session.installed.borrow_mut().extend([10, 12]);
+
+            assert_eq!(session.int("fx_jump_before_a_queued_handler"), 12_001);
+        });
+    }
+}
+
+bounded_test! {
+    fn bionic_siglongjmp_from_the_alternate_stack_leaves_it_for_the_next_signal() {
+        // cite: bionic SYSCALLS.TXT#sigaltstack
+        each_session(|session| {
+            session.installed.borrow_mut().push(11);
+
+            assert_eq!(session.int("fx_recover_on_altstack"), 110);
+        });
+    }
+}
+
+bounded_test! {
+    fn bionic_siglongjmp_from_a_handler_abandons_a_blocked_mutex_wait() {
+        // cite: bionic pthread_mutex.cpp#pthread_mutex_lock
+        each_session(|session| {
+            jumpers(session, &[10]);
+
+            assert_eq!(session.int("fx_jump_out_of_a_blocked_lock"), 10);
+        });
+    }
+}
+
+bounded_test! {
+    fn siglongjmp_across_a_host_call_frame_is_an_explicit_missing_primitive() {
+        // cite: bionic setjmp.S#siglongjmp
+        let session = Session::new();
+
+        let error = session.call("fx_jump_across_qsort").invoke().unwrap_err();
+
+        assert!(error.to_string().contains("next missing primitive: siglongjmp across a host call frame"), "{error}");
+    }
+}
+
+bounded_test! {
+    fn bionic_siglongjmp_on_a_damaged_buffer_aborts_with_the_bionic_text() {
+        // cite: bionic setjmp_cookie.cpp#__bionic_setjmp_checksum_mismatch, __bionic_setjmp_cookie_check
+        let session = Session::new();
+        for (clear, expected) in [(0, "setjmp checksum mismatch"), (1, "setjmp cookie mismatch")] {
+            let (signal, output) = super::loader_test_support::child_outcome(|| {
+                let _ = session.call("fx_jump_through_a_damaged_buffer").i32(clear).invoke();
+            });
+
+            assert_eq!(signal, Some(libc::SIGABRT), "{output}");
+            assert!(output.contains(expected), "{output}");
+        }
+    }
+}
+
+bounded_test! {
+    fn a_guest_thread_inherits_the_nice_value_of_its_creator() {
+        // cite: bionic pthread_create.cpp#pthread_create
+        each_session(|session| {
+            assert_eq!(session.call("fx_child_priority").i32(7).invoke().unwrap().i32(), 7);
+        });
+    }
+}

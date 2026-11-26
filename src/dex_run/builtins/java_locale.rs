@@ -38,10 +38,12 @@ pub(super) enum LocaleAccessor {
     Variant,
 }
 
-struct LocaleParts {
-    language: String,
-    region: String,
-    variant: String,
+#[derive(Default, PartialEq, Eq)]
+pub(in crate::dex_run) struct LocaleParts {
+    pub(in crate::dex_run) language: String,
+    pub(in crate::dex_run) script: String,
+    pub(in crate::dex_run) region: String,
+    pub(in crate::dex_run) variant: String,
 }
 
 fn locale_field(name: &str) -> DexFieldId {
@@ -84,6 +86,7 @@ impl DexProgram {
 
         let parts = LocaleParts {
             language: normalized_language(language),
+            script: String::new(),
             region: country.to_ascii_uppercase(),
             variant: variant.to_string(),
         };
@@ -103,6 +106,16 @@ impl DexProgram {
         Some(DexExecutionResult::Void)
     }
 
+    pub(in crate::dex_run) fn locale_parts_of(&self, locale: &DexValue) -> Option<LocaleParts> {
+        match locale {
+            DexValue::Reference(reference) => {
+                locale_parts(reference.strip_prefix(LOCALE_REFERENCE_PREFIX)?)
+            }
+            DexValue::Object(_) => self.stored_locale_parts(locale),
+            _ => None,
+        }
+    }
+
     fn stored_locale_parts(&self, locale: &DexValue) -> Option<LocaleParts> {
         let read =
             |name: &str| match self.read_stored_instance_field(locale, &locale_field(name))? {
@@ -112,6 +125,7 @@ impl DexProgram {
 
         Some(LocaleParts {
             language: read("language")?,
+            script: String::new(),
             region: read("region")?,
             variant: read("variant")?,
         })
@@ -126,13 +140,7 @@ pub(super) fn locale_accessor_value(
     let [receiver] = invocation.arguments.as_slice() else {
         return None;
     };
-    let parts = match receiver {
-        DexValue::Reference(reference) => {
-            locale_parts(reference.strip_prefix(LOCALE_REFERENCE_PREFIX)?)?
-        }
-        DexValue::Object(_) => program.stored_locale_parts(receiver)?,
-        _ => return None,
-    };
+    let parts = program.locale_parts_of(receiver)?;
     let value = match accessor {
         // cite: libcore Locale.java#getLanguage
         LocaleAccessor::Language => parts.language,
@@ -148,6 +156,7 @@ pub(super) fn locale_accessor_value(
 fn locale_parts(name: &str) -> Option<LocaleParts> {
     let constant = |language: &str, region: &str| LocaleParts {
         language: language.to_owned(),
+        script: String::new(),
         region: region.to_owned(),
         variant: String::new(),
     };
@@ -178,6 +187,7 @@ fn language_tag_parts(tag: &str) -> Option<LocaleParts> {
     let mut subtags = tag.split('-').peekable();
     let mut parts = LocaleParts {
         language: String::new(),
+        script: String::new(),
         region: String::new(),
         variant: String::new(),
     };
@@ -199,7 +209,9 @@ fn language_tag_parts(tag: &str) -> Option<LocaleParts> {
     };
     parts.language = normalized_language(language);
 
-    subtags.next_if(|subtag| is_script(subtag));
+    if let Some(script) = subtags.next_if(|subtag| is_script(subtag)) {
+        parts.script = title_case_script(script);
+    }
     if let Some(region) = subtags.next_if(|subtag| is_region(subtag)) {
         parts.region = region.to_ascii_uppercase();
     }
@@ -210,6 +222,16 @@ fn language_tag_parts(tag: &str) -> Option<LocaleParts> {
     parts.variant = variants.join("_");
 
     Some(parts)
+}
+
+// cite: libcore LanguageTag.java#canonicalizeScript
+fn title_case_script(script: &str) -> String {
+    let (first, rest) = script.split_at(1);
+    format!(
+        "{}{}",
+        first.to_ascii_uppercase(),
+        rest.to_ascii_lowercase()
+    )
 }
 
 // cite: libcore BaseLocale.java#getInstance

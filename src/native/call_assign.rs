@@ -1,6 +1,6 @@
 use crate::error::Result;
 
-use super::guest_call::{invoke_frame, GuestResult};
+use super::guest_call::{invoke_frame, GuestResult, SIGNAL_HANDLER_FRAME};
 use super::trampoline::GuestCallFrame;
 
 const GENERAL_REGISTERS: usize = 8;
@@ -29,7 +29,7 @@ impl CallBuilder {
             frame: 0,
             aborted: 0,
             stack_top: 0,
-            padding: 0,
+            serial: 0,
         };
         Self {
             frame,
@@ -193,6 +193,11 @@ impl CallBuilder {
 
     pub fn on_stack(mut self, top: usize) -> Self {
         self.frame.stack_top = top as u64;
+        self
+    }
+
+    pub fn signal_handler(mut self) -> Self {
+        self.frame.serial = SIGNAL_HANDLER_FRAME;
         self
     }
 

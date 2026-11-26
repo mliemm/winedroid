@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::{c_char, CString};
 
 use crate::error::{Result, WinedroidError};
@@ -77,7 +77,10 @@ impl GuestResult {
     }
 }
 
+pub const SIGNAL_HANDLER_FRAME: u64 = 1 << 63;
+
 thread_local! {
+    static SERIAL: Cell<u64> = const { Cell::new(0) };
     static ACTIVE: RefCell<Vec<*mut GuestCallFrame>> = const { RefCell::new(Vec::new()) };
     static ABORT: RefCell<Option<String>> = const { RefCell::new(None) };
 }
@@ -85,6 +88,11 @@ thread_local! {
 pub fn invoke_frame(frame: &mut GuestCallFrame) -> Result<GuestResult> {
     attach_current()?;
     frame.aborted = 0;
+    let serial = SERIAL.with(|serial| {
+        serial.set(serial.get() + 1);
+        serial.get()
+    });
+    frame.serial = (frame.serial & SIGNAL_HANDLER_FRAME) | serial;
     let depth = ACTIVE.with(|active| {
         let mut active = active.borrow_mut();
         let depth = active.len();
@@ -92,10 +100,16 @@ pub fn invoke_frame(frame: &mut GuestCallFrame) -> Result<GuestResult> {
         depth
     });
     super::signal_router::deliver_pending();
-    let outer = super::signal_state::set_in_guest(true);
-    unsafe { spk_call_guest(frame) };
-    super::signal_state::set_in_guest(outer);
+    let jumped = super::bionic::setjmp::jumping();
+    if !jumped {
+        let outer = super::signal_state::set_in_guest(true);
+        unsafe { spk_call_guest(frame) };
+        super::signal_state::set_in_guest(outer);
+    }
     ACTIVE.with(|active| active.borrow_mut().truncate(depth));
+    if jumped {
+        return Err(WinedroidError::new("siglongjmp left this guest call"));
+    }
     if frame.aborted != 0 {
         let message = ABORT
             .with(|abort| abort.borrow_mut().take())
@@ -105,6 +119,29 @@ pub fn invoke_frame(frame: &mut GuestCallFrame) -> Result<GuestResult> {
     Ok(GuestResult {
         x: frame.ret_x,
         q: frame.ret_q,
+    })
+}
+
+fn serial_of(frame: *mut GuestCallFrame) -> u64 {
+    unsafe { (*frame).serial }
+}
+
+pub fn current_serial() -> u64 {
+    ACTIVE.with(|active| active.borrow().last().map_or(0, |frame| serial_of(*frame)))
+}
+
+pub fn only_signal_handlers_above(target: u64) -> bool {
+    ACTIVE.with(|active| {
+        for frame in active.borrow().iter().rev() {
+            let serial = serial_of(*frame);
+            if serial == target {
+                return true;
+            }
+            if serial & SIGNAL_HANDLER_FRAME == 0 {
+                return false;
+            }
+        }
+        false
     })
 }
 

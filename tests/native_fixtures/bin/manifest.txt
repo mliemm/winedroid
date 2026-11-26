@@ -14,7 +14,7 @@ source src/fx_order_parent.c 2046232195 996
 source src/fx_phdr.c 1506877651 2558
 source src/fx_reloc.c 1869183806 2514
 source src/fx_relro.c 3304644147 217
-source src/fx_signals.c 786419735 7440
+source src/fx_signals.c 3716005096 14667
 source src/fx_threads.c 498139427 29378
 source src/fx_unwind.c 1760925008 13820
 source src/fx_cxx.cc 1334257216 842
@@ -36,7 +36,7 @@ binary 16k/libfx_phdr.so 3984810021 3928
 binary 16k/libfx_reloc.so 3791239422 7856
 binary 16k/libfx_relr.so 1332105807 7896
 binary 16k/libfx_relro.so 3577260205 133944
-binary 16k/libfx_signals.so 725182356 12832
+binary 16k/libfx_signals.so 2474985398 20528
 binary 16k/libfx_threads.so 1367605756 36480
 binary 16k/libfx_unwind.so 2111063994 14768
 binary 4k/libfx_add.so 3908862174 2296
@@ -56,6 +56,6 @@ binary 4k/libfx_phdr.so 428991710 3928
 binary 4k/libfx_reloc.so 3575045801 7856
 binary 4k/libfx_relr.so 3903282435 7896
 binary 4k/libfx_relro.so 296619050 133944
-binary 4k/libfx_signals.so 3834526937 12832
+binary 4k/libfx_signals.so 3243650717 20528
 binary 4k/libfx_threads.so 1511378624 36480
 binary 4k/libfx_unwind.so 3617487528 14768

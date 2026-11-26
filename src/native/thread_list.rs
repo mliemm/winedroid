@@ -20,6 +20,7 @@ struct HostThread {
 static HOSTS: Mutex<BTreeMap<usize, HostThread>> = Mutex::new(BTreeMap::new());
 static NAMES: Mutex<BTreeMap<usize, [u8; COMM_BYTES]>> = Mutex::new(BTreeMap::new());
 static CLEAR_TIDS: Mutex<BTreeMap<usize, usize>> = Mutex::new(BTreeMap::new());
+static NICE: Mutex<BTreeMap<usize, i32>> = Mutex::new(BTreeMap::new());
 
 pub(super) fn hold_for_fork(held: &mut Vec<Box<dyn Any>>) {
     held.push(Box::new(
@@ -30,6 +31,9 @@ pub(super) fn hold_for_fork(held: &mut Vec<Box<dyn Any>>) {
     ));
     held.push(Box::new(
         CLEAR_TIDS.lock().unwrap_or_else(PoisonError::into_inner),
+    ));
+    held.push(Box::new(
+        NICE.lock().unwrap_or_else(PoisonError::into_inner),
     ));
 }
 
@@ -47,6 +51,19 @@ pub fn forget(record: usize) {
     HOSTS.lock().expect("thread hosts").remove(&record);
     NAMES.lock().expect("thread names").remove(&record);
     CLEAR_TIDS.lock().expect("clear tids").remove(&record);
+    NICE.lock().expect("thread nice").remove(&record);
+}
+
+pub fn set_nice(record: usize, nice: i32) {
+    NICE.lock().expect("thread nice").insert(record, nice);
+}
+
+pub fn nice_of(record: usize) -> i32 {
+    NICE.lock()
+        .expect("thread nice")
+        .get(&record)
+        .copied()
+        .unwrap_or(0)
 }
 
 pub fn set_clear_tid(record: usize, address: usize) {

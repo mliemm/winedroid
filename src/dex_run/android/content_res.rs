@@ -20,6 +20,15 @@ const ANDROID_RESOURCE_NAMESPACE: &str = "http://schemas.android.com/apk/res/and
 const CONFIGURATION_TOUCHSCREEN_NOTOUCH: i32 = 1;
 const CONFIGURATION_ORIENTATION_PORTRAIT: i32 = 1;
 const CONFIGURATION_ORIENTATION_LANDSCAPE: i32 = 2;
+const LAYOUT_DIRECTION_LTR: i32 = 0;
+const LAYOUT_DIRECTION_RTL: i32 = 1;
+const SCREENLAYOUT_SIZE_MASK: i32 = 0x0f;
+const SCREENLAYOUT_LONG_MASK: i32 = 0x30;
+const SCREENLAYOUT_LAYOUTDIR_MASK: i32 = 0xc0;
+const SCREENLAYOUT_LAYOUTDIR_SHIFT: i32 = 6;
+const SCREENLAYOUT_LAYOUTDIR_RTL: i32 = 0x80;
+const SCREENLAYOUT_ROUND_MASK: i32 = 0x300;
+const SCREENLAYOUT_COMPAT_NEEDED: i32 = 0x1000_0000;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(in crate::dex_run) enum ResolvedColorResource {
@@ -160,10 +169,20 @@ impl DexProgram {
         let receiver_key = instance_field_owner_key(&invocation.arguments[0])?;
         let delta_key = instance_field_owner_key(&invocation.arguments[1])?;
         let updates = self.configuration_field_updates(&delta_key);
-        let mut changed = 0;
+        let mut changed =
+            self.configuration_update_locale(&invocation.arguments[0], &invocation.arguments[1])?;
+        changed |= self
+            .configuration_update_screen_layout(&invocation.arguments[0], &invocation.arguments[1]);
         let mut runtime = self.runtime.borrow_mut();
 
         for (field_signature, value) in updates {
+            if matches!(
+                configuration_field_name(&field_signature),
+                Some("locale" | "mLocaleList" | "screenLayout")
+            ) {
+                continue;
+            }
+
             let field_key = (receiver_key.clone(), field_signature.clone());
             if runtime.field(&field_key.0, &field_key.1) == Some(&value) {
                 continue;
@@ -174,6 +193,232 @@ impl DexProgram {
         }
 
         Some(changed)
+    }
+
+    // cite: frameworks-base Configuration.java#setLocale, setLocales
+    pub(in crate::dex_run) fn configuration_set_locale(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<()> {
+        let [configuration, locale] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        if !dex_value_is_object_like(configuration) {
+            return None;
+        }
+        let locale = match locale {
+            DexValue::Int(0) => DexValue::Null,
+            locale => locale.clone(),
+        };
+
+        self.configuration_store_locale(configuration, locale)
+    }
+
+    fn configuration_store_locale(&self, configuration: &DexValue, locale: DexValue) -> Option<()> {
+        let direction = self.layout_direction_from_locale(&locale)?;
+        let list = self.new_single_locale_list(&locale);
+
+        self.write_stored_instance_field(configuration, &configuration_locale_field(), locale);
+        self.write_stored_instance_field(configuration, &configuration_locale_list_field(), list);
+        // cite: frameworks-base Configuration.java#setLayoutDirection, SCREENLAYOUT_LAYOUTDIR_MASK, SCREENLAYOUT_LAYOUTDIR_SHIFT
+        let screen_layout = self.configuration_screen_layout(configuration);
+        self.write_stored_instance_field(
+            configuration,
+            &configuration_int_field("screenLayout"),
+            DexValue::Int(
+                (screen_layout & !SCREENLAYOUT_LAYOUTDIR_MASK)
+                    | ((1 + direction) << SCREENLAYOUT_LAYOUTDIR_SHIFT),
+            ),
+        );
+
+        Some(())
+    }
+
+    // cite: frameworks-base TextUtils.java#getLayoutDirectionFromLocale
+    // cite: cts TextUtilsTest.java#testGetLayoutDirectionFromLocale
+    fn layout_direction_from_locale(&self, locale: &DexValue) -> Option<i32> {
+        if *locale == DexValue::Null {
+            return Some(LAYOUT_DIRECTION_LTR);
+        }
+        let parts = self.locale_parts_of(locale)?;
+        if parts == Default::default() {
+            return Some(LAYOUT_DIRECTION_LTR);
+        }
+
+        match (parts.script.as_str(), parts.language.as_str()) {
+            ("Arab", _) | ("", "ar" | "fa" | "iw" | "ps" | "ur") => Some(LAYOUT_DIRECTION_RTL),
+            ("", "de" | "en" | "fr" | "it" | "ja" | "ko" | "zh" | "zz") => {
+                Some(LAYOUT_DIRECTION_LTR)
+            }
+            _ => None,
+        }
+    }
+
+    // cite: frameworks-base LocaleList.java#mList
+    fn new_single_locale_list(&self, locale: &DexValue) -> DexValue {
+        let locales = match locale {
+            DexValue::Null => Vec::new(),
+            locale => vec![locale.clone()],
+        };
+        let array = self.allocate_filled_array("[Ljava/util/Locale;".to_owned(), locales);
+        let list = self.allocate_object("Landroid/os/LocaleList;".to_owned());
+        self.write_stored_instance_field(&list, &locale_list_array_field(), array);
+
+        list
+    }
+
+    pub(in crate::dex_run) fn locale_list_array(&self, list: &DexValue) -> Option<DexValue> {
+        self.read_stored_instance_field(list, &locale_list_array_field())
+    }
+
+    // cite: frameworks-base LocaleList.java#get, size, isEmpty, toLanguageTags
+    pub(in crate::dex_run) fn stored_locale_list_call(
+        &self,
+        method: &DexMethodId,
+        invocation: &DexInvocation,
+        array: &DexValue,
+    ) -> Option<DexExecutionResult> {
+        let size = self.array_length(array)?;
+
+        match (method.name.as_str(), method.proto.descriptor().as_str()) {
+            ("size", "()I") => Some(DexExecutionResult::Int(size)),
+            ("isEmpty", "()Z") => Some(DexExecutionResult::Int(i32::from(size == 0))),
+            ("get", "(I)Ljava/util/Locale;") => {
+                let [_, DexValue::Int(index)] = invocation.arguments.as_slice() else {
+                    return None;
+                };
+                let locale = self
+                    .read_array_value(array, *index)
+                    .unwrap_or(DexValue::Null);
+
+                Some(DexExecutionResult::Value(locale))
+            }
+            ("toLanguageTags", "()Ljava/lang/String;") if size == 0 => Some(
+                DexExecutionResult::Value(DexValue::String(std::rc::Rc::from(""))),
+            ),
+            _ => None,
+        }
+    }
+
+    // cite: frameworks-base Configuration.java#getLocales, fixUpLocaleList
+    pub(in crate::dex_run) fn configuration_get_locales(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexValue> {
+        let [configuration] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        let locale = self.read_stored_instance_field(configuration, &configuration_locale_field());
+        let list =
+            self.read_stored_instance_field(configuration, &configuration_locale_list_field());
+        if locale.is_none() && list.is_none() {
+            return Some(DexValue::Reference(std::rc::Rc::from(
+                "Landroid/os/LocaleList;.bootstrap",
+            )));
+        }
+        let locale = locale.unwrap_or(DexValue::Null);
+        if let Some(list) = list {
+            let array = self.locale_list_array(&list)?;
+            let first = self.read_array_value(&array, 0).unwrap_or(DexValue::Null);
+            if self.same_locale(&first, &locale) {
+                return Some(list);
+            }
+        }
+        let list = self.new_single_locale_list(&locale);
+        self.write_stored_instance_field(
+            configuration,
+            &configuration_locale_list_field(),
+            list.clone(),
+        );
+
+        Some(list)
+    }
+
+    // cite: libcore Locale.java#equals
+    fn same_locale(&self, left: &DexValue, right: &DexValue) -> bool {
+        left == right
+            || matches!(
+                (self.locale_parts_of(left), self.locale_parts_of(right)),
+                (Some(left), Some(right)) if left == right
+            )
+    }
+
+    // cite: frameworks-base Configuration.java#getLayoutDirection, SCREENLAYOUT_LAYOUTDIR_RTL
+    pub(in crate::dex_run) fn configuration_layout_direction(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<i32> {
+        let [configuration] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        let direction =
+            self.configuration_screen_layout(configuration) & SCREENLAYOUT_LAYOUTDIR_MASK;
+
+        Some(if direction == SCREENLAYOUT_LAYOUTDIR_RTL {
+            LAYOUT_DIRECTION_RTL
+        } else {
+            LAYOUT_DIRECTION_LTR
+        })
+    }
+
+    fn configuration_screen_layout(&self, configuration: &DexValue) -> i32 {
+        match self
+            .read_stored_instance_field(configuration, &configuration_int_field("screenLayout"))
+        {
+            Some(DexValue::Int(screen_layout)) => screen_layout,
+            _ => 0,
+        }
+    }
+
+    // cite: frameworks-base Configuration.java#updateFrom
+    fn configuration_update_locale(&self, receiver: &DexValue, delta: &DexValue) -> Option<i32> {
+        let Some(locale) = self.read_stored_instance_field(delta, &configuration_locale_field())
+        else {
+            return Some(0);
+        };
+        if !dex_value_is_object_like(&locale) {
+            return Some(0);
+        }
+        let current = self.read_stored_instance_field(receiver, &configuration_locale_field());
+        if current.is_some_and(|current| self.same_locale(&current, &locale)) {
+            return Some(0);
+        }
+        self.configuration_store_locale(receiver, locale)?;
+
+        Some(CONFIG_LOCALE | CONFIG_LAYOUT_DIRECTION)
+    }
+
+    // cite: frameworks-base Configuration.java#updateFrom, SCREENLAYOUT_SIZE_MASK, SCREENLAYOUT_LONG_MASK, SCREENLAYOUT_ROUND_MASK, SCREENLAYOUT_COMPAT_NEEDED
+    fn configuration_update_screen_layout(&self, receiver: &DexValue, delta: &DexValue) -> i32 {
+        let delta = self.configuration_screen_layout(delta);
+        if delta == 0 {
+            return 0;
+        }
+        let mut screen_layout = self.configuration_screen_layout(receiver);
+        let mut changed = 0;
+        for (mask, change) in [
+            (SCREENLAYOUT_LAYOUTDIR_MASK, CONFIG_LAYOUT_DIRECTION),
+            (SCREENLAYOUT_SIZE_MASK, CONFIG_SCREEN_LAYOUT),
+            (SCREENLAYOUT_LONG_MASK, CONFIG_SCREEN_LAYOUT),
+            (SCREENLAYOUT_ROUND_MASK, CONFIG_SCREEN_LAYOUT),
+            (SCREENLAYOUT_COMPAT_NEEDED, CONFIG_SCREEN_LAYOUT),
+        ] {
+            let bits = delta & mask;
+            let defined = bits != 0 || mask == SCREENLAYOUT_COMPAT_NEEDED;
+            if defined && bits != screen_layout & mask {
+                screen_layout = (screen_layout & !mask) | bits;
+                changed |= change;
+            }
+        }
+        if changed != 0 {
+            self.write_stored_instance_field(
+                receiver,
+                &configuration_int_field("screenLayout"),
+                DexValue::Int(screen_layout),
+            );
+        }
+
+        changed
     }
 
     fn configuration_field_updates(&self, delta_key: &str) -> Vec<(String, DexValue)> {
@@ -4216,13 +4461,11 @@ fn configuration_change_mask(field_signature: &str) -> i32 {
         Some("fontScale") => CONFIG_FONT_SCALE,
         Some("mcc") => CONFIG_MCC,
         Some("mnc") => CONFIG_MNC,
-        Some("locale" | "mLocaleList") => CONFIG_LOCALE | CONFIG_LAYOUT_DIRECTION,
         Some("touchscreen") => CONFIG_TOUCHSCREEN,
         Some("keyboard") => CONFIG_KEYBOARD,
         Some("keyboardHidden" | "hardKeyboardHidden") => CONFIG_KEYBOARD_HIDDEN,
         Some("navigation" | "navigationHidden") => CONFIG_NAVIGATION,
         Some("orientation") => CONFIG_ORIENTATION,
-        Some("screenLayout") => CONFIG_SCREEN_LAYOUT | CONFIG_LAYOUT_DIRECTION,
         Some("colorMode") => CONFIG_COLOR_MODE,
         Some("uiMode") => CONFIG_UI_MODE,
         Some(
@@ -4247,6 +4490,30 @@ fn configuration_font_scale_field() -> DexFieldId {
 
 fn configuration_ui_mode_field() -> DexFieldId {
     configuration_int_field("uiMode")
+}
+
+fn configuration_locale_field() -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Landroid/content/res/Configuration;".to_owned(),
+        type_descriptor: "Ljava/util/Locale;".to_owned(),
+        name: "locale".to_owned(),
+    }
+}
+
+fn configuration_locale_list_field() -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Landroid/content/res/Configuration;".to_owned(),
+        type_descriptor: "Landroid/os/LocaleList;".to_owned(),
+        name: "mLocaleList".to_owned(),
+    }
+}
+
+fn locale_list_array_field() -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Landroid/os/LocaleList;".to_owned(),
+        type_descriptor: "[Ljava/util/Locale;".to_owned(),
+        name: "mList".to_owned(),
+    }
 }
 
 fn configuration_int_field(name: &str) -> DexFieldId {

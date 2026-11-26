@@ -3169,7 +3169,7 @@ fn zone_id_id_field() -> DexFieldId {
     }
 }
 
-fn host_default_zone_id() -> String {
+pub(super) fn host_default_zone_id() -> String {
     if let Ok(tz) = std::env::var("TZ") {
         if !tz.is_empty() {
             return tz;

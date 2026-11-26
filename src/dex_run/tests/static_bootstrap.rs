@@ -1105,3 +1105,29 @@ fn libcore_enum_equals_is_reference_identity() {
         Some(DexExecutionResult::Int(0))
     );
 }
+
+#[test]
+// cite: frameworks-base Build.java#SUPPORTED_ABIS, getStringList
+fn frameworks_build_supported_abis_splits_the_device_abi_list_once() {
+    let program = DexProgram::new(Vec::new());
+    let field = DexFieldId {
+        class_descriptor: "Landroid/os/Build;".to_owned(),
+        type_descriptor: "[Ljava/lang/String;".to_owned(),
+        name: "SUPPORTED_ABIS".to_owned(),
+    };
+
+    program
+        .ensure_class_initialized_synchronously("Landroid/os/Build;", 0)
+        .unwrap();
+    let abis = program.read_stored_static_field(&field).unwrap();
+    program
+        .ensure_class_initialized_synchronously("Landroid/os/Build;", 0)
+        .unwrap();
+
+    assert_eq!(program.read_stored_static_field(&field), Some(abis.clone()));
+    assert_eq!(program.array_length(&abis), Some(1));
+    assert_eq!(
+        program.read_array_value(&abis, 0),
+        Some(DexValue::String(std::rc::Rc::from("arm64-v8a")))
+    );
+}

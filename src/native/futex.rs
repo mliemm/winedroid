@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::bionic::abs_timeout::Deadline;
+use super::bionic::setjmp;
 use super::{signal_router, signal_state};
 
 pub const MATCH_ANY: u32 = 0xFFFF_FFFF;
@@ -151,6 +152,7 @@ pub fn wait(address: usize, expected: u32, bitset: u32, deadline: Option<Deadlin
         Parked::Expired if leave_queue(&waiter) => -ETIMEDOUT,
         Parked::Interrupted if leave_queue(&waiter) => {
             signal_router::deliver_pending();
+            setjmp::settle();
             -EINTR
         }
         Parked::Expired | Parked::Interrupted => 0,

@@ -104,6 +104,43 @@ impl<'a> Frame<'a> {
         self.exception.borrow().clone()
     }
 
+    fn initialize_class(&self, class: &str) -> Result<bool> {
+        match self
+            .program
+            .ensure_class_initialized(class, self.depth + 1)?
+        {
+            ClassInitializationResult::Complete => Ok(true),
+            ClassInitializationResult::Throw(exception) => {
+                *self.exception.borrow_mut() = Some(exception);
+                Ok(false)
+            }
+            ClassInitializationResult::Parked(execution) => {
+                self.program.discard_parked_execution(&execution);
+                Err(WinedroidError::new(
+                    "next missing primitive: JNI class initialization that parks",
+                ))
+            }
+        }
+    }
+
+    fn static_field(&self, id: usize, kind: u8) -> Result<DexFieldId> {
+        let field = id
+            .checked_sub(1)
+            .and_then(|index| self.program.jni.field_ids.borrow().get(index).cloned())
+            .ok_or_else(|| WinedroidError::new("unknown JNI static field ID"))?;
+        let actual = match field.type_descriptor.as_bytes().first() {
+            Some(b'[') => Some(b'L'),
+            first => first.copied(),
+        };
+        if actual != Some(kind) {
+            return Err(WinedroidError::new(format!(
+                "JNI static field {} accessed with the wrong type",
+                field.display_signature()
+            )));
+        }
+        Ok(field)
+    }
+
     fn throw(&self, class: &str, detail: String) {
         let exception = self
             .program
@@ -184,6 +221,25 @@ fn env_table() -> &'static [usize; 233] {
             (62, "CallVoidMethodV", call_void_method_v),
             (33, "GetMethodID", get_method_id),
             (113, "GetStaticMethodID", get_static_method_id),
+            (144, "GetStaticFieldID", get_static_field_id),
+            (145, "GetStaticObjectField", get_static_field::<b'L'>),
+            (146, "GetStaticBooleanField", get_static_field::<b'Z'>),
+            (147, "GetStaticByteField", get_static_field::<b'B'>),
+            (148, "GetStaticCharField", get_static_field::<b'C'>),
+            (149, "GetStaticShortField", get_static_field::<b'S'>),
+            (150, "GetStaticIntField", get_static_field::<b'I'>),
+            (151, "GetStaticLongField", get_static_field::<b'J'>),
+            (152, "GetStaticFloatField", get_static_field::<b'F'>),
+            (153, "GetStaticDoubleField", get_static_field::<b'D'>),
+            (154, "SetStaticObjectField", set_static_field::<b'L'>),
+            (155, "SetStaticBooleanField", set_static_field::<b'Z'>),
+            (156, "SetStaticByteField", set_static_field::<b'B'>),
+            (157, "SetStaticCharField", set_static_field::<b'C'>),
+            (158, "SetStaticShortField", set_static_field::<b'S'>),
+            (159, "SetStaticIntField", set_static_field::<b'I'>),
+            (160, "SetStaticLongField", set_static_field::<b'J'>),
+            (161, "SetStaticFloatField", set_static_field::<b'F'>),
+            (162, "SetStaticDoubleField", set_static_field::<b'D'>),
             (167, "NewStringUTF", new_string_utf),
             (169, "GetStringUTFChars", get_string_utf_chars),
             (170, "ReleaseStringUTFChars", release_string_utf_chars),
@@ -345,22 +401,9 @@ fn method_id(context: &mut CallContext, is_static: bool) {
             context.ret_ptr(0);
             return Ok(());
         };
-        match frame
-            .program
-            .ensure_class_initialized(&class, frame.depth + 1)?
-        {
-            ClassInitializationResult::Complete => {}
-            ClassInitializationResult::Throw(exception) => {
-                *frame.exception.borrow_mut() = Some(exception);
-                context.ret_ptr(0);
-                return Ok(());
-            }
-            ClassInitializationResult::Parked(execution) => {
-                frame.program.discard_parked_execution(&execution);
-                return Err(WinedroidError::new(
-                    "next missing primitive: JNI class initialization that parks",
-                ));
-            }
+        if !frame.initialize_class(&class)? {
+            context.ret_ptr(0);
+            return Ok(());
         }
         let mut ids = frame.program.jni.method_ids.borrow_mut();
         let next = ids.len() + 1;
@@ -372,6 +415,103 @@ fn method_id(context: &mut CallContext, is_static: bool) {
             .borrow_mut()
             .insert(id, method);
         context.ret_ptr(id);
+        Ok(())
+    });
+}
+
+fn get_static_field_id(context: &mut CallContext) {
+    // cite: art jni_internal.cc#GetStaticFieldID, FindFieldJNI
+    with_env(context, |frame, context| {
+        let class = frame.class(context.arg_ptr(1))?;
+        let name = bounded_name(context.arg_ptr(2))?;
+        let signature = bounded_name(context.arg_ptr(3))?;
+        if !frame.initialize_class(&class)? {
+            context.ret_ptr(0);
+            return Ok(());
+        }
+        let Some(field) = frame
+            .program
+            .find_jni_static_field(&class, &name, &signature)?
+        else {
+            frame.throw(
+                "Ljava/lang/NoSuchFieldError;",
+                format!(
+                    "no \"{signature}\" field \"{name}\" in class \"{class}\" or its superclasses"
+                ),
+            );
+            context.ret_ptr(0);
+            return Ok(());
+        };
+        let mut fields = frame.program.jni.field_ids.borrow_mut();
+        let index = fields
+            .iter()
+            .position(|known| *known == field)
+            .unwrap_or_else(|| {
+                fields.push(field);
+                fields.len() - 1
+            });
+        context.ret_ptr(index + 1);
+        Ok(())
+    });
+}
+
+fn get_static_field<const KIND: u8>(context: &mut CallContext) {
+    // cite: art jni_internal.cc#GetStaticObjectField, GET_STATIC_PRIMITIVE_FIELD
+    with_env(context, |frame, context| {
+        let field = frame.static_field(context.arg_ptr(2), KIND)?;
+        let value = frame
+            .program
+            .read_stored_static_field(&field)
+            .or_else(|| bootstrap_static_field(&field))
+            .or_else(|| default_field_value(&field));
+        match (KIND, value) {
+            (
+                b'L',
+                Some(
+                    value @ (DexValue::Null
+                    | DexValue::Int(0)
+                    | DexValue::String(_)
+                    | DexValue::Object(_)
+                    | DexValue::Reference(_)),
+                ),
+            ) => context.ret_ptr(frame.reference(value)),
+            (b'Z', Some(DexValue::Int(value))) => context.ret_u32(u32::from(value as u8)),
+            (b'B', Some(DexValue::Int(value))) => context.ret_i32(i32::from(value as i8)),
+            (b'C', Some(DexValue::Int(value))) => context.ret_u32(u32::from(value as u16)),
+            (b'S', Some(DexValue::Int(value))) => context.ret_i32(i32::from(value as i16)),
+            (b'I', Some(DexValue::Int(value))) => context.ret_i32(value),
+            (b'J', Some(DexValue::Long(value))) => context.ret_i64(value),
+            (b'F', Some(DexValue::Float(value))) => context.ret_f32(value),
+            (b'F', Some(DexValue::Int(bits))) => context.ret_f32(f32::from_bits(bits as u32)),
+            (b'D', Some(DexValue::Long(bits))) => context.ret_f64(f64::from_bits(bits as u64)),
+            (_, value) => {
+                return Err(WinedroidError::new(format!(
+                    "next missing primitive: JNI static field {} holding {value:?}",
+                    field.display_signature()
+                )))
+            }
+        }
+        Ok(())
+    });
+}
+
+fn set_static_field<const KIND: u8>(context: &mut CallContext) {
+    // cite: art jni_internal.cc#SetStaticObjectField, SET_STATIC_PRIMITIVE_FIELD
+    with_env(context, |frame, context| {
+        let field = frame.static_field(context.arg_ptr(2), KIND)?;
+        let bits = context.arg_u64(3);
+        let value = match KIND {
+            b'Z' => DexValue::Int(i32::from(bits as u8)),
+            b'B' => DexValue::Int(i32::from(bits as i8)),
+            b'C' => DexValue::Int(i32::from(bits as u16)),
+            b'S' => DexValue::Int(i32::from(bits as i16)),
+            b'I' => DexValue::Int(bits as i32),
+            b'J' => DexValue::Long(bits as i64),
+            b'F' => DexValue::Float(context.arg_f32(0)),
+            b'D' => DexValue::Long(context.arg_f64(0).to_bits() as i64),
+            _ => frame.value(context.arg_ptr(3))?,
+        };
+        frame.program.write_stored_static_field(&field, value);
         Ok(())
     });
 }
@@ -859,5 +999,181 @@ mod tests {
                     .i32(0)
             )
             .is_err());
+    }
+
+    const STATICS: &str = "Lwinedroid/tests/JniStatics;";
+
+    fn statics() -> DexProgram {
+        let dex = dex::parse_dex_file(
+            "jni_static_fields.dex",
+            include_bytes!("../tests/fixtures/jni_static_fields.dex").to_vec(),
+        )
+        .unwrap();
+        DexProgram::new(vec![dex])
+    }
+
+    fn static_field_id(
+        frame: &Frame<'_>,
+        class: &str,
+        name: &str,
+        signature: &str,
+    ) -> Result<usize> {
+        let name = std::ffi::CString::new(name).unwrap();
+        let signature = std::ffi::CString::new(signature).unwrap();
+        let call = CallBuilder::new(env_table()[144])
+            .ptr(env_pointer())
+            .ptr(frame.class_reference(class))
+            .ptr(name.as_ptr() as usize)
+            .ptr(signature.as_ptr() as usize);
+        Ok(frame.call(call)?.u64() as usize)
+    }
+
+    fn static_access(slot: usize, id: usize) -> CallBuilder {
+        CallBuilder::new(env_table()[slot])
+            .ptr(env_pointer())
+            .ptr(0)
+            .ptr(id)
+    }
+
+    #[test]
+    fn art_get_static_field_reads_every_jni_type_from_the_declaring_class() {
+        // cite: art jni_internal.cc#GetStaticFieldID, GetStaticObjectField, GET_STATIC_PRIMITIVE_FIELD
+        // cite: art class.cc#FindStaticField
+        let program = statics();
+        let frame = Frame::new(&program, 0);
+        let get = |slot, name, signature| {
+            let id = static_field_id(&frame, STATICS, name, signature).unwrap();
+            assert_ne!(id, 0, "{name}");
+            frame.call(static_access(slot, id)).unwrap()
+        };
+        let object = |name, signature| {
+            let handle = get(145, name, signature).u64() as usize;
+            frame.value(handle).unwrap()
+        };
+
+        assert_eq!(get(146, "flag", "Z").u64() as u8, 1);
+        assert_eq!(get(147, "small", "B").u64() as i8, -2);
+        assert_eq!(get(148, "letter", "C").u64() as u16, u16::from(b'w'));
+        assert_eq!(get(149, "half", "S").u64() as i16, -300);
+        assert_eq!(get(150, "count", "I").i32(), 7);
+        assert_eq!(get(151, "big", "J").u64(), 0x1_0000_0002);
+        assert_eq!(get(152, "ratio", "F").f32(), 1.5);
+        assert_eq!(get(153, "precise", "D").f64(), 0.0);
+        let ratio = static_field_id(&frame, STATICS, "ratio", "F").unwrap();
+        program.write_stored_static_field(
+            &program.jni.field_ids.borrow()[ratio - 1].clone(),
+            DexValue::Int(0x4020_0000),
+        );
+        assert_eq!(get(152, "ratio", "F").f32(), 2.5);
+        assert_eq!(
+            object("text", "Ljava/lang/String;"),
+            DexValue::String(Rc::from("dex"))
+        );
+        assert_eq!(
+            object("inherited", "Ljava/lang/String;"),
+            DexValue::String(Rc::from("base"))
+        );
+        assert_eq!(object("numbers", "[I"), DexValue::Null);
+        assert_ne!(
+            static_field_id(&frame, STATICS, "LIMIT", "I").unwrap(),
+            0,
+            "interface field"
+        );
+        assert_eq!(
+            static_field_id(&frame, STATICS, "count", "I").unwrap(),
+            static_field_id(&frame, STATICS, "count", "I").unwrap()
+        );
+    }
+
+    #[test]
+    fn art_set_static_field_stores_every_jni_type_in_the_declaring_class() {
+        // cite: art jni_internal.cc#SetStaticObjectField, SET_STATIC_PRIMITIVE_FIELD
+        let program = statics();
+        let frame = Frame::new(&program, 0);
+        let set = |slot, name: &str, signature: &str, value: fn(CallBuilder) -> CallBuilder| {
+            let id = static_field_id(&frame, STATICS, name, signature).unwrap();
+            frame.call(value(static_access(slot, id))).unwrap();
+            program.read_stored_static_field(&DexFieldId {
+                class_descriptor: STATICS.to_owned(),
+                type_descriptor: signature.to_owned(),
+                name: name.to_owned(),
+            })
+        };
+
+        assert_eq!(
+            set(155, "flag", "Z", |call| call.int(0x100)),
+            Some(DexValue::Int(0))
+        );
+        assert_eq!(
+            set(156, "small", "B", |call| call.int(0xff)),
+            Some(DexValue::Int(-1))
+        );
+        assert_eq!(
+            set(157, "letter", "C", |call| call.int(0x1_ffff)),
+            Some(DexValue::Int(0xffff))
+        );
+        assert_eq!(
+            set(158, "half", "S", |call| call.int(0x8000)),
+            Some(DexValue::Int(-0x8000))
+        );
+        assert_eq!(
+            set(159, "count", "I", |call| call.i32(-5)),
+            Some(DexValue::Int(-5))
+        );
+        assert_eq!(
+            set(160, "big", "J", |call| call.int(u64::MAX - 1)),
+            Some(DexValue::Long(-2))
+        );
+        assert_eq!(
+            set(161, "ratio", "F", |call| call.f32(2.5)),
+            Some(DexValue::Float(2.5))
+        );
+        assert_eq!(
+            set(162, "precise", "D", |call| call.f64(-0.5)),
+            Some(DexValue::Long((-0.5f64).to_bits() as i64))
+        );
+        assert_eq!(
+            set(154, "text", "Ljava/lang/String;", |call| call.ptr(0)),
+            Some(DexValue::Null)
+        );
+        let text = static_field_id(&frame, STATICS, "text", "Ljava/lang/String;").unwrap();
+        let value = frame.reference(DexValue::String(Rc::from("native")));
+        frame.call(static_access(154, text).ptr(value)).unwrap();
+        let read = frame.call(static_access(145, text)).unwrap().u64() as usize;
+        assert_eq!(
+            frame.value(read).unwrap(),
+            DexValue::String(Rc::from("native"))
+        );
+    }
+
+    #[test]
+    fn art_static_field_access_refuses_absent_unmodelled_and_mistyped_fields() {
+        // cite: art jni_internal.cc#FindFieldJNI, GetStaticFieldID
+        let program = statics();
+        let frame = Frame::new(&program, 0);
+        for (name, signature) in [("count", "J"), ("instance", "I"), ("absent", "I")] {
+            assert_eq!(
+                static_field_id(&frame, STATICS, name, signature).unwrap(),
+                0,
+                "{name}"
+            );
+            assert!(program.value_matches_type(
+                &frame.exception.borrow_mut().take().unwrap(),
+                "Ljava/lang/NoSuchFieldError;"
+            ));
+        }
+        let sdk = static_field_id(&frame, "Landroid/os/Build$VERSION;", "SDK_INT", "I").unwrap();
+        assert_eq!(
+            Some(DexValue::Int(
+                frame.call(static_access(150, sdk)).unwrap().i32()
+            )),
+            bootstrap_static_field(&program.jni.field_ids.borrow()[sdk - 1])
+        );
+        assert!(static_field_id(&frame, "Ljava/lang/Thread;", "absent", "I").is_err());
+        let count = static_field_id(&frame, STATICS, "count", "I").unwrap();
+        assert!(frame.call(static_access(151, count)).is_err());
+        for id in [0, usize::MAX] {
+            assert!(frame.call(static_access(150, id)).is_err());
+        }
     }
 }

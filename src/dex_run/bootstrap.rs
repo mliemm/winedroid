@@ -277,6 +277,35 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         // cite: libcore ExecutionException.java#ExecutionException
         "Ljava/util/concurrent/ExecutionException;" => Some("Ljava/lang/Exception;"),
         "Ljava/io/IOException;" => Some("Ljava/lang/Exception;"),
+        // cite: libcore ZipException.java#ZipException
+        // cite: libcore EOFException.java#EOFException
+        "Ljava/util/zip/ZipException;" | "Ljava/io/EOFException;" => Some("Ljava/io/IOException;"),
+        // cite: libcore NoSuchElementException.java#NoSuchElementException
+        "Ljava/util/NoSuchElementException;" => Some("Ljava/lang/RuntimeException;"),
+        // cite: libcore ZipFile.java#ZipFile, ZipEntryIterator
+        // cite: libcore ZipEntry.java#ZipEntry
+        // cite: libcore CRC32.java#CRC32
+        // cite: libcore InputStream.java#InputStream
+        "Ljava/util/zip/ZipFile;"
+        | "Ljava/util/zip/ZipFile$ZipEntryIterator;"
+        | "Ljava/util/zip/ZipEntry;"
+        | "Ljava/util/zip/CRC32;"
+        | "Ljava/io/InputStream;" => Some("Ljava/lang/Object;"),
+        // cite: libcore FileInputStream.java#FileInputStream
+        // cite: libcore FilterInputStream.java#FilterInputStream
+        // cite: libcore ZipFile.java#ZipFileInputStream
+        "Ljava/io/FileInputStream;"
+        | "Ljava/io/FilterInputStream;"
+        | "Ljava/util/zip/ZipFile$ZipFileInputStream;" => Some("Ljava/io/InputStream;"),
+        // cite: libcore CheckedInputStream.java#CheckedInputStream
+        // cite: libcore InflaterInputStream.java#InflaterInputStream
+        "Ljava/util/zip/CheckedInputStream;" | "Ljava/util/zip/InflaterInputStream;" => {
+            Some("Ljava/io/FilterInputStream;")
+        }
+        // cite: libcore ZipFile.java#ZipFileInflaterInputStream
+        "Ljava/util/zip/ZipFile$ZipFileInflaterInputStream;" => {
+            Some("Ljava/util/zip/InflaterInputStream;")
+        }
         // cite: libcore UnknownHostException.java#UnknownHostException
         "Ljava/net/UnknownHostException;" => Some("Ljava/io/IOException;"),
         "Ljava/lang/reflect/Constructor;" => Some("Ljava/lang/reflect/Executable;"),
@@ -443,6 +472,19 @@ pub(super) fn bootstrap_direct_interface_descriptors(
             "Ljava/lang/invoke/TypeDescriptor$OfField;",
             "Ljava/io/Serializable;",
         ],
+        // cite: libcore ZipFile.java#ZipFile
+        // cite: libcore InputStream.java#InputStream
+        "Ljava/util/zip/ZipFile;" | "Ljava/io/InputStream;" => &["Ljava/io/Closeable;"],
+        // cite: libcore Closeable.java#Closeable
+        "Ljava/io/Closeable;" => &["Ljava/lang/AutoCloseable;"],
+        // cite: libcore CRC32.java#CRC32
+        "Ljava/util/zip/CRC32;" => &["Ljava/util/zip/Checksum;"],
+        // cite: libcore ZipEntry.java#ZipEntry
+        "Ljava/util/zip/ZipEntry;" => &["Ljava/lang/Cloneable;"],
+        // cite: libcore ZipFile.java#ZipEntryIterator
+        "Ljava/util/zip/ZipFile$ZipEntryIterator;" => {
+            &["Ljava/util/Enumeration;", "Ljava/util/Iterator;"]
+        }
         // cite: libcore GenericDeclaration.java#GenericDeclaration
         "Ljava/lang/reflect/GenericDeclaration;" => &["Ljava/lang/reflect/AnnotatedElement;"],
         // cite: libcore TypeDescriptor.java#OfField

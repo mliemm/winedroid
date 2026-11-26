@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Mutex;
 
 use super::bionic::guest_mem::write_value;
+use super::bionic::setjmp;
 use super::call_assign::CallBuilder;
 use super::data_fault;
 use super::guest_thread::current_record;
@@ -263,12 +264,17 @@ fn deliver(delivery: &Delivery, context: Option<usize>) {
     let call = CallBuilder::new(action.handler as usize)
         .i32(signal)
         .ptr(frame + SIGINFO_OFFSET)
-        .ptr(frame + UCONTEXT_OFFSET);
+        .ptr(frame + UCONTEXT_OFFSET)
+        .signal_handler();
     let call = match handler_stack {
         Some(top) => call.on_stack(top),
         None => call,
     };
-    if let Err(error) = call.invoke() {
+    let outcome = call.invoke();
+    if setjmp::jumping() {
+        return leave_by_jump(context);
+    }
+    if let Err(error) = outcome {
         host_log::line(&format!("FIXME: guest signal handler for signal {signal} failed: {error}; next missing primitive: guest signal handler failure"));
         std::process::abort();
     }
@@ -284,13 +290,31 @@ fn deliver(delivery: &Delivery, context: Option<usize>) {
     }
 }
 
+fn leave_by_jump(context: Option<usize>) {
+    let Some(context) = context else {
+        return apply_darwin_mask(mask());
+    };
+    let sp = setjmp::resume_stack_pointer()
+        .unwrap_or_else(|| signal_frame::interrupted_sp(context) & !15);
+    signal_frame::redirect(
+        context,
+        setjmp::settle as extern "C" fn() as usize as u64,
+        sp,
+    );
+    signal_frame::restore_darwin_mask(context, mask());
+    super::signal_state::set_in_guest(false);
+}
+
 pub fn apply_darwin_mask(linux_mask: u64) {
     let host: libc::sigset_t = to_darwin_mask(linux_mask);
     unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &host, std::ptr::null_mut()) };
 }
 
 pub fn deliver_pending() {
-    while let Some(signal) = take_deliverable() {
+    while !setjmp::jumping() {
+        let Some(signal) = take_deliverable() else {
+            return;
+        };
         let code = if take_thread_directed(signal) {
             SI_TKILL
         } else {

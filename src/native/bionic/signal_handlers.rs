@@ -17,6 +17,7 @@ use super::abi_types::EINVAL;
 use super::current_thread;
 use super::export::in_libc;
 use super::guest_mem::{read_value, write_value};
+use super::setjmp;
 
 const ESRCH: i32 = 3;
 const EPERM: i32 = 1;
@@ -102,6 +103,11 @@ fn process_mask(how: i32, new: Option<u64>, old: Option<usize>) -> Result<(), i3
     Ok(())
 }
 
+pub fn set_signal_mask(mask: u64) {
+    // cite: bionic sigprocmask.cpp#sigprocmask
+    let _ = process_mask(SIG_SETMASK, Some(mask), None);
+}
+
 fn suspend(temporary: u64) {
     // cite: bionic signal.cpp#sigsuspend64
     let previous = signal_state::mask();
@@ -111,6 +117,9 @@ fn suspend(temporary: u64) {
         unsafe { libc::sigsuspend(&host) };
     }
     signal_router::deliver_pending();
+    if setjmp::jumping() {
+        return;
+    }
     set_mask(previous);
     signal_router::apply_darwin_mask(signal_state::mask());
 }

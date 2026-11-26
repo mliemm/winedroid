@@ -1,12 +1,15 @@
 use std::ffi::CString;
 use std::sync::OnceLock;
 
-use super::abi_types::{EINVAL, ENAMETOOLONG, ENOENT, PAGE_SIZE, UTSNAME_FIELD, UTSNAME_SIZE};
+use super::abi_types::{
+    EFAULT, EINVAL, ENAMETOOLONG, ENOENT, PAGE_SIZE, UTSNAME_FIELD, UTSNAME_SIZE,
+};
 use super::device_profile::{
     APP_GID, APP_UID, DOMAIN_NAME, HOST_NAME, KERNEL_RELEASE, KERNEL_VERSION,
 };
 use super::export::in_libc;
 use super::guest_mem::write_bytes;
+use super::host_stats;
 use super::sysconf_table::CONSTANTS;
 
 pub const AT_FLAGS: u64 = 8;
@@ -25,6 +28,10 @@ const CLOCK_TICKS: i64 = 100;
 const ARG_MAX_FLOOR: u64 = 131072;
 const STACK_DEFAULT: u64 = 8_388_608;
 const OPEN_FILES_TARGET: u64 = 32768;
+
+// cite: bionic sysinfo.h#sysinfo, SI_LOAD_SHIFT
+const SYSINFO_SIZE: usize = 112;
+const LOAD_SCALE: f64 = 65536.0;
 
 const HWCAP: &[(u32, &str)] = &[
     (0, "hw.optional.AdvSIMD"),
@@ -199,6 +206,28 @@ fn write_utsname(address: usize) {
     write_bytes(address, &block);
 }
 
+fn write_sysinfo(address: usize) {
+    // cite: bionic sysinfo.h#sysinfo
+    let memory = host_stats::memory();
+    let loads = host_stats::load_average().map(|load| (load * LOAD_SCALE) as u64);
+    let mut block = [0u8; SYSINFO_SIZE];
+    for (offset, value) in [
+        (0, host_stats::uptime_seconds() as u64),
+        (8, loads[0]),
+        (16, loads[1]),
+        (24, loads[2]),
+        (32, memory.total),
+        (40, memory.free),
+        (64, memory.swap_total),
+        (72, memory.swap_free),
+    ] {
+        block[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    block[80..82].copy_from_slice(&(host_stats::task().threads as u16).to_le_bytes());
+    block[104..108].copy_from_slice(&1u32.to_le_bytes());
+    write_bytes(address, &block);
+}
+
 fn copy_name(context: &mut super::super::bridge::CallContext, text: &str) {
     let (buffer, length) = (context.arg_ptr(0), context.arg_u64(1) as usize);
     if text.len() + 1 > length {
@@ -231,6 +260,15 @@ pub fn register() {
     });
     in_libc("uname", |context| {
         write_utsname(context.arg_ptr(0));
+        context.ret_i32(0);
+    });
+    in_libc("sysinfo", |context| {
+        if context.arg_ptr(0) == 0 {
+            context.set_errno(EFAULT);
+            context.ret_i32(-1);
+            return;
+        }
+        write_sysinfo(context.arg_ptr(0));
         context.ret_i32(0);
     });
     in_libc("gethostname", |context| copy_name(context, HOST_NAME));

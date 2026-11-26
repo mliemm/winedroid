@@ -529,6 +529,13 @@ impl DexRunInvocationHandler<'_> {
             return Ok(DexInvocationResult::Void);
         }
 
+        if let Some(result) =
+            self.program
+                .invoke_java_zip_method(&method, &invocation, self.depth + 1)?
+        {
+            return Ok(invocation_result_from_execution(result));
+        }
+
         if let Some(result) = self.program.invoke_java_collection_equality_method(
             &method,
             &invocation,

@@ -533,6 +533,7 @@ impl DexProgram {
 
         // cite: art class_linker.cc#ClassLinker::InitializeClass
         self.seed_encoded_static_values(&continuation.class_descriptor);
+        self.seed_framework_static_values(&continuation.class_descriptor);
         match self.run_class_initializer(&continuation.class_descriptor, depth)? {
             ClassInitializationResult::Complete => {
                 self.finish_class_initialization(&continuation.class_descriptor);
@@ -550,6 +551,28 @@ impl DexProgram {
                 Ok(ClassInitializationResult::Parked(execution))
             }
         }
+    }
+
+    // cite: frameworks-base Build.java#SUPPORTED_ABIS, getStringList
+    fn seed_framework_static_values(&self, class_descriptor: &str) {
+        if class_descriptor != "Landroid/os/Build;" {
+            return;
+        }
+        let abi_list =
+            crate::native::bionic::props::get("ro.product.cpu.abilist").unwrap_or_default();
+        let abis = abi_list
+            .split(',')
+            .filter(|abi| !abi.is_empty())
+            .map(|abi| DexValue::String(std::rc::Rc::from(abi)))
+            .collect();
+        let array = self.allocate_filled_array("[Ljava/lang/String;".to_owned(), abis);
+        let field = DexFieldId {
+            class_descriptor: class_descriptor.to_owned(),
+            type_descriptor: "[Ljava/lang/String;".to_owned(),
+            name: "SUPPORTED_ABIS".to_owned(),
+        };
+
+        self.write_stored_static_field(&field, array);
     }
 
     fn default_interface_initialization_order(&self, class_descriptor: &str) -> Vec<String> {

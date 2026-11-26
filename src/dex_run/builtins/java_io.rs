@@ -2051,7 +2051,7 @@ fn file_name(path: &str) -> &str {
     }
 }
 
-fn file_path_from_value(program: &DexProgram, value: &DexValue) -> Option<String> {
+pub(super) fn file_path_from_value(program: &DexProgram, value: &DexValue) -> Option<String> {
     match value {
         DexValue::Reference(reference) => file_reference_path(reference).map(ToOwned::to_owned),
         DexValue::Object(_) => {

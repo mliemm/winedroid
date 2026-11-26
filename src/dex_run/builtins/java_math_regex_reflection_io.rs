@@ -18,6 +18,14 @@ impl DexProgram {
             return Some(result);
         }
 
+        if let Some(result) = invocation.and_then(|invocation| {
+            self.invoke_java_zip_method(method, invocation, 0)
+                .ok()
+                .flatten()
+        }) {
+            return Some(result);
+        }
+
         if let Some(result) = self.invoke_java_io_builtin(method, invocation) {
             return Some(result);
         }

@@ -1578,6 +1578,32 @@ fn continue_code(
                 frame.set_int(destination_register, value)?;
                 pc += 2;
             }
+            // cite: art interpreter_switch_impl-inl.h#ARRAY_LENGTH, HandleAGet, APUT_OBJECT, FILL_ARRAY_DATA
+            // cite: art common_throws.cc#ThrowNullPointerExceptionFromDexPC
+            // cite: art entrypoint_utils.cc#FillArrayData
+            0x21 | 0x26 | 0x44..=0x51 if null_array_operand(code, &frame, pc, instruction)? => {
+                let detail_message = match opcode {
+                    0x21 => "Attempt to get length of null array",
+                    0x26 => "null array in FILL_ARRAY_DATA",
+                    0x44..=0x4a => "Attempt to read from null array",
+                    _ => "Attempt to write to null array",
+                };
+                let finished = dispatch_generated_exception(
+                    code,
+                    pc,
+                    DexGeneratedException {
+                        class_descriptor: "Ljava/lang/NullPointerException;".to_owned(),
+                        detail_message: Some(detail_message.to_owned()),
+                    },
+                    &mut pending_result,
+                    &mut pending_exception,
+                    &mut pc,
+                    invocation_handler,
+                )?;
+                if let Some(finished) = finished {
+                    return Ok(finished);
+                }
+            }
             0x21 => {
                 let method_metric_start = crate::method_metrics::start_timing();
                 let destination_register = u16::from(nibble_a(instruction));
@@ -2281,6 +2307,24 @@ fn continue_code(
             }
         }
     }
+}
+
+fn null_array_operand(
+    code: &DexCodeItem,
+    frame: &DexFrame,
+    pc: usize,
+    instruction: u16,
+) -> Result<bool> {
+    let register = match instruction & 0x00ff {
+        0x21 => u16::from(nibble_b(instruction)),
+        0x26 => u16::from(high_byte(instruction)),
+        _ => read_next_code_unit(code, pc)? & 0x00ff,
+    };
+
+    Ok(matches!(
+        frame.read_value(register)?,
+        DexValue::Null | DexValue::Int(0)
+    ))
 }
 
 fn null_receiver_exception(
@@ -5646,6 +5690,63 @@ mod tests {
         )
         .expect("object receiver should invoke");
         assert!(handler.invocation.is_some());
+    }
+
+    // cite: art interpreter_switch_impl-inl.h#ARRAY_LENGTH, HandleAGet, FILL_ARRAY_DATA
+    // cite: art common_throws.cc#ThrowNullPointerExceptionFromDexPC
+    // cite: art entrypoint_utils.cc#FillArrayData
+    #[test]
+    fn art_array_instructions_on_a_null_array_throw_null_pointer_exception() {
+        let expected = test_object(0x4e50, "Ljava/lang/NullPointerException;");
+        let null = DexValue::Null;
+        let zero = DexValue::Int(0);
+
+        for (instructions, registers, arguments, message) in [
+            (
+                vec![0x1021],
+                2,
+                vec![null.clone()],
+                "Attempt to get length of null array",
+            ),
+            (
+                vec![0x0044, 0x0201],
+                3,
+                vec![null.clone(), zero.clone()],
+                "Attempt to read from null array",
+            ),
+            (
+                vec![0x004b, 0x0201],
+                3,
+                vec![DexValue::Int(1), zero.clone(), zero.clone()],
+                "Attempt to write to null array",
+            ),
+            (
+                vec![0x0126, 0x0003, 0x0000],
+                2,
+                vec![null],
+                "null array in FILL_ARRAY_DATA",
+            ),
+        ] {
+            let mut code = code_item(registers, instructions);
+            code.ins_size = arguments.len() as u16;
+            let mut handler = recording_handler();
+
+            assert_eq!(
+                interpret_code_with_initial_arguments(&code, Some(&arguments), &mut handler)
+                    .expect("null array should be a guest exception"),
+                DexExecutionResult::Throw(expected.clone())
+            );
+            assert_eq!(handler.array_length, None);
+            assert_eq!(handler.array_read, None);
+            assert_eq!(handler.array_write, None);
+            assert_eq!(
+                handler.generated_exception,
+                Some(DexGeneratedException {
+                    class_descriptor: "Ljava/lang/NullPointerException;".to_owned(),
+                    detail_message: Some(message.to_owned()),
+                })
+            );
+        }
     }
 
     // cite: art interpreter_switch_impl-inl.h#THROW, HandlePendingException

@@ -1790,3 +1790,34 @@ fn frameworks_binder_get_calling_uid_outside_a_transaction_is_the_process_uid() 
         program.invoke_builtin_method(&my_uid, Some(&test_invocation(Vec::new())))
     );
 }
+
+#[test]
+// cite: frameworks-base ActivityManager.java#getHistoricalProcessStartReasons
+// cite: frameworks-base ActivityManagerService.java#getHistoricalProcessStartReasons
+fn frameworks_activity_manager_reports_no_historical_process_start_reasons() {
+    let program = DexProgram::new(Vec::new());
+    let reasons = builtin_method(
+        "Landroid/app/ActivityManager;",
+        "getHistoricalProcessStartReasons",
+        "Ljava/util/List;",
+        &["I"],
+    );
+    let size = builtin_method("Ljava/util/List;", "size", "I", &[]);
+    let activity_manager = DexValue::Reference(std::rc::Rc::from("Landroid/app/ActivityManager;"));
+
+    for max_num in [0, 1] {
+        let Some(DexExecutionResult::Value(list)) = program.invoke_builtin_method(
+            &reasons,
+            Some(&test_invocation(vec![
+                activity_manager.clone(),
+                DexValue::Int(max_num),
+            ])),
+        ) else {
+            panic!("start reasons should be a list");
+        };
+        assert_eq!(
+            program.invoke_builtin_method(&size, Some(&test_invocation(vec![list]))),
+            Some(DexExecutionResult::Int(0))
+        );
+    }
+}

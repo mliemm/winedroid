@@ -171,12 +171,13 @@ fn function_ranges(image: &MappedImage, elf: &ElfImage) -> Result<Option<Vec<(u6
 
 impl ImagePatcher for TextPatcher {
     fn patch(&self, image: &MappedImage, elf: &ElfImage) -> Result<PatchCounts> {
-        let functions = function_ranges(image, elf)?;
+        let code = function_ranges(image, elf)?
+            .or_else(|| (!elf.code_sections.is_empty()).then(|| elf.code_sections.clone()));
         let bias = block().bias();
         let mut total = PatchCounts::default();
         for load in elf.loads().filter(|load| load.flags & PF_X != 0) {
             let segment = (load.vaddr, load.vaddr + load.filesz);
-            let spans: Vec<(u64, u64)> = match &functions {
+            let spans: Vec<(u64, u64)> = match &code {
                 Some(ranges) => ranges
                     .iter()
                     .map(|(start, end)| ((*start).max(segment.0), (*end).min(segment.1)))
@@ -286,6 +287,38 @@ mod tests {
 
         assert_eq!(counts.x18_writes, writes.len());
         assert_eq!(code, before);
+    }
+
+    #[test]
+    fn bionic_section_headers_bound_the_patched_code_of_a_library_without_eh_frame() {
+        // cite: bionic linker_phdr.cpp#ReadSectionHeaders
+        use crate::native::elf_image::PT_GNU_EH_FRAME;
+        use crate::native::loader_test_support::fixture_dir;
+
+        for variant in ["16k", "4k"] {
+            let mut data =
+                std::fs::read(fixture_dir(variant).join("libfx_order_child.so")).unwrap();
+            let elf = ElfImage::parse("libfx_order_child.so", &data).unwrap();
+            let (text_end, plt_start) = (elf.code_sections[0].1, elf.code_sections[1].0);
+            let load = elf.loads().find(|load| load.flags & PF_X != 0).unwrap();
+            assert!(text_end + 4 <= plt_start, "{variant}");
+            let padding = (text_end - load.vaddr + load.offset) as usize;
+            data[padding..padding + 4].copy_from_slice(&0x1292_9212u32.to_le_bytes());
+            let header = elf
+                .phdrs
+                .iter()
+                .position(|phdr| phdr.kind == PT_GNU_EH_FRAME)
+                .unwrap();
+            let memsz = elf.phoff as usize + header * 56 + 40;
+            data[memsz..memsz + 8].fill(0);
+            let elf = ElfImage::parse("libfx_order_child.so", &data).unwrap();
+            let image = MappedImage::map("libfx_order_child.so", &data, &elf).unwrap();
+
+            let counts = TextPatcher.patch(&image, &elf).unwrap();
+
+            assert!(elf.eh_frame_hdr().is_none(), "{variant}");
+            assert_eq!(counts.x18_writes, 1, "{variant}");
+        }
     }
 
     #[test]

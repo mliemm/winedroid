@@ -1218,7 +1218,7 @@ pub(in crate::dex_run) fn normalize_array_value_for_descriptor(
 }
 
 pub(in crate::dex_run) fn default_primitive_field_value(field: &DexFieldId) -> Option<DexValue> {
-    if field.type_descriptor == "J" {
+    if matches!(field.type_descriptor.as_str(), "J" | "D") {
         return Some(DexValue::Long(0));
     }
 

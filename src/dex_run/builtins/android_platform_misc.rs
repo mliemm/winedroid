@@ -1286,6 +1286,24 @@ impl DexProgram {
             return Some(DexExecutionResult::Int(i32::from(low_ram)));
         }
 
+        // cite: frameworks-base ActivityManager.java#getHistoricalProcessStartReasons
+        // cite: frameworks-base ActivityManagerService.java#getHistoricalProcessStartReasons
+        if method.class_descriptor == "Landroid/app/ActivityManager;"
+            && method.name == "getHistoricalProcessStartReasons"
+            && method.proto.descriptor_is("(I)Ljava/util/List;")
+        {
+            let [receiver, DexValue::Int(_)] = invocation?.arguments.as_slice() else {
+                return None;
+            };
+            if !dex_value_is_object_like(receiver) {
+                return None;
+            }
+
+            return Some(DexExecutionResult::Value(
+                self.allocate_tracked_list(Vec::new()),
+            ));
+        }
+
         if method.class_descriptor == "Landroid/app/ActivityManager;"
             && method.name == "getRunningAppProcesses"
             && method.proto.descriptor_is("()Ljava/util/List;")

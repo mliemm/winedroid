@@ -28,6 +28,7 @@ pub fn guest_abort() -> ! {
         signal_state::mark_thread_directed(SIGABRT);
         signal_state::raise_pending(SIGABRT);
         signal_router::deliver_pending();
+        super::setjmp::settle();
         signal_state::publish_action(SIGABRT, signal_state::DEFAULT_ACTION);
         let _ = signal_router::install(SIGABRT, &signal_state::DEFAULT_ACTION);
     }

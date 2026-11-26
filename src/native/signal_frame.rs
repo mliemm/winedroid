@@ -77,6 +77,11 @@ pub fn interrupted_sp(context: usize) -> u64 {
     read_value(mcontext(context) + DARWIN_SP)
 }
 
+pub fn redirect(context: usize, pc: u64, sp: u64) {
+    write_value::<u64>(mcontext(context) + DARWIN_PC, pc);
+    write_value::<u64>(mcontext(context) + DARWIN_SP, sp);
+}
+
 fn address_is_mapped(address: u64) -> bool {
     let mut at = address;
     let (mut size, mut info, mut count, mut object) = (0u64, [0i32; 9], 9u32, 0u32);

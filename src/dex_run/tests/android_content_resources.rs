@@ -3530,13 +3530,13 @@ fn builtin_configuration_constructor_returns_void() {
         Some(DexValue::Float(1.25))
     );
     assert_eq!(
-        program.invoke_builtin_method(&get_locales, None),
+        program.invoke_builtin_method(&get_locales, Some(&constructor_invocation)),
         Some(DexExecutionResult::Value(DexValue::Reference(
             std::rc::Rc::from("Landroid/os/LocaleList;.bootstrap")
         )))
     );
     assert_eq!(
-        program.invoke_builtin_method(&get_layout_direction, None),
+        program.invoke_builtin_method(&get_layout_direction, Some(&constructor_invocation)),
         Some(DexExecutionResult::Int(0))
     );
     assert_eq!(
@@ -4312,5 +4312,230 @@ fn frameworks_base_asset_manager_open_null_name_throws_and_missing_apk_is_missin
             DexValue::String(std::rc::Rc::from("a"))
         ),
         None
+    );
+}
+
+fn configuration_method(name: &str, return_type: &str, parameters: &[&str]) -> DexMethodId {
+    builtin_method(
+        "Landroid/content/res/Configuration;",
+        name,
+        return_type,
+        parameters,
+    )
+}
+
+fn constructed_locale(program: &DexProgram, language: &str, country: &str) -> DexValue {
+    let init = builtin_method(
+        "Ljava/util/Locale;",
+        "<init>",
+        "V",
+        &["Ljava/lang/String;", "Ljava/lang/String;"],
+    );
+    let locale = program.allocate_object("Ljava/util/Locale;".to_owned());
+    assert_eq!(
+        program.invoke_builtin_method(
+            &init,
+            Some(&test_invocation(vec![
+                locale.clone(),
+                DexValue::String(std::rc::Rc::from(language)),
+                DexValue::String(std::rc::Rc::from(country)),
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+
+    locale
+}
+
+fn set_locale(
+    program: &DexProgram,
+    configuration: &DexValue,
+    locale: &DexValue,
+) -> Option<DexExecutionResult> {
+    program.invoke_builtin_method(
+        &configuration_method("setLocale", "V", &["Ljava/util/Locale;"]),
+        Some(&test_invocation(vec![
+            configuration.clone(),
+            locale.clone(),
+        ])),
+    )
+}
+
+fn configuration_locales(program: &DexProgram, configuration: &DexValue) -> DexValue {
+    let Some(DexExecutionResult::Value(list)) = program.invoke_builtin_method(
+        &configuration_method("getLocales", "Landroid/os/LocaleList;", &[]),
+        Some(&test_invocation(vec![configuration.clone()])),
+    ) else {
+        panic!("getLocales should return a list");
+    };
+
+    list
+}
+
+fn configuration_direction(
+    program: &DexProgram,
+    configuration: &DexValue,
+) -> Option<DexExecutionResult> {
+    program.invoke_builtin_method(
+        &configuration_method("getLayoutDirection", "I", &[]),
+        Some(&test_invocation(vec![configuration.clone()])),
+    )
+}
+
+fn locale_list_call(
+    program: &DexProgram,
+    name: &str,
+    return_type: &str,
+    arguments: Vec<DexValue>,
+) -> Option<DexExecutionResult> {
+    let parameters: &[&str] = if arguments.len() == 2 { &["I"] } else { &[] };
+    program.invoke_builtin_method(
+        &builtin_method("Landroid/os/LocaleList;", name, return_type, parameters),
+        Some(&test_invocation(arguments)),
+    )
+}
+
+#[test]
+// cite: cts ConfigurationTest.java#testSetLocale
+// cite: cts TextUtilsTest.java#testGetLayoutDirectionFromLocale
+// cite: frameworks-base LocaleList.java#get, size, isEmpty, toLanguageTags
+fn cts_configuration_set_locale_updates_locale_list_and_layout_direction() {
+    let program = DexProgram::new(Vec::new());
+    let configuration = DexValue::Reference(std::rc::Rc::from("configuration"));
+    let locale_field = DexFieldId {
+        class_descriptor: "Landroid/content/res/Configuration;".to_owned(),
+        type_descriptor: "Ljava/util/Locale;".to_owned(),
+        name: "locale".to_owned(),
+    };
+
+    for (language, country, direction) in [
+        ("en", "", 0),
+        ("en", "US", 0),
+        ("ar", "EG", 1),
+        ("fa", "IR", 1),
+        ("iw", "IL", 1),
+        ("ur", "PK", 1),
+        ("zz", "", 0),
+    ] {
+        let locale = constructed_locale(&program, language, country);
+
+        assert_eq!(
+            set_locale(&program, &configuration, &locale),
+            Some(DexExecutionResult::Void)
+        );
+        assert_eq!(
+            program.read_stored_instance_field(&configuration, &locale_field),
+            Some(locale.clone())
+        );
+        let list = configuration_locales(&program, &configuration);
+        assert_eq!(configuration_locales(&program, &configuration), list);
+        assert_eq!(
+            locale_list_call(&program, "size", "I", vec![list.clone()]),
+            Some(DexExecutionResult::Int(1))
+        );
+        for (index, expected) in [(0, locale), (1, DexValue::Null)] {
+            assert_eq!(
+                locale_list_call(
+                    &program,
+                    "get",
+                    "Ljava/util/Locale;",
+                    vec![list.clone(), DexValue::Int(index)]
+                ),
+                Some(DexExecutionResult::Value(expected))
+            );
+        }
+        assert_eq!(
+            configuration_direction(&program, &configuration),
+            Some(DexExecutionResult::Int(direction)),
+            "{language}-{country}"
+        );
+    }
+
+    assert_eq!(
+        set_locale(&program, &configuration, &DexValue::Null),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&configuration, &locale_field),
+        Some(DexValue::Null)
+    );
+    let list = configuration_locales(&program, &configuration);
+    assert_eq!(
+        locale_list_call(&program, "isEmpty", "Z", vec![list.clone()]),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(
+        locale_list_call(&program, "toLanguageTags", "Ljava/lang/String;", vec![list]),
+        Some(DexExecutionResult::Value(DexValue::String(
+            std::rc::Rc::from("")
+        )))
+    );
+    assert_eq!(
+        configuration_direction(&program, &configuration),
+        Some(DexExecutionResult::Int(0))
+    );
+}
+
+#[test]
+// cite: frameworks-base TextUtils.java#getLayoutDirectionFromLocale
+fn frameworks_configuration_set_locale_refuses_a_direction_it_cannot_derive() {
+    let program = DexProgram::new(Vec::new());
+    let configuration = DexValue::Reference(std::rc::Rc::from("configuration"));
+    let arabic = constructed_locale(&program, "ar", "EG");
+    let unsupported = constructed_locale(&program, "ks", "");
+
+    assert_eq!(
+        set_locale(&program, &configuration, &arabic),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(set_locale(&program, &configuration, &unsupported), None);
+    assert_eq!(
+        configuration_direction(&program, &configuration),
+        Some(DexExecutionResult::Int(1))
+    );
+}
+
+#[test]
+// cite: frameworks-base Configuration.java#updateFrom, setLayoutDirection
+fn frameworks_configuration_update_from_merges_locale_and_screen_layout() {
+    let program = DexProgram::new(Vec::new());
+    let receiver = DexValue::Reference(std::rc::Rc::from("receiver"));
+    let delta = DexValue::Reference(std::rc::Rc::from("delta"));
+    let screen_layout = DexFieldId {
+        class_descriptor: "Landroid/content/res/Configuration;".to_owned(),
+        type_descriptor: "I".to_owned(),
+        name: "screenLayout".to_owned(),
+    };
+    let update_from =
+        configuration_method("updateFrom", "I", &["Landroid/content/res/Configuration;"]);
+    let update = test_invocation(vec![receiver.clone(), delta.clone()]);
+    let arabic = constructed_locale(&program, "ar", "EG");
+    assert!(program.write_stored_instance_field(&receiver, &screen_layout, DexValue::Int(0x12)));
+    assert_eq!(
+        set_locale(&program, &delta, &arabic),
+        Some(DexExecutionResult::Void)
+    );
+
+    assert_eq!(
+        program.invoke_builtin_method(&update_from, Some(&update)),
+        Some(DexExecutionResult::Int(0x2004))
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&receiver, &screen_layout),
+        Some(DexValue::Int(0x92))
+    );
+    let list = configuration_locales(&program, &receiver);
+    assert_eq!(
+        locale_list_call(
+            &program,
+            "get",
+            "Ljava/util/Locale;",
+            vec![list, DexValue::Int(0)]
+        ),
+        Some(DexExecutionResult::Value(arabic))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&update_from, Some(&update)),
+        Some(DexExecutionResult::Int(0))
     );
 }

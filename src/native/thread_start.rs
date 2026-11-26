@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::bionic::errno_map::linux_from_darwin;
 use super::bionic::guest_mem::write_value;
+use super::bionic::process_control;
 use super::bionic::pthread_attr::{self, ATTR_SIZE, FLAG_DETACHED, FLAG_EXPLICIT, FLAG_INHERIT};
 use super::bionic::pthread_sched;
 use super::bionic::{bionic_lock, current_thread};
@@ -204,6 +205,11 @@ pub fn create(thread_out: usize, attr: usize, routine: usize, argument: usize) -
     }
     thread_list::remember(address, host, true);
     thread_list::inherit_name(creator, address);
+    if let Err(code) = process_control::inherit_priority(creator, address, host) {
+        host_log::line(&format!(
+            "pthread_create could not inherit the creator priority: errno {code}"
+        ));
+    }
     let ready = unsafe { &(*start).ready };
     while ready.load(Ordering::SeqCst) == 0 {
         futex::wait(ready as *const AtomicU32 as usize, 0, MATCH_ANY, None);

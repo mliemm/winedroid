@@ -138,7 +138,8 @@ build_variant() {
         strcmp syscall pthread_exit
     make_stub libc.so "$work/stubs_signals" \
         __errno __stack_chk_fail abort getpid gettid memset pthread_create pthread_join pthread_kill pthread_self raise sched_yield \
-        sigaction sigaddset sigaltstack sigemptyset sigismember signal sigprocmask tgkill fx_emit
+        sigaction sigaddset sigaltstack sigemptyset sigismember signal sigprocmask tgkill fx_emit \
+        setjmp longjmp _setjmp _longjmp sigsetjmp siglongjmp qsort pthread_mutex_lock pthread_mutex_unlock getpriority setpriority
     make_stub libdl.so "$work/stubs" dlopen dlsym dlclose dlerror
     make_stub libc.so "$work/stubs_core" \
         __FD_SET_chk __assert2 __cxa_atexit __errno __memcpy_chk __memset_chk __read_chk __snprintf_chk __stack_chk_fail \

@@ -35,6 +35,7 @@ pub(super) struct JniState {
     bindings: RefCell<HashMap<NativeMethod, usize>>,
     method_ids: RefCell<HashMap<NativeMethod, usize>>,
     methods_by_id: RefCell<HashMap<usize, DexMethodId>>,
+    field_ids: RefCell<Vec<DexFieldId>>,
     globals: RefCell<HashMap<usize, DexValue>>,
 }
 
@@ -171,6 +172,52 @@ impl DexProgram {
             class.clone_from(parent);
         }
         Ok(None)
+    }
+
+    fn find_jni_static_field(
+        &self,
+        class: &str,
+        name: &str,
+        signature: &str,
+    ) -> Result<Option<DexFieldId>> {
+        // cite: art jni_internal.cc#FindFieldJNI
+        // cite: art class.cc#FindStaticField, FindDeclaredStaticField
+        let mut unknown = None;
+        let mut pending = vec![class.to_owned()];
+        let mut visited = HashSet::new();
+        while let Some(class) = pending.pop() {
+            if !visited.insert(class.clone()) {
+                continue;
+            }
+            let field = DexFieldId {
+                class_descriptor: class.clone(),
+                type_descriptor: signature.to_owned(),
+                name: name.to_owned(),
+            };
+            if let Some(loaded) = self.load_class(&class) {
+                for encoded in &loaded.class_def.static_fields {
+                    if *self.field_id(loaded.dex_file_index, encoded.field_index)? == field {
+                        return Ok(Some(field));
+                    }
+                }
+            } else if bootstrap_static_field(&field).is_some() {
+                return Ok(Some(field));
+            } else if bootstrap_declared_fields(&class).is_none_or(|fields| {
+                fields
+                    .iter()
+                    .any(|field| field.name == name && field.access_flags & DEX_ACC_STATIC != 0)
+            }) {
+                unknown.get_or_insert_with(|| class.clone());
+            }
+            pending.extend(self.superclass_descriptor(&class));
+            pending.extend(self.class_interface_descriptors(&class).into_iter().rev());
+        }
+        match unknown {
+            Some(class) => Err(WinedroidError::new(format!(
+                "next missing primitive: JNI static field {name}:{signature} of framework class {class}"
+            ))),
+            None => Ok(None),
+        }
     }
 
     pub(super) fn execute_registered_native(

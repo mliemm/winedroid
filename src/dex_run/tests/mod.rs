@@ -38,6 +38,7 @@ mod java_reflection;
 mod java_regex_util;
 mod java_sets_collections;
 mod java_string_text;
+mod java_zip;
 mod runtime_core;
 mod sqlite_security;
 mod static_bootstrap;

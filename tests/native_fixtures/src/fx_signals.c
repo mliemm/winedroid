@@ -2,9 +2,11 @@
 #include <errno.h>
 #include <pthread.h>
 #include <sched.h>
+#include <setjmp.h>
 #include <signal.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/ucontext.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -268,4 +270,291 @@ int fx_abort_after_handler(void)
     signal(SIGABRT, abort_handler);
     abort();
     return 0;
+}
+
+static sigjmp_buf recovery;
+static volatile int armed;
+
+static void jumping_handler(int signal)
+{
+    if (armed) {
+        armed = 0;
+        seen_count++;
+        siglongjmp(recovery, signal);
+    }
+}
+
+static int install_plain(int signal, int flags, void (*handler)(int))
+{
+    return fx_install(signal, flags, (void (*)(int, siginfo_t *, void *))handler);
+}
+
+int fx_install_jumper(int signal)
+{
+    reset_seen();
+    return install_plain(signal, 0, jumping_handler);
+}
+
+long fx_jump_values(void)
+{
+    jmp_buf env;
+    volatile long seen = 0;
+    volatile int step = 0;
+    int code = setjmp(env);
+    seen = seen * 100 + code;
+    step++;
+    if (step == 1)
+        longjmp(env, 5);
+    if (step == 2)
+        longjmp(env, 0);
+    if (_setjmp(env) == 0)
+        _longjmp(env, 7);
+    else
+        seen = seen * 100 + 7;
+    return seen;
+}
+
+__attribute__((visibility("hidden"))) long fx_register_env[33];
+
+__asm__(".text\n"
+        ".globl fx_registers_survive_longjmp\n"
+        ".type fx_registers_survive_longjmp, %function\n"
+        "fx_registers_survive_longjmp:\n"
+        "stp x29, x30, [sp, #-160]!\n"
+        "mov x29, sp\n"
+        "stp x19, x20, [sp, #16]\n"
+        "stp x21, x22, [sp, #32]\n"
+        "stp x23, x24, [sp, #48]\n"
+        "stp x25, x26, [sp, #64]\n"
+        "stp x27, x28, [sp, #80]\n"
+        "stp d8, d9, [sp, #96]\n"
+        "stp d10, d11, [sp, #112]\n"
+        "stp d12, d13, [sp, #128]\n"
+        "stp d14, d15, [sp, #144]\n"
+        ".irp n,19,20,21,22,23,24,25,26,27,28\n"
+        "mov x\\n, #\\n\n"
+        ".endr\n"
+        ".irp n,8,9,10,11,12,13,14,15\n"
+        "mov x9, #\\n\n"
+        "fmov d\\n, x9\n"
+        ".endr\n"
+        "adrp x0, fx_register_env\n"
+        "add x0, x0, :lo12:fx_register_env\n"
+        "mov w1, #0\n"
+        "bl sigsetjmp\n"
+        "cbnz w0, 1f\n"
+        ".irp n,19,20,21,22,23,24,25,26,27,28\n"
+        "mov x\\n, xzr\n"
+        ".endr\n"
+        ".irp n,8,9,10,11,12,13,14,15\n"
+        "fmov d\\n, xzr\n"
+        ".endr\n"
+        "sub sp, sp, #64\n"
+        "adrp x0, fx_register_env\n"
+        "add x0, x0, :lo12:fx_register_env\n"
+        "mov w1, #1\n"
+        "bl siglongjmp\n"
+        "1:\n"
+        "mov x0, xzr\n"
+        "mov x9, sp\n"
+        "cmp x9, x29\n"
+        "cinc x0, x0, eq\n"
+        ".irp n,19,20,21,22,23,24,25,26,27,28\n"
+        "cmp x\\n, #\\n\n"
+        "cinc x0, x0, eq\n"
+        ".endr\n"
+        ".irp n,8,9,10,11,12,13,14,15\n"
+        "fmov x9, d\\n\n"
+        "cmp x9, #\\n\n"
+        "cinc x0, x0, eq\n"
+        ".endr\n"
+        "ldp d14, d15, [sp, #144]\n"
+        "ldp d12, d13, [sp, #128]\n"
+        "ldp d10, d11, [sp, #112]\n"
+        "ldp d8, d9, [sp, #96]\n"
+        "ldp x27, x28, [sp, #80]\n"
+        "ldp x25, x26, [sp, #64]\n"
+        "ldp x23, x24, [sp, #48]\n"
+        "ldp x21, x22, [sp, #32]\n"
+        "ldp x19, x20, [sp, #16]\n"
+        "ldp x29, x30, [sp], #160\n"
+        "ret\n");
+
+static int blocked_then_unblock(int signal)
+{
+    sigset_t set;
+    int blocked = fx_blocked_after_handler(signal);
+    sigemptyset(&set);
+    sigaddset(&set, signal);
+    sigprocmask(SIG_UNBLOCK, &set, 0);
+    return blocked;
+}
+
+int fx_recover_from_fault(int save_mask)
+{
+    int code = sigsetjmp(recovery, save_mask);
+    if (code == 0) {
+        armed = 1;
+        *(volatile int *)0x10 = 1;
+        return -1;
+    }
+    return code * 10 + blocked_then_unblock(code);
+}
+
+int fx_recover_from_raise(int signal)
+{
+    int code = sigsetjmp(recovery, 1);
+    if (code == 0) {
+        armed = 1;
+        raise(signal);
+        return -1;
+    }
+    return code * 10 + blocked_then_unblock(code);
+}
+
+int fx_recover_from_abort(void)
+{
+    int code = sigsetjmp(recovery, 1);
+    if (code == 0) {
+        armed = 1;
+        abort();
+    }
+    return code;
+}
+
+static void raising_handler(int signal)
+{
+    raise(SIGUSR2);
+    seen_count += 100;
+}
+
+static void faulting_handler(int signal)
+{
+    *(volatile int *)0x10 = 1;
+    seen_count += 100;
+}
+
+int fx_jump_past_an_outer_handler(int fault)
+{
+    reset_seen();
+    install_plain(SIGUSR1, 0, fault ? faulting_handler : raising_handler);
+    install_plain(fault ? SIGSEGV : SIGUSR2, 0, jumping_handler);
+    int result = fx_recover_from_raise(SIGUSR1);
+    return result * 1000 + seen_count * 10 + fx_blocked_after_handler(SIGUSR1);
+}
+
+static void counting_handler(int signal) { seen_count += 100; }
+
+int fx_jump_before_a_queued_handler(void)
+{
+    sigset_t set;
+    reset_seen();
+    install_plain(SIGUSR1, 0, counting_handler);
+    install_plain(SIGUSR2, 0, jumping_handler);
+    sigemptyset(&set);
+    sigaddset(&set, SIGUSR1);
+    sigaddset(&set, SIGUSR2);
+    int code = sigsetjmp(recovery, 1);
+    if (code == 0) {
+        armed = 1;
+        sigprocmask(SIG_BLOCK, &set, 0);
+        raise(SIGUSR1);
+        raise(SIGUSR2);
+        sigprocmask(SIG_UNBLOCK, &set, 0);
+        return -1;
+    }
+    return code * 1000 + seen_count;
+}
+
+int fx_recover_on_altstack(void)
+{
+    stack_t stack, current;
+    stack.ss_sp = alternate_storage;
+    stack.ss_size = sizeof(alternate_storage);
+    stack.ss_flags = 0;
+    sigaltstack(&stack, 0);
+    install_plain(SIGSEGV, SA_ONSTACK, jumping_handler);
+    int first = fx_recover_from_fault(1);
+    int second = fx_recover_from_fault(1);
+    sigaltstack(0, &current);
+    stack.ss_flags = SS_DISABLE;
+    sigaltstack(&stack, 0);
+    return (first == 110) * 100 + (second == 110) * 10 + current.ss_flags;
+}
+
+static pthread_mutex_t held_mutex = PTHREAD_MUTEX_INITIALIZER;
+static volatile int jumped_code;
+
+static void *lock_until_signalled(void *argument)
+{
+    int code = sigsetjmp(recovery, 1);
+    if (code == 0) {
+        armed = 1;
+        pthread_mutex_lock(&held_mutex);
+        return 0;
+    }
+    jumped_code = code;
+    return 0;
+}
+
+int fx_jump_out_of_a_blocked_lock(void)
+{
+    pthread_t worker;
+    armed = 0;
+    jumped_code = 0;
+    pthread_mutex_lock(&held_mutex);
+    pthread_create(&worker, 0, lock_until_signalled, 0);
+    while (!armed && !jumped_code)
+        sched_yield();
+    for (int round = 0; round < 2000 && !jumped_code; round++) {
+        pthread_kill(worker, SIGUSR1);
+        for (int spin = 0; spin < 100 && !jumped_code; spin++)
+            sched_yield();
+    }
+    pthread_join(worker, 0);
+    pthread_mutex_unlock(&held_mutex);
+    return jumped_code;
+}
+
+static int jumping_compare(const void *left, const void *right)
+{
+    siglongjmp(recovery, 1);
+}
+
+int fx_jump_across_qsort(void)
+{
+    int values[2] = {2, 1};
+    if (sigsetjmp(recovery, 0) == 0)
+        qsort(values, 2, sizeof(int), jumping_compare);
+    return 1;
+}
+
+int fx_jump_through_a_damaged_buffer(int clear)
+{
+    sigjmp_buf env;
+    if (sigsetjmp(env, 0) == 0) {
+        if (clear)
+            memset(env, 0, sizeof(env));
+        else
+            env[12] ^= 1;
+        siglongjmp(env, 1);
+    }
+    return 0;
+}
+
+static void *report_priority(void *result)
+{
+    *(int *)result = getpriority(PRIO_PROCESS, 0);
+    return 0;
+}
+
+int fx_child_priority(int nice)
+{
+    pthread_t worker;
+    int child = 100;
+    setpriority(PRIO_PROCESS, 0, nice);
+    pthread_create(&worker, 0, report_priority, &child);
+    pthread_join(worker, 0);
+    setpriority(PRIO_PROCESS, 0, 0);
+    return child;
 }

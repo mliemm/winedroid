@@ -32,6 +32,7 @@ mod java_properties;
 mod java_reflection;
 mod java_regex_util;
 mod java_string_text;
+pub(in crate::dex_run) mod java_zip;
 mod org_xml_sax;
 mod third_party_runtime;
 mod view_widget;

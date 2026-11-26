@@ -1158,19 +1158,44 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Landroid/content/res/Configuration;"
+            && method.name == "setLocale"
+            && method.proto.descriptor_is("(Ljava/util/Locale;)V")
+        {
+            let invocation = invocation?;
+            self.configuration_set_locale(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.class_descriptor == "Landroid/content/res/Configuration;"
             && method.name == "getLocales"
             && method.proto.descriptor_is("()Landroid/os/LocaleList;")
         {
-            return Some(DexExecutionResult::Value(DexValue::Reference(
-                std::rc::Rc::from("Landroid/os/LocaleList;.bootstrap"),
-            )));
+            let invocation = invocation?;
+            let value = self.configuration_get_locales(invocation)?;
+
+            return Some(DexExecutionResult::Value(value));
         }
 
         if method.class_descriptor == "Landroid/content/res/Configuration;"
             && method.name == "getLayoutDirection"
             && method.proto.descriptor_is("()I")
         {
-            return Some(DexExecutionResult::Int(0));
+            let invocation = invocation?;
+            let value = self.configuration_layout_direction(invocation)?;
+
+            return Some(DexExecutionResult::Int(value));
+        }
+
+        if method.class_descriptor == "Landroid/os/LocaleList;" {
+            let stored = invocation.and_then(|invocation| {
+                let array = self.locale_list_array(invocation.arguments.first()?)?;
+
+                Some((invocation, array))
+            });
+            if let Some((invocation, array)) = stored {
+                return self.stored_locale_list_call(method, invocation, &array);
+            }
         }
 
         if method.class_descriptor == "Landroid/os/LocaleList;"

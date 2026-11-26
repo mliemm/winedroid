@@ -402,6 +402,7 @@ extern "C" fn spk_dispatch(id: u64, regs: *mut Regs) {
     }
     super::signal_router::deliver_pending();
     super::signal_state::set_in_guest(outer);
+    super::bionic::setjmp::settle();
 }
 
 pub fn native_provider() -> BridgeProvider {

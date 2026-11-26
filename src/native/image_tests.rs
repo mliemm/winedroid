@@ -34,6 +34,7 @@ fn synthetic(loads: Vec<Phdr>) -> ElfImage {
     ElfImage {
         phdrs: loads,
         phoff: 0,
+        code_sections: Vec::new(),
     }
 }
 

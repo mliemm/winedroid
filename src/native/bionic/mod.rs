@@ -20,6 +20,7 @@ pub mod fatal;
 pub mod fd_table;
 pub mod fdsan;
 pub mod fenv;
+pub mod fnmatch;
 pub mod fortify;
 pub mod fortify_check;
 pub mod fs_close_dup;
@@ -61,6 +62,7 @@ pub mod prng;
 pub mod proc_maps;
 pub mod proc_process;
 pub mod proc_system;
+pub mod process_control;
 pub mod procfs;
 pub mod props;
 pub mod pthread_attr;
@@ -77,6 +79,7 @@ pub mod pthread_thread;
 pub mod scanf;
 pub mod sdk;
 pub mod semaphore;
+pub mod setjmp;
 pub mod signal_handlers;
 pub mod sleep;
 pub mod socket;
@@ -127,6 +130,7 @@ pub fn register_libc_core() {
         stdlib::register();
         prng::register();
         sort::register();
+        fnmatch::register();
         env::register();
         sysinfo::register();
         props::register();
@@ -167,6 +171,8 @@ fn register_thread_group() {
     prctl::register();
     tls_handlers::register();
     signal_handlers::register();
+    setjmp::register();
+    process_control::register();
 }
 
 fn register_io_group() {
