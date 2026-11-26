@@ -8317,3 +8317,46 @@ fn art_virtual_view_group_override_precedes_framework_builtin() {
         );
     }
 }
+
+#[test]
+fn frameworks_display_real_metrics_fill_the_display_metrics_fields() {
+    // cite: frameworks-base Display.java#getRealMetrics
+    // cite: frameworks-base DisplayMetrics.java#setToDefaults
+    let program =
+        DexProgram::with_config(Vec::new(), WinedroidConfig::with_display_size(600, 1000));
+    let get_real_metrics = builtin_method(
+        "Landroid/view/Display;",
+        "getRealMetrics",
+        "V",
+        &["Landroid/util/DisplayMetrics;"],
+    );
+    let display = DexValue::Reference(std::rc::Rc::from("Landroid/view/Display;.bootstrap"));
+    let metrics = program.allocate_object("Landroid/util/DisplayMetrics;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &get_real_metrics,
+            Some(&test_invocation(vec![display, metrics.clone()]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    for (name, expected) in [
+        ("widthPixels", 600),
+        ("heightPixels", 1000),
+        ("densityDpi", BOOTSTRAP_DISPLAY_DENSITY_DPI),
+        ("noncompatDensityDpi", BOOTSTRAP_DISPLAY_DENSITY_DPI),
+    ] {
+        assert_eq!(
+            program.read_stored_instance_field(&metrics, &display_metrics_field(name, "I")),
+            Some(DexValue::Int(expected))
+        );
+    }
+    assert_eq!(
+        program.read_stored_instance_field(&metrics, &display_metrics_field("density", "F")),
+        Some(DexValue::Float(BOOTSTRAP_DISPLAY_DENSITY))
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&metrics, &display_metrics_field("xdpi", "F")),
+        Some(DexValue::Float(BOOTSTRAP_DISPLAY_DENSITY_DPI as f32))
+    );
+}

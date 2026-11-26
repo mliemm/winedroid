@@ -2990,6 +2990,195 @@ fn libcore_scheduled_thread_pool_executor_schedule_posts_a_delayed_future_task()
 }
 
 #[test]
+fn builtin_atomic_long_constructor_and_get_and_add() {
+    // cite: libcore AtomicLong.java#AtomicLong, getAndAdd
+    let program = DexProgram::new(Vec::new());
+    let constructor = builtin_method(
+        "Ljava/util/concurrent/atomic/AtomicLong;",
+        "<init>",
+        "V",
+        &["J"],
+    );
+    let get_and_add = builtin_method(
+        "Ljava/util/concurrent/atomic/AtomicLong;",
+        "getAndAdd",
+        "J",
+        &["J"],
+    );
+    let value = program.allocate_object("Ljava/util/concurrent/atomic/AtomicLong;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![
+                value.clone(),
+                DexValue::Long(10),
+                DexValue::Long(10)
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &get_and_add,
+            Some(&test_invocation(vec![
+                value.clone(),
+                DexValue::Long(5),
+                DexValue::Long(5)
+            ]))
+        ),
+        Some(DexExecutionResult::Value(DexValue::Long(10)))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &get_and_add,
+            Some(&test_invocation(vec![
+                value,
+                DexValue::Long(-3),
+                DexValue::Long(-3)
+            ]))
+        ),
+        Some(DexExecutionResult::Value(DexValue::Long(15)))
+    );
+}
+
+#[test]
+fn libcore_thread_pool_executor_submit_posts_a_future_task() {
+    // cite: libcore AbstractExecutorService.java#submit
+    let program = DexProgram::new(Vec::new());
+    let executor = program.allocate_object("Ljava/util/concurrent/ThreadPoolExecutor;".to_owned());
+    let command = program.allocate_object("Lcom/example/Task;".to_owned());
+    let submit = builtin_method(
+        "Ljava/util/concurrent/ThreadPoolExecutor;",
+        "submit",
+        "Ljava/util/concurrent/Future;",
+        &["Ljava/lang/Runnable;"],
+    );
+    let result = program.invoke_builtin_method(
+        &submit,
+        Some(&test_invocation(vec![executor.clone(), command.clone()])),
+    );
+    let Some(DexExecutionResult::Value(task)) = result else {
+        panic!("submit should return a future");
+    };
+    assert!(program.value_matches_type(&task, "Ljava/util/concurrent/FutureTask;"));
+    assert_eq!(
+        program.read_stored_instance_field(&task, &future_task_runnable_field()),
+        Some(command)
+    );
+    assert!(program
+        .runtime
+        .borrow()
+        .handler_posts
+        .iter()
+        .any(|post| post.runnable == task && post.delay_millis == 0));
+    let result = program.invoke_builtin_method(
+        &submit,
+        Some(&test_invocation(vec![executor, DexValue::Null])),
+    );
+    assert!(program.value_matches_type(
+        &thrown_exception(result),
+        "Ljava/lang/NullPointerException;"
+    ));
+}
+
+#[test]
+fn libcore_schedule_with_fixed_delay_posts_and_repeats_a_periodic_task() {
+    // cite: libcore ScheduledThreadPoolExecutor.java#scheduleWithFixedDelay, reExecutePeriodic
+    let program = DexProgram::new(Vec::new());
+    let executor =
+        program.allocate_object("Ljava/util/concurrent/ScheduledThreadPoolExecutor;".to_owned());
+    let command = program.allocate_object("Lcom/example/Task;".to_owned());
+    let schedule = builtin_method(
+        "Ljava/util/concurrent/ScheduledThreadPoolExecutor;",
+        "scheduleWithFixedDelay",
+        "Ljava/util/concurrent/ScheduledFuture;",
+        &[
+            "Ljava/lang/Runnable;",
+            "J",
+            "J",
+            "Ljava/util/concurrent/TimeUnit;",
+        ],
+    );
+    let result = program.invoke_builtin_method(
+        &schedule,
+        Some(&test_invocation(vec![
+            executor.clone(),
+            command.clone(),
+            DexValue::Long(1),
+            DexValue::Long(1),
+            DexValue::Long(2),
+            DexValue::Long(2),
+            seconds_unit(),
+        ])),
+    );
+    let Some(DexExecutionResult::Value(task)) = result else {
+        panic!("scheduleWithFixedDelay should return the task");
+    };
+    assert!(program.value_matches_type(&task, "Ljava/util/concurrent/ScheduledFuture;"));
+    assert_eq!(
+        program.read_stored_instance_field(&task, &future_task_runnable_field()),
+        Some(command.clone())
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&task, &scheduled_future_task_period_field()),
+        Some(DexValue::Long(-2_000_000_000))
+    );
+    assert!(program
+        .runtime
+        .borrow()
+        .handler_posts
+        .iter()
+        .any(|post| post.runnable == task && post.delay_millis == 1000));
+    assert_eq!(
+        program.repeating_scheduled_task_delay_millis(&task),
+        Some(2000)
+    );
+
+    let finished = program.allocate_object("Ljava/util/concurrent/FutureTask;".to_owned());
+    assert!(program.write_stored_instance_field(
+        &finished,
+        &future_task_done_field(),
+        DexValue::Int(1)
+    ));
+    assert!(program.write_stored_instance_field(&task, &future_task_runnable_field(), finished));
+    program
+        .dispatch_runnable(&task, "ScheduledFutureTask.run", 0)
+        .expect("periodic task should run");
+    assert_eq!(
+        program.read_stored_instance_field(&task, &future_task_done_field()),
+        None
+    );
+    assert_eq!(
+        program.repeating_scheduled_task_delay_millis(&task),
+        Some(2000)
+    );
+
+    for (delay, initial) in [(0i64, 1i64), (1, 0)] {
+        let result = program.invoke_builtin_method(
+            &schedule,
+            Some(&test_invocation(vec![
+                executor.clone(),
+                command.clone(),
+                DexValue::Long(initial),
+                DexValue::Long(initial),
+                DexValue::Long(delay),
+                DexValue::Long(delay),
+                seconds_unit(),
+            ])),
+        );
+        if delay <= 0 {
+            assert!(program.value_matches_type(
+                &thrown_exception(result),
+                "Ljava/lang/IllegalArgumentException;"
+            ));
+        } else {
+            assert!(matches!(result, Some(DexExecutionResult::Value(_))));
+        }
+    }
+}
+
+#[test]
 fn libcore_scheduled_future_task_runs_its_runnable_through_future_task_run() {
     // cite: libcore ScheduledThreadPoolExecutor.java#ScheduledFutureTask
     // cite: libcore FutureTask.java#run
@@ -3065,4 +3254,63 @@ fn reentrant_read_write_lock_hands_out_the_same_read_and_write_lock_per_instance
     );
     assert_eq!(call(&read_lock), Some(DexExecutionResult::Value(reader)));
     assert_eq!(call(&write_lock), Some(DexExecutionResult::Value(writer)));
+}
+
+#[test]
+fn libcore_reentrant_lock_new_condition_returns_a_condition_object() {
+    // cite: libcore ReentrantLock.java#newCondition, ConditionObject
+    let program = DexProgram::new(Vec::new());
+    let new_condition = builtin_method(
+        "Ljava/util/concurrent/locks/ReentrantLock;",
+        "newCondition",
+        "Ljava/util/concurrent/locks/Condition;",
+        &[],
+    );
+    let lock = program.allocate_object("Ljava/util/concurrent/locks/ReentrantLock;".to_owned());
+    let Some(DexExecutionResult::Value(condition)) =
+        program.invoke_builtin_method(&new_condition, Some(&test_invocation(vec![lock])))
+    else {
+        panic!("newCondition should return a condition");
+    };
+
+    assert!(program.value_matches_type(&condition, "Ljava/util/concurrent/locks/Condition;"));
+    assert_eq!(
+        value_class_descriptor(&condition),
+        Some("Ljava/util/concurrent/locks/ReentrantLock$ConditionObject;")
+    );
+}
+
+#[test]
+fn libcore_semaphore_constructor_stores_permits_and_rejects_negative_counts() {
+    // cite: libcore Semaphore.java#Semaphore
+    let program = DexProgram::new(Vec::new());
+    let constructor = builtin_method("Ljava/util/concurrent/Semaphore;", "<init>", "V", &["I"]);
+    let semaphore = program.allocate_object("Ljava/util/concurrent/Semaphore;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![semaphore.clone(), DexValue::Int(2)]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program
+            .runtime
+            .borrow()
+            .semaphore_permits
+            .get(&map_identity_key(&semaphore)),
+        Some(&2)
+    );
+    let result = program.invoke_builtin_method(
+        &constructor,
+        Some(&test_invocation(vec![
+            program.allocate_object("Ljava/util/concurrent/Semaphore;".to_owned()),
+            DexValue::Int(-1),
+        ])),
+    );
+    assert!(program.value_matches_type(
+        &thrown_exception(result),
+        "Ljava/lang/IllegalArgumentException;"
+    ));
 }

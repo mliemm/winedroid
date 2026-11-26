@@ -33,6 +33,16 @@ impl DexProgram {
 
         if method.class_descriptor == "Ljava/lang/String;"
             && method.name == "<init>"
+            && method.proto.descriptor_is("([BLjava/lang/String;)V")
+        {
+            let invocation = invocation?;
+            self.initialize_string_from_byte_array(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.class_descriptor == "Ljava/lang/String;"
+            && method.name == "<init>"
             && method.proto.descriptor_is("([C)V")
         {
             let invocation = invocation?;

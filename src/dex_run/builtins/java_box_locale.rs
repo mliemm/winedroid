@@ -171,6 +171,20 @@ impl DexProgram {
             )));
         }
 
+        if method.matches_builtin_signature(
+            "Ljava/lang/Long;",
+            "toHexString",
+            "(J)Ljava/lang/String;",
+        ) {
+            // cite: libcore Long.java#toHexString
+            let invocation = invocation?;
+            let value = long_to_hex_string(invocation)?;
+
+            return Some(DexExecutionResult::Value(DexValue::String(
+                std::rc::Rc::from(value),
+            )));
+        }
+
         if method.matches_builtin_signature("Ljava/lang/Integer;", "intValue", "()I")
             || method.matches_builtin_signature("Ljava/lang/Number;", "intValue", "()I")
         {

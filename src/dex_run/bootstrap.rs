@@ -417,6 +417,18 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         "Ljava/util/Hashtable;" => Some("Ljava/util/Dictionary;"),
         // cite: libcore Dictionary.java#Dictionary
         "Ljava/util/Dictionary;" => Some("Ljava/lang/Object;"),
+        // cite: libcore Runtime.java#Runtime
+        "Ljava/lang/Runtime;" => Some("Ljava/lang/Object;"),
+        // cite: libcore Process.java#Process
+        "Ljava/lang/Process;" => Some("Ljava/lang/Object;"),
+        // cite: libcore ReentrantLock.java#newCondition, ConditionObject
+        "Ljava/util/concurrent/locks/ReentrantLock$ConditionObject;" => Some("Ljava/lang/Object;"),
+        // cite: libcore Observable.java#Observable
+        "Ljava/util/Observable;" => Some("Ljava/lang/Object;"),
+        // cite: frameworks-base DisplayMetrics.java#DisplayMetrics
+        "Landroid/util/DisplayMetrics;" => Some("Ljava/lang/Object;"),
+        // cite: frameworks-base WebViewClient.java#WebViewClient
+        "Landroid/webkit/WebViewClient;" => Some("Ljava/lang/Object;"),
         "Ljava/util/AbstractCollection;" | "Ljava/util/AbstractMap;" => Some("Ljava/lang/Object;"),
         // cite: libcore AbstractMap.java#SimpleEntry
         "Ljava/util/AbstractMap$SimpleEntry;" => Some("Ljava/lang/Object;"),
@@ -472,6 +484,12 @@ pub(super) fn bootstrap_direct_interface_descriptors(
             "Ljava/lang/invoke/TypeDescriptor$OfField;",
             "Ljava/io/Serializable;",
         ],
+        // cite: libcore ReentrantLock.java#ConditionObject
+        "Ljava/util/concurrent/locks/ReentrantLock$ConditionObject;" => {
+            &["Ljava/util/concurrent/locks/Condition;"]
+        }
+        // cite: libcore Condition.java#Condition
+        "Ljava/util/concurrent/locks/Condition;" => &[],
         // cite: libcore ZipFile.java#ZipFile
         // cite: libcore InputStream.java#InputStream
         "Ljava/util/zip/ZipFile;" | "Ljava/io/InputStream;" => &["Ljava/io/Closeable;"],
@@ -677,6 +695,8 @@ pub(super) fn is_bootstrap_interface_descriptor(class_descriptor: &str) -> bool 
             // cite: frameworks-base WindowManager.java#WindowManager
             | "Landroid/view/WindowManager;"
             | "Ljava/util/concurrent/locks/Lock;"
+            // cite: libcore Condition.java#Condition
+            | "Ljava/util/concurrent/locks/Condition;"
             // cite: libcore ReadWriteLock.java#ReadWriteLock
             | "Ljava/util/concurrent/locks/ReadWriteLock;"
             // cite: frameworks-base Cursor.java#Cursor

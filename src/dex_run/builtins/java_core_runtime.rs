@@ -197,6 +197,66 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(value));
         }
 
+        if method.class_descriptor == "Ljava/lang/Runtime;"
+            && method.name == "getRuntime"
+            && method.proto.descriptor_is("()Ljava/lang/Runtime;")
+        {
+            // cite: libcore Runtime.java#getRuntime
+            return Some(DexExecutionResult::Value(DexValue::Reference(
+                std::rc::Rc::from("Ljava/lang/Runtime;.bootstrap"),
+            )));
+        }
+
+        if method.class_descriptor == "Ljava/lang/Runtime;"
+            && method.name == "exec"
+            && method
+                .proto
+                .descriptor_is("(Ljava/lang/String;)Ljava/lang/Process;")
+        {
+            // cite: libcore Runtime.java#exec
+            let invocation = invocation?;
+            let DexValue::String(command) = invocation.arguments.get(1)? else {
+                return None;
+            };
+            let process = self.runtime_exec_process(command)?;
+
+            return Some(DexExecutionResult::Value(process));
+        }
+
+        if method.class_descriptor == "Ljava/lang/Process;"
+            && method.name == "getInputStream"
+            && method.proto.descriptor_is("()Ljava/io/InputStream;")
+        {
+            let invocation = invocation?;
+
+            return Some(DexExecutionResult::Value(
+                self.process_input_stream(invocation)?,
+            ));
+        }
+
+        if method.class_descriptor == "Ljava/lang/Process;"
+            && matches!(method.name.as_str(), "waitFor" | "exitValue")
+            && method.proto.descriptor_is("()I")
+        {
+            // cite: libcore Process.java#waitFor, exitValue
+            return Some(DexExecutionResult::Int(0));
+        }
+
+        if method.class_descriptor == "Ljava/lang/Process;"
+            && method.name == "destroy"
+            && method.proto.descriptor_is("()V")
+        {
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.class_descriptor == "Ljava/util/Observable;"
+            && method.name == "<init>"
+            && method.proto.descriptor_is("()V")
+        {
+            // cite: libcore Observable.java#Observable
+            return Some(DexExecutionResult::Void);
+        }
+
         if method.class_descriptor == "Ljava/lang/System;"
             && method.name == "currentTimeMillis"
             && method.proto.descriptor_is("()J")
@@ -2058,6 +2118,15 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Landroid/os/Handler;"
+            && method.name == "sendMessageAtTime"
+            && method.proto.descriptor_is("(Landroid/os/Message;J)Z")
+        {
+            let invocation = invocation?;
+
+            return self.handler_send_message_at_time(invocation);
+        }
+
+        if method.class_descriptor == "Landroid/os/Handler;"
             && method.name == "sendMessageDelayed"
             && method.proto.descriptor_is("(Landroid/os/Message;J)Z")
         {
@@ -2104,6 +2173,31 @@ impl DexProgram {
             self.handler_remove_messages(invocation)?;
 
             return Some(DexExecutionResult::Void);
+        }
+
+        if method.class_descriptor == "Landroid/os/Looper;"
+            && method.name == "loop"
+            && method.proto.descriptor_is("()V")
+        {
+            // cite: frameworks-base Looper.java#loop, loopOnce
+            if self.current_guest_thread_is_main() {
+                return Some(DexExecutionResult::Void);
+            }
+
+            return Some(DexExecutionResult::Parked(DexParkedExecution::empty()));
+        }
+
+        if method.class_descriptor == "Landroid/os/Message;"
+            && method.name == "obtain"
+            && method
+                .proto
+                .descriptor_is("(Landroid/os/Handler;Ljava/lang/Runnable;)Landroid/os/Message;")
+        {
+            // cite: frameworks-base Message.java#obtain
+            let invocation = invocation?;
+            let value = self.message_obtain_with_callback(invocation)?;
+
+            return Some(DexExecutionResult::Value(value));
         }
 
         if method.class_descriptor == "Landroid/os/Handler;"
@@ -3774,4 +3868,55 @@ fn thread_cpu_millis() -> Option<i64> {
             .saturating_mul(1000)
             .saturating_add(i64::from(now.tv_nsec) / 1_000_000),
     )
+}
+
+impl DexProgram {
+    // cite: libcore Runtime.java#exec
+    fn runtime_exec_process(&self, command: &str) -> Option<DexValue> {
+        let mut words = command.split_whitespace();
+        if words.next()? != "getprop" {
+            return None;
+        }
+        let key = words.next().unwrap_or("");
+        let value = if key.is_empty() {
+            String::new()
+        } else {
+            bootstrap_system_property(key).unwrap_or_default()
+        };
+
+        let input = self.allocate_object("Ljava/io/InputStream;".to_owned());
+        let mut bytes = value.into_bytes();
+        bytes.push(b'\n');
+        self.runtime.borrow_mut().input_stream_values.insert(
+            map_identity_key(&input),
+            InputStreamState {
+                bytes,
+                position: 0,
+                pending_low_surrogate: None,
+            },
+        );
+
+        let process = self.allocate_object("Ljava/lang/Process;".to_owned());
+        if !self.write_stored_instance_field(&process, &process_input_stream_field(), input) {
+            return None;
+        }
+
+        Some(process)
+    }
+
+    // cite: libcore Process.java#getInputStream
+    fn process_input_stream(&self, invocation: &DexInvocation) -> Option<DexValue> {
+        self.read_stored_instance_field(
+            invocation.arguments.first()?,
+            &process_input_stream_field(),
+        )
+    }
+}
+
+fn process_input_stream_field() -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Ljava/lang/Process;".to_owned(),
+        type_descriptor: "Ljava/io/InputStream;".to_owned(),
+        name: "inputStream".to_owned(),
+    }
 }

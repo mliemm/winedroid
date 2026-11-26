@@ -1821,3 +1821,31 @@ fn frameworks_activity_manager_reports_no_historical_process_start_reasons() {
         );
     }
 }
+
+#[test]
+fn frameworks_web_view_client_constructor_returns_void() {
+    // cite: frameworks-base WebViewClient.java#WebViewClient
+    let program = DexProgram::new(Vec::new());
+    let constructor = builtin_method("Landroid/webkit/WebViewClient;", "<init>", "V", &[]);
+    let client = program.allocate_object("Landroid/webkit/WebViewClient;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(&constructor, Some(&test_invocation(vec![client.clone()]))),
+        Some(DexExecutionResult::Void)
+    );
+    assert!(program.value_matches_type(&client, "Landroid/webkit/WebViewClient;"));
+}
+
+#[test]
+fn frameworks_display_metrics_constructor_returns_void() {
+    // cite: frameworks-base DisplayMetrics.java#DisplayMetrics
+    let program = DexProgram::new(Vec::new());
+    let constructor = builtin_method("Landroid/util/DisplayMetrics;", "<init>", "V", &[]);
+    let metrics = program.allocate_object("Landroid/util/DisplayMetrics;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(&constructor, Some(&test_invocation(vec![metrics.clone()]))),
+        Some(DexExecutionResult::Void)
+    );
+    assert!(program.value_matches_type(&metrics, "Landroid/util/DisplayMetrics;"));
+}

@@ -114,6 +114,30 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Lorg/json/JSONObject;"
+            && method.name == "opt"
+            && method
+                .proto
+                .descriptor_is("(Ljava/lang/String;)Ljava/lang/Object;")
+        {
+            // cite: libcore JSONObject.java#opt
+            let invocation = invocation?;
+            let value = self.json_object_opt(invocation)?;
+
+            return Some(DexExecutionResult::Value(value));
+        }
+
+        if method.class_descriptor == "Lorg/json/JSONObject;"
+            && method.name == "has"
+            && method.proto.descriptor_is("(Ljava/lang/String;)Z")
+        {
+            // cite: libcore JSONObject.java#has
+            let invocation = invocation?;
+            let value = self.json_object_has(invocation)?;
+
+            return Some(DexExecutionResult::Int(value));
+        }
+
+        if method.class_descriptor == "Lorg/json/JSONObject;"
             && method.name == "isNull"
             && method.proto.descriptor_is("(Ljava/lang/String;)Z")
         {
@@ -382,6 +406,30 @@ impl DexProgram {
             self.clear_list(invocation)?;
 
             return Some(DexExecutionResult::Void);
+        }
+
+        if method.class_descriptor == "Ljava/util/concurrent/ConcurrentLinkedQueue;"
+            && method.name == "poll"
+            && method.proto.descriptor_is("()Ljava/lang/Object;")
+        {
+            // cite: libcore ConcurrentLinkedQueue.java#poll
+            let invocation = invocation?;
+            let queue_key = map_identity_key(&invocation.arguments[0]);
+            let value = self
+                .runtime
+                .borrow_mut()
+                .list_entries
+                .get_mut(&queue_key)
+                .and_then(|values| {
+                    if values.is_empty() {
+                        None
+                    } else {
+                        Some(values.remove(0))
+                    }
+                })
+                .unwrap_or(DexValue::Null);
+
+            return Some(DexExecutionResult::Value(value));
         }
 
         if method.class_descriptor == "Ljava/util/concurrent/ConcurrentLinkedDeque;"

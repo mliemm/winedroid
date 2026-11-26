@@ -1636,6 +1636,14 @@ pub(in crate::dex_run) fn blend_mode_color_filter_mode_field() -> DexFieldId {
     }
 }
 
+pub(in crate::dex_run) fn display_metrics_field(name: &str, type_descriptor: &str) -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Landroid/util/DisplayMetrics;".to_owned(),
+        type_descriptor: type_descriptor.to_owned(),
+        name: name.to_owned(),
+    }
+}
+
 pub(in crate::dex_run) fn point_int_field(name: &str) -> DexFieldId {
     DexFieldId {
         class_descriptor: "Landroid/graphics/Point;".to_owned(),

@@ -676,3 +676,86 @@ fn handle_message_dex(class: &str, superclass: &str, boolean: bool, value: u8) -
 
     data
 }
+
+// cite: frameworks-base Message.java#obtain
+#[test]
+fn message_obtain_with_handler_and_callback_sets_target_and_callback() {
+    let program = DexProgram::new(Vec::new());
+    let handler = new_handler(&program, "Landroid/os/Handler;");
+    let callback = program.allocate_object("Lcom/example/Runnable;".to_owned());
+    let obtain = builtin_method(
+        "Landroid/os/Message;",
+        "obtain",
+        "Landroid/os/Message;",
+        &["Landroid/os/Handler;", "Ljava/lang/Runnable;"],
+    );
+    let message = match program.invoke_builtin_method(
+        &obtain,
+        Some(&test_invocation(vec![handler.clone(), callback.clone()])),
+    ) {
+        Some(DexExecutionResult::Value(message)) => message,
+        other => panic!("Message.obtain: {other:?}"),
+    };
+
+    assert_eq!(
+        program.read_stored_instance_field(&message, &message_handler_field("target")),
+        Some(handler)
+    );
+    assert_eq!(
+        program.read_stored_instance_field(
+            &message,
+            &DexFieldId {
+                class_descriptor: "Landroid/os/Message;".to_owned(),
+                type_descriptor: "Ljava/lang/Runnable;".to_owned(),
+                name: "callback".to_owned(),
+            }
+        ),
+        Some(callback)
+    );
+}
+
+// cite: frameworks-base Handler.java#sendMessageAtTime
+#[test]
+fn handler_send_message_at_time_posts_at_the_absolute_uptime() {
+    let program = DexProgram::new(Vec::new());
+    let handler = new_handler(&program, "Landroid/os/Handler;");
+    let message = obtain_message(&program, &handler, 9);
+    let send = handler_method("sendMessageAtTime", "Z", &["Landroid/os/Message;", "J"]);
+    program.runtime.borrow_mut().main_thread_uptime_millis = 1000;
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &send,
+            Some(&test_invocation(vec![
+                handler.clone(),
+                message.clone(),
+                DexValue::Long(1750),
+                DexValue::Long(1750),
+            ]))
+        ),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert!(program
+        .runtime
+        .borrow()
+        .handler_posts
+        .iter()
+        .any(|post| post.runnable == message && post.delay_millis == 750));
+}
+
+// cite: frameworks-base Looper.java#loop
+#[test]
+fn frameworks_looper_loop_parks_background_threads_and_returns_on_main() {
+    let program = DexProgram::new(Vec::new());
+    let loop_method = builtin_method("Landroid/os/Looper;", "loop", "V", &[]);
+
+    assert_eq!(
+        program.invoke_builtin_method(&loop_method, Some(&test_invocation(Vec::new()))),
+        Some(DexExecutionResult::Void)
+    );
+    let worker = program.allocate_object("Landroid/os/HandlerThread;".to_owned());
+    let result = program.with_current_guest_thread(worker, || {
+        program.invoke_builtin_method(&loop_method, Some(&test_invocation(Vec::new())))
+    });
+    assert!(matches!(result, Some(DexExecutionResult::Parked(_))));
+}

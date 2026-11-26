@@ -130,6 +130,25 @@ pub(in crate::dex_run) fn double_parse_double(invocation: &DexInvocation) -> Opt
         .map(|parsed| parsed.to_bits() as i64)
 }
 
+pub(in crate::dex_run) fn long_to_hex_string(invocation: &DexInvocation) -> Option<String> {
+    // cite: libcore Long.java#toHexString
+    if invocation.arguments.len() != 2 {
+        return None;
+    }
+
+    let DexValue::Long(value) = invocation.arguments[0] else {
+        return None;
+    };
+    let DexValue::Long(high_slot_value) = invocation.arguments[1] else {
+        return None;
+    };
+    if high_slot_value != value {
+        return None;
+    }
+
+    Some(format!("{:x}", value as u64))
+}
+
 pub(in crate::dex_run) fn integer_to_hex_string(invocation: &DexInvocation) -> Option<String> {
     if invocation.arguments.len() != 1 {
         return None;

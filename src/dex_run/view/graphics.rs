@@ -314,6 +314,69 @@ impl DexProgram {
         Some(())
     }
 
+    // cite: frameworks-base Display.java#getMetrics, getRealMetrics
+    // cite: frameworks-base DisplayMetrics.java#setToDefaults
+    pub(in crate::dex_run) fn display_write_metrics(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<()> {
+        let [display, metrics] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        if !dex_value_is_object_like(display) || !dex_value_is_object_like(metrics) {
+            return None;
+        }
+
+        let display_size = self.display_size();
+        for (name, value) in [
+            ("densityDpi", DexValue::Int(BOOTSTRAP_DISPLAY_DENSITY_DPI)),
+            (
+                "noncompatDensityDpi",
+                DexValue::Int(BOOTSTRAP_DISPLAY_DENSITY_DPI),
+            ),
+            ("widthPixels", DexValue::Int(display_size.width_i32())),
+            (
+                "noncompatWidthPixels",
+                DexValue::Int(display_size.width_i32()),
+            ),
+            ("heightPixels", DexValue::Int(display_size.height_i32())),
+            (
+                "noncompatHeightPixels",
+                DexValue::Int(display_size.height_i32()),
+            ),
+        ] {
+            if !self.write_stored_instance_field(metrics, &display_metrics_field(name, "I"), value)
+            {
+                return None;
+            }
+        }
+        for name in [
+            "density",
+            "scaledDensity",
+            "noncompatDensity",
+            "noncompatScaledDensity",
+        ] {
+            if !self.write_stored_instance_field(
+                metrics,
+                &display_metrics_field(name, "F"),
+                DexValue::Float(BOOTSTRAP_DISPLAY_DENSITY),
+            ) {
+                return None;
+            }
+        }
+        for name in ["xdpi", "ydpi", "noncompatXdpi", "noncompatYdpi"] {
+            if !self.write_stored_instance_field(
+                metrics,
+                &display_metrics_field(name, "F"),
+                DexValue::Float(BOOTSTRAP_DISPLAY_DENSITY_DPI as f32),
+            ) {
+                return None;
+            }
+        }
+
+        Some(())
+    }
+
     pub(in crate::dex_run) fn initialize_matrix(&self, invocation: &DexInvocation) -> Option<()> {
         if invocation.arguments.len() != 1 {
             return None;

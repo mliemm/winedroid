@@ -933,11 +933,11 @@ fn builtin_print_stream_printf_returns_receiver_per_libcore_print_stream_java() 
     );
     assert_eq!(
         program.invoke_builtin_method(&method, Some(&null_arguments)),
-        Some(DexExecutionResult::Value(receiver))
+        Some(DexExecutionResult::Value(receiver.clone()))
     );
     assert_eq!(
         program.invoke_builtin_method(&method, Some(&missing_argument)),
-        None
+        Some(DexExecutionResult::Value(receiver))
     );
     assert_eq!(
         program.invoke_builtin_method(&method, Some(&null_receiver)),
@@ -4554,5 +4554,130 @@ fn libcore_thread_default_uncaught_exception_handler_round_trips_and_clears_with
     assert_eq!(
         program.invoke_builtin_method(&set, Some(&test_invocation(vec![DexValue::Long(1)]))),
         None
+    );
+}
+
+#[test]
+fn libcore_observable_constructor_returns_void() {
+    // cite: libcore Observable.java#Observable
+    let program = DexProgram::new(Vec::new());
+    let constructor = builtin_method("Ljava/util/Observable;", "<init>", "V", &[]);
+    let observable = program.allocate_object("Ljava/util/Observable;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(&constructor, Some(&test_invocation(vec![observable]))),
+        Some(DexExecutionResult::Void)
+    );
+}
+
+#[test]
+fn frameworks_base_handler_thread_run_parks_the_looper_thread_after_on_looper_prepared() {
+    // cite: frameworks-base HandlerThread.java#run
+    // cite: frameworks-base Looper.java#loop
+    let program = DexProgram::new(Vec::new());
+    let thread = started_handler_thread(&program);
+
+    program
+        .run_handler_thread(&thread, 0)
+        .expect("HandlerThread.run should park the looper thread");
+    assert!(program
+        .runtime
+        .borrow()
+        .parked_thread_values
+        .values()
+        .any(|value| value == &thread));
+}
+
+#[test]
+fn libcore_runtime_exec_getprop_exposes_the_property_on_the_process_input_stream() {
+    // cite: libcore Runtime.java#exec
+    // cite: libcore Process.java#getInputStream
+    let program = DexProgram::new(Vec::new());
+    let get_runtime = builtin_method(
+        "Ljava/lang/Runtime;",
+        "getRuntime",
+        "Ljava/lang/Runtime;",
+        &[],
+    );
+    let exec = builtin_method(
+        "Ljava/lang/Runtime;",
+        "exec",
+        "Ljava/lang/Process;",
+        &["Ljava/lang/String;"],
+    );
+    let get_input_stream = builtin_method(
+        "Ljava/lang/Process;",
+        "getInputStream",
+        "Ljava/io/InputStream;",
+        &[],
+    );
+    let wait_for = builtin_method("Ljava/lang/Process;", "waitFor", "I", &[]);
+    let input_reader = builtin_method(
+        "Ljava/io/InputStreamReader;",
+        "<init>",
+        "V",
+        &["Ljava/io/InputStream;", "Ljava/lang/String;"],
+    );
+    let buffered_reader = builtin_method(
+        "Ljava/io/BufferedReader;",
+        "<init>",
+        "V",
+        &["Ljava/io/Reader;"],
+    );
+    let read_line = builtin_method(
+        "Ljava/io/BufferedReader;",
+        "readLine",
+        "Ljava/lang/String;",
+        &[],
+    );
+
+    let Some(DexExecutionResult::Value(runtime)) =
+        program.invoke_builtin_method(&get_runtime, Some(&test_invocation(Vec::new())))
+    else {
+        panic!("getRuntime should return the runtime");
+    };
+    let Some(DexExecutionResult::Value(process)) = program.invoke_builtin_method(
+        &exec,
+        Some(&test_invocation(vec![
+            runtime,
+            DexValue::String(std::rc::Rc::from("getprop java.version")),
+        ])),
+    ) else {
+        panic!("exec getprop should return a process");
+    };
+    assert_eq!(
+        program.invoke_builtin_method(&wait_for, Some(&test_invocation(vec![process.clone()]))),
+        Some(DexExecutionResult::Int(0))
+    );
+    let Some(DexExecutionResult::Value(input)) =
+        program.invoke_builtin_method(&get_input_stream, Some(&test_invocation(vec![process])))
+    else {
+        panic!("getInputStream should return a stream");
+    };
+    let reader = program.allocate_object("Ljava/io/InputStreamReader;".to_owned());
+    assert_eq!(
+        program.invoke_builtin_method(
+            &input_reader,
+            Some(&test_invocation(vec![
+                reader.clone(),
+                input,
+                DexValue::String(std::rc::Rc::from("UTF-8")),
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    let buffered = program.allocate_object("Ljava/io/BufferedReader;".to_owned());
+    assert_eq!(
+        program.invoke_builtin_method(
+            &buffered_reader,
+            Some(&test_invocation(vec![buffered.clone(), reader]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&read_line, Some(&test_invocation(vec![buffered]))),
+        Some(DexExecutionResult::Value(DexValue::String(
+            std::rc::Rc::from("0")
+        )))
     );
 }

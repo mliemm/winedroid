@@ -52,6 +52,17 @@ impl DexProgram {
         }
 
         if method.matches_builtin_signature(
+            "Ljava/util/concurrent/ThreadPoolExecutor;",
+            "submit",
+            "(Ljava/lang/Runnable;)Ljava/util/concurrent/Future;",
+        ) {
+            // cite: libcore AbstractExecutorService.java#submit
+            let invocation = invocation?;
+
+            return self.thread_pool_executor_submit_runnable(invocation);
+        }
+
+        if method.matches_builtin_signature(
             "Ljava/util/concurrent/ScheduledThreadPoolExecutor;",
             "submit",
             "(Ljava/lang/Runnable;)Ljava/util/concurrent/Future;",
@@ -82,6 +93,17 @@ impl DexProgram {
             let invocation = invocation?;
 
             return self.scheduled_thread_pool_executor_schedule_runnable(invocation);
+        }
+
+        if method.matches_builtin_signature(
+            "Ljava/util/concurrent/ScheduledThreadPoolExecutor;",
+            "scheduleWithFixedDelay",
+            "(Ljava/lang/Runnable;JJLjava/util/concurrent/TimeUnit;)Ljava/util/concurrent/ScheduledFuture;",
+        ) {
+            // cite: libcore ScheduledThreadPoolExecutor.java#scheduleWithFixedDelay
+            let invocation = invocation?;
+
+            return self.scheduled_thread_pool_executor_schedule_with_fixed_delay(invocation);
         }
 
         if method.matches_builtin_signature(
@@ -346,6 +368,23 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        if method.matches_builtin_signature(
+            "Ljava/util/concurrent/locks/ReentrantLock;",
+            "newCondition",
+            "()Ljava/util/concurrent/locks/Condition;",
+        ) {
+            // cite: libcore ReentrantLock.java#newCondition, ConditionObject
+            let invocation = invocation?;
+            if !dex_value_is_object_like(&invocation.arguments[0]) {
+                return None;
+            }
+            let condition = self.allocate_object(
+                "Ljava/util/concurrent/locks/ReentrantLock$ConditionObject;".to_owned(),
+            );
+
+            return Some(DexExecutionResult::Value(condition));
+        }
+
         if is_builtin_lock_class(&method.class_descriptor)
             && matches!(method.name.as_str(), "lock" | "unlock")
             && method.proto.descriptor_is("()V")
@@ -568,6 +607,73 @@ impl DexProgram {
             let value = self.atomic_integer_compare_and_set(invocation)?;
 
             return Some(DexExecutionResult::Int(value));
+        }
+
+        if method.class_descriptor == "Ljava/util/concurrent/Semaphore;"
+            && method.name == "<init>"
+            && matches!(method.proto.descriptor().as_str(), "(I)V" | "(IZ)V")
+        {
+            // cite: libcore Semaphore.java#Semaphore
+            let invocation = invocation?;
+            let DexValue::Int(permits) = invocation.arguments.get(1)? else {
+                return None;
+            };
+            if *permits < 0 {
+                return Some(DexExecutionResult::Throw(
+                    self.allocate_object("Ljava/lang/IllegalArgumentException;".to_owned()),
+                ));
+            }
+            self.runtime
+                .borrow_mut()
+                .semaphore_permits
+                .insert(map_identity_key(&invocation.arguments[0]), *permits);
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.matches_builtin_signature(
+            "Ljava/util/concurrent/atomic/AtomicLong;",
+            "<init>",
+            "()V",
+        ) {
+            // cite: libcore AtomicLong.java#AtomicLong
+            let invocation = invocation?;
+            self.initialize_atomic_long(invocation, 0)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.matches_builtin_signature(
+            "Ljava/util/concurrent/atomic/AtomicLong;",
+            "<init>",
+            "(J)V",
+        ) {
+            // cite: libcore AtomicLong.java#AtomicLong
+            let invocation = invocation?;
+            let [object, DexValue::Long(initial_value), DexValue::Long(high_slot_value)] =
+                invocation.arguments.as_slice()
+            else {
+                return None;
+            };
+            let _ = object;
+            if initial_value != high_slot_value {
+                return None;
+            }
+            self.initialize_atomic_long(invocation, *initial_value)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.matches_builtin_signature(
+            "Ljava/util/concurrent/atomic/AtomicLong;",
+            "getAndAdd",
+            "(J)J",
+        ) {
+            // cite: libcore AtomicLong.java#getAndAdd
+            let invocation = invocation?;
+            let value = self.atomic_long_get_and_add(invocation)?;
+
+            return Some(DexExecutionResult::Value(DexValue::Long(value)));
         }
 
         if method.matches_builtin_signature(

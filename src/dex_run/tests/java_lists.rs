@@ -3051,3 +3051,66 @@ fn libcore_copy_on_write_array_list_clear_removes_every_element() {
         Some(DexExecutionResult::Int(0))
     );
 }
+
+#[test]
+fn libcore_concurrent_linked_queue_poll_removes_the_head() {
+    // cite: libcore ConcurrentLinkedQueue.java#poll
+    let program = DexProgram::new(Vec::new());
+    let poll = builtin_method(
+        "Ljava/util/concurrent/ConcurrentLinkedQueue;",
+        "poll",
+        "Ljava/lang/Object;",
+        &[],
+    );
+    let queue = program.allocate_object("Ljava/util/concurrent/ConcurrentLinkedQueue;".to_owned());
+    program.runtime.borrow_mut().list_entries.insert(
+        map_identity_key(&queue),
+        vec![DexValue::Int(1), DexValue::Int(2)],
+    );
+
+    assert_eq!(
+        program.invoke_builtin_method(&poll, Some(&test_invocation(vec![queue.clone()]))),
+        Some(DexExecutionResult::Value(DexValue::Int(1)))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&poll, Some(&test_invocation(vec![queue.clone()]))),
+        Some(DexExecutionResult::Value(DexValue::Int(2)))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&poll, Some(&test_invocation(vec![queue]))),
+        Some(DexExecutionResult::Value(DexValue::Null))
+    );
+}
+
+#[test]
+fn libcore_collections_add_all_appends_every_array_element() {
+    // cite: libcore Collections.java#addAll
+    let program = DexProgram::new(Vec::new());
+    let add_all = builtin_method(
+        "Ljava/util/Collections;",
+        "addAll",
+        "Z",
+        &["Ljava/util/Collection;", "[Ljava/lang/Object;"],
+    );
+    let list = program.allocate_object("Ljava/util/ArrayList;".to_owned());
+    let elements = program.allocate_filled_array(
+        "[Ljava/lang/Object;".to_owned(),
+        vec![DexValue::Int(1), DexValue::Int(2)],
+    );
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &add_all,
+            Some(&test_invocation(vec![list.clone(), elements]))
+        ),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(
+        program
+            .runtime
+            .borrow()
+            .list_entries
+            .get(&map_identity_key(&list)),
+        Some(&vec![DexValue::Int(1), DexValue::Int(2)])
+    );
+}

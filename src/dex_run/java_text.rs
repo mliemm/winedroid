@@ -649,6 +649,37 @@ impl DexProgram {
         Some(())
     }
 
+    pub(super) fn initialize_string_from_byte_array(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<()> {
+        // cite: libcore String.java#String, StringCoding
+        if invocation.arguments.len() != 3 {
+            return None;
+        }
+        let bytes = self.byte_array_contents(&invocation.arguments[1])?;
+        let charset = self.string_text(&invocation.arguments[2])?;
+        let text = decode_charset_bytes(&bytes, &charset)?;
+        let key = map_identity_key(&invocation.arguments[0]);
+
+        self.runtime.borrow_mut().string_values.insert(key, text);
+
+        Some(())
+    }
+
+    fn byte_array_contents(&self, value: &DexValue) -> Option<Vec<u8>> {
+        let key = map_identity_key(value);
+        let runtime = self.runtime.borrow();
+        let entries = runtime.array_entries.get(&key)?;
+        entries
+            .iter()
+            .map(|entry| match entry {
+                DexValue::Int(value) => Some(*value as u8),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub(super) fn initialize_string_from_full_char_array(
         &self,
         invocation: &DexInvocation,
@@ -2881,16 +2912,17 @@ impl DexProgram {
             _ => return None,
         };
         let values = match argument_array {
-            DexValue::Null => Vec::new(),
-            _ => self
-                .runtime
-                .borrow()
-                .array_entries
-                .get(&map_identity_key(argument_array))?
-                .clone(),
+            DexValue::Null => None,
+            _ => Some(
+                self.runtime
+                    .borrow()
+                    .array_entries
+                    .get(&map_identity_key(argument_array))?
+                    .clone(),
+            ),
         };
 
-        format_java_string(format, &values)
+        self.format_java_string(format, values.as_deref())
     }
 
     pub(super) fn initialize_string_builder(&self, invocation: &DexInvocation) -> Option<()> {
@@ -3606,79 +3638,27 @@ impl DexProgram {
     }
 }
 
-pub(super) fn format_java_string(format: &str, arguments: &[DexValue]) -> Option<String> {
-    let mut result = String::new();
-    let mut chars = format.chars().peekable();
-    let mut argument_index = 0usize;
-
-    while let Some(character) = chars.next() {
-        if character != '%' {
-            result.push(character);
-            continue;
+pub(super) fn decode_charset_bytes(bytes: &[u8], charset: &str) -> Option<String> {
+    // cite: libcore String.java#String, StringCoding
+    let charset = charset.to_ascii_uppercase().replace('_', "-");
+    match charset.as_str() {
+        "UTF-8" | "UTF8" => Some(String::from_utf8_lossy(bytes).into_owned()),
+        "US-ASCII" | "ASCII" | "ANSI-X3.4-1968" => Some(
+            bytes
+                .iter()
+                .map(|byte| {
+                    if byte.is_ascii() {
+                        char::from(*byte)
+                    } else {
+                        '\u{fffd}'
+                    }
+                })
+                .collect(),
+        ),
+        "ISO-8859-1" | "ISO8859-1" | "ISO8859-1:1987" | "LATIN1" => {
+            Some(bytes.iter().map(|byte| char::from(*byte)).collect())
         }
-
-        if chars.peek() == Some(&'%') {
-            chars.next();
-            result.push('%');
-            continue;
-        }
-
-        let mut zero_pad = false;
-        if chars.peek() == Some(&'0') {
-            chars.next();
-            zero_pad = true;
-        }
-
-        let mut width = 0usize;
-        while let Some(digit) = chars.peek().and_then(|value| value.to_digit(10)) {
-            chars.next();
-            width = width.checked_mul(10)?.checked_add(digit as usize)?;
-        }
-
-        let conversion = chars.next()?;
-        let argument = arguments.get(argument_index)?;
-        argument_index += 1;
-        let formatted = match conversion {
-            's' => format_string_argument(argument)?,
-            'd' => format_integer_argument(argument)?.to_string(),
-            'x' => format!("{:x}", format_integer_argument(argument)?),
-            'X' => format!("{:X}", format_integer_argument(argument)?),
-            _ => return None,
-        };
-
-        if width > formatted.chars().count() {
-            let padding = width - formatted.chars().count();
-            let padding_character = if zero_pad { '0' } else { ' ' };
-            result.extend(std::iter::repeat(padding_character).take(padding));
-        }
-        result.push_str(&formatted);
-    }
-
-    Some(result)
-}
-
-pub(super) fn format_string_argument(value: &DexValue) -> Option<String> {
-    match value {
-        DexValue::String(value) => Some(value.clone().to_string()),
-        DexValue::Null => Some("null".to_owned()),
-        DexValue::Int(value) => Some(value.to_string()),
-        DexValue::Long(value) => Some(value.to_string()),
-        DexValue::Float(value) => Some(value.to_string()),
-        DexValue::Reference(reference) => boxed_reference_display_value(reference),
-        DexValue::Object(_) | DexValue::Uninitialized => None,
-    }
-}
-
-pub(super) fn format_integer_argument(value: &DexValue) -> Option<i64> {
-    match value {
-        DexValue::Int(value) => Some(i64::from(*value)),
-        DexValue::Long(value) => Some(*value),
-        DexValue::Reference(reference) => boxed_integer_reference_value(reference),
-        DexValue::Uninitialized
-        | DexValue::Null
-        | DexValue::Float(_)
-        | DexValue::String(_)
-        | DexValue::Object(_) => None,
+        _ => None,
     }
 }
 

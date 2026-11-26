@@ -1940,6 +1940,22 @@ impl DexProgram {
             return Some(DexExecutionResult::Int(value));
         }
 
+        if method.class_descriptor == "Landroid/util/DisplayMetrics;"
+            && method.name == "<init>"
+            && method.proto.descriptor_is("()V")
+        {
+            // cite: frameworks-base DisplayMetrics.java#DisplayMetrics
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.class_descriptor == "Landroid/webkit/WebViewClient;"
+            && method.name == "<init>"
+            && method.proto.descriptor_is("()V")
+        {
+            // cite: frameworks-base WebViewClient.java#WebViewClient
+            return Some(DexExecutionResult::Void);
+        }
+
         if method.class_descriptor == "Landroid/webkit/WebView;"
             && method.name == "setDataDirectorySuffix"
             && method.proto.descriptor_is("(Ljava/lang/String;)V")

@@ -46,6 +46,7 @@ mod helpers;
 mod host_actions;
 mod invocation;
 mod java_big_decimal;
+mod java_format;
 mod java_primitives;
 mod java_regex_engine;
 mod java_text;
@@ -2590,6 +2591,16 @@ impl DexProgram {
                         }
                     }
                 }
+                if let Some(delay_millis) =
+                    self.repeating_scheduled_task_delay_millis(&post.runnable)
+                {
+                    self.runtime.borrow_mut().post_handler_runnable(
+                        post.handler_key.clone(),
+                        post.runnable.clone(),
+                        delay_millis,
+                        false,
+                    );
+                }
                 dispatched += 1;
             }
 
@@ -2925,6 +2936,28 @@ impl DexProgram {
         Ok(ran)
     }
 
+    // cite: libcore ScheduledThreadPoolExecutor.java#ScheduledFutureTask, isPeriodic, setNextRunTime
+    fn repeating_scheduled_task_delay_millis(&self, task: &DexValue) -> Option<i64> {
+        if value_class_descriptor(task)
+            != Some("Ljava/util/concurrent/ScheduledThreadPoolExecutor$ScheduledFutureTask;")
+        {
+            return None;
+        }
+        let period =
+            match self.read_stored_instance_field(task, &scheduled_future_task_period_field()) {
+                Some(DexValue::Long(period)) if period != 0 => period,
+                _ => return None,
+            };
+        if self.read_stored_instance_field(task, &future_task_done_field())
+            == Some(DexValue::Int(1))
+        {
+            return None;
+        }
+        let nanos = period.unsigned_abs();
+
+        Some(nanos.saturating_add(999_999).checked_div(1_000_000)? as i64)
+    }
+
     fn dispatch_runnable(&self, runnable: &DexValue, context: &str, depth: usize) -> Result<()> {
         if value_class_descriptor(runnable) == Some("Landroid/os/Message;") {
             return self.dispatch_handler_message(runnable, depth);
@@ -3023,13 +3056,23 @@ impl DexProgram {
     }
 
     // cite: libcore Executors.java#callable, RunnableAdapter
+    // cite: libcore ScheduledThreadPoolExecutor.java#ScheduledFutureTask, runAndReset
     fn future_task_run_runnable(
         &self,
         receiver: &DexValue,
         runnable: &DexValue,
         depth: usize,
     ) -> Result<()> {
+        let periodic = matches!(
+            self.read_stored_instance_field(receiver, &scheduled_future_task_period_field()),
+            Some(DexValue::Long(period)) if period != 0
+        );
+
         self.dispatch_runnable(runnable, "FutureTask.run", depth)?;
+
+        if periodic {
+            return Ok(());
+        }
 
         let fixed_result = self
             .read_stored_instance_field(receiver, &future_task_runnable_result_field())

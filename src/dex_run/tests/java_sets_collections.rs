@@ -1992,3 +1992,65 @@ fn libcore_map_contains_value_follows_hash_map_and_concurrent_hash_map_java() {
     };
     assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
 }
+
+#[test]
+fn libcore_concurrent_hash_map_put_if_absent_keeps_the_first_value() {
+    // cite: libcore ConcurrentHashMap.java#putIfAbsent
+    let program = DexProgram::new(Vec::new());
+    let put_if_absent = builtin_method(
+        "Ljava/util/concurrent/ConcurrentHashMap;",
+        "putIfAbsent",
+        "Ljava/lang/Object;",
+        &["Ljava/lang/Object;", "Ljava/lang/Object;"],
+    );
+    let get = builtin_method(
+        "Ljava/util/concurrent/ConcurrentHashMap;",
+        "get",
+        "Ljava/lang/Object;",
+        &["Ljava/lang/Object;"],
+    );
+    let map = program.allocate_object("Ljava/util/concurrent/ConcurrentHashMap;".to_owned());
+    let key = DexValue::String(std::rc::Rc::from("key"));
+    let first = DexValue::String(std::rc::Rc::from("first"));
+    let second = DexValue::String(std::rc::Rc::from("second"));
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &put_if_absent,
+            Some(&test_invocation(vec![
+                map.clone(),
+                key.clone(),
+                first.clone()
+            ]))
+        ),
+        Some(DexExecutionResult::Value(DexValue::Null))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &put_if_absent,
+            Some(&test_invocation(vec![map.clone(), key.clone(), second]))
+        ),
+        Some(DexExecutionResult::Value(first.clone()))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&get, Some(&test_invocation(vec![map.clone(), key.clone()]))),
+        Some(DexExecutionResult::Value(first))
+    );
+    for null in [DexValue::Null] {
+        assert_eq!(
+            program
+                .invoke_builtin_method(
+                    &put_if_absent,
+                    Some(&test_invocation(vec![map.clone(), key.clone(), null]))
+                )
+                .and_then(|result| match result {
+                    DexExecutionResult::Throw(exception) => Some(exception),
+                    _ => None,
+                })
+                .map(|exception| {
+                    program.value_matches_type(&exception, "Ljava/lang/NullPointerException;")
+                }),
+            Some(true)
+        );
+    }
+}

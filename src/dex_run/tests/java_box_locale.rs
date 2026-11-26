@@ -1198,3 +1198,40 @@ fn libcore_locale_three_argument_constructor_null_language_or_variant_throws_nul
         assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
     }
 }
+
+#[test]
+fn libcore_long_to_hex_string_formats_unsigned_hex() {
+    // cite: libcore Long.java#toHexString
+    let program = DexProgram::new(Vec::new());
+    let method = builtin_method(
+        "Ljava/lang/Long;",
+        "toHexString",
+        "Ljava/lang/String;",
+        &["J"],
+    );
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &method,
+            Some(&test_invocation(vec![
+                DexValue::Long(255),
+                DexValue::Long(255)
+            ]))
+        ),
+        Some(DexExecutionResult::Value(DexValue::String(
+            std::rc::Rc::from("ff")
+        )))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &method,
+            Some(&test_invocation(vec![
+                DexValue::Long(-1),
+                DexValue::Long(-1)
+            ]))
+        ),
+        Some(DexExecutionResult::Value(DexValue::String(
+            std::rc::Rc::from("ffffffffffffffff")
+        )))
+    );
+}

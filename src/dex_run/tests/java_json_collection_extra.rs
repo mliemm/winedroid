@@ -623,3 +623,91 @@ fn libcore_json_object_map_constructor_null_key_throws_null_pointer_exception() 
     };
     assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
 }
+
+#[test]
+fn org_json_json_object_has_reports_stored_keys_including_null_values() {
+    // cite: libcore JSONObject.java#has
+    let program = DexProgram::new(Vec::new());
+    let put = builtin_method(
+        "Lorg/json/JSONObject;",
+        "put",
+        "Lorg/json/JSONObject;",
+        &["Ljava/lang/String;", "Ljava/lang/Object;"],
+    );
+    let has = builtin_method("Lorg/json/JSONObject;", "has", "Z", &["Ljava/lang/String;"]);
+    let json = program.allocate_object("Lorg/json/JSONObject;".to_owned());
+    let key = DexValue::String(std::rc::Rc::from("present"));
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &put,
+            Some(&test_invocation(vec![
+                json.clone(),
+                key.clone(),
+                DexValue::Null
+            ]))
+        ),
+        Some(DexExecutionResult::Value(json.clone()))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&has, Some(&test_invocation(vec![json.clone(), key]))),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &has,
+            Some(&test_invocation(vec![
+                json,
+                DexValue::String(std::rc::Rc::from("missing"))
+            ]))
+        ),
+        Some(DexExecutionResult::Int(0))
+    );
+}
+
+#[test]
+fn org_json_json_object_opt_returns_the_stored_value_or_null() {
+    // cite: libcore JSONObject.java#opt
+    let program = DexProgram::new(Vec::new());
+    let put = builtin_method(
+        "Lorg/json/JSONObject;",
+        "put",
+        "Lorg/json/JSONObject;",
+        &["Ljava/lang/String;", "Ljava/lang/Object;"],
+    );
+    let opt = builtin_method(
+        "Lorg/json/JSONObject;",
+        "opt",
+        "Ljava/lang/Object;",
+        &["Ljava/lang/String;"],
+    );
+    let json = program.allocate_object("Lorg/json/JSONObject;".to_owned());
+    let key = DexValue::String(std::rc::Rc::from("present"));
+    let value = DexValue::String(std::rc::Rc::from("value"));
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &put,
+            Some(&test_invocation(vec![
+                json.clone(),
+                key.clone(),
+                value.clone()
+            ]))
+        ),
+        Some(DexExecutionResult::Value(json.clone()))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&opt, Some(&test_invocation(vec![json.clone(), key]))),
+        Some(DexExecutionResult::Value(value))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &opt,
+            Some(&test_invocation(vec![
+                json,
+                DexValue::String(std::rc::Rc::from("missing"))
+            ]))
+        ),
+        Some(DexExecutionResult::Value(DexValue::Null))
+    );
+}

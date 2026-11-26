@@ -262,6 +262,19 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Ljava/util/Collections;"
+            && method.name == "addAll"
+            && method
+                .proto
+                .descriptor_is("(Ljava/util/Collection;[Ljava/lang/Object;)Z")
+        {
+            // cite: libcore Collections.java#addAll
+            let invocation = invocation?;
+            let value = self.collections_add_all_array(invocation)?;
+
+            return Some(DexExecutionResult::Int(value));
+        }
+
+        if method.class_descriptor == "Ljava/util/Collections;"
             && method.name == "reverse"
             && method.proto.descriptor_is("(Ljava/util/List;)V")
         {
@@ -807,6 +820,39 @@ impl DexProgram {
             let previous = self.write_hash_map_value(invocation)?;
 
             return Some(DexExecutionResult::Value(previous));
+        }
+
+        if method.class_descriptor == "Ljava/util/concurrent/ConcurrentHashMap;"
+            && method.name == "putIfAbsent"
+            && method.proto.descriptor()
+                == "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;"
+        {
+            // cite: libcore ConcurrentHashMap.java#putIfAbsent
+            let invocation = invocation?;
+            if invocation.arguments.len() != 3 {
+                return None;
+            }
+            if matches!(invocation.arguments[1], DexValue::Null)
+                || matches!(invocation.arguments[2], DexValue::Null)
+            {
+                return Some(DexExecutionResult::Throw(
+                    self.allocate_object("Ljava/lang/NullPointerException;".to_owned()),
+                ));
+            }
+            let lookup = DexInvocation {
+                arguments: smallvec::smallvec![
+                    invocation.arguments[0].clone(),
+                    invocation.arguments[1].clone()
+                ],
+                ..invocation.clone()
+            };
+            let existing = self.read_hash_map_value(&lookup)?;
+            if existing != DexValue::Null {
+                return Some(DexExecutionResult::Value(existing));
+            }
+            self.write_hash_map_value(invocation)?;
+
+            return Some(DexExecutionResult::Value(DexValue::Null));
         }
 
         if is_supported_map_class(&method.class_descriptor)

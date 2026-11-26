@@ -177,6 +177,52 @@ impl DexProgram {
         Some((previous, *value))
     }
 
+    pub(in crate::dex_run) fn initialize_atomic_long(
+        &self,
+        invocation: &DexInvocation,
+        initial_value: i64,
+    ) -> Option<()> {
+        // cite: libcore AtomicLong.java#AtomicLong
+        let [object, DexValue::Long(value), DexValue::Long(high_slot_value)] =
+            invocation.arguments.as_slice()
+        else {
+            return None;
+        };
+        if *value != initial_value || *high_slot_value != initial_value {
+            return None;
+        }
+        let object_key = map_identity_key(object);
+
+        self.runtime
+            .borrow_mut()
+            .atomic_long_values
+            .insert(object_key, initial_value);
+
+        Some(())
+    }
+
+    pub(in crate::dex_run) fn atomic_long_get_and_add(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<i64> {
+        // cite: libcore AtomicLong.java#getAndAdd
+        let [object, DexValue::Long(delta), DexValue::Long(high_slot_value)] =
+            invocation.arguments.as_slice()
+        else {
+            return None;
+        };
+        if delta != high_slot_value {
+            return None;
+        }
+        let object_key = map_identity_key(object);
+        let mut runtime = self.runtime.borrow_mut();
+        let value = runtime.atomic_long_values.entry(object_key).or_insert(0);
+        let previous = *value;
+        *value = value.wrapping_add(*delta);
+
+        Some(previous)
+    }
+
     pub(in crate::dex_run) fn atomic_integer_compare_and_set(
         &self,
         invocation: &DexInvocation,
@@ -1296,6 +1342,41 @@ impl DexProgram {
         known_service.then_some(false)
     }
 
+    pub(in crate::dex_run) fn thread_pool_executor_submit_runnable(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        // cite: libcore AbstractExecutorService.java#submit, newTaskFor
+        let [executor, runnable] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        if !self.is_thread_pool_executor(executor) {
+            return None;
+        }
+        if is_android_null_value(runnable) {
+            return Some(DexExecutionResult::Throw(
+                self.allocate_object("Ljava/lang/NullPointerException;".to_owned()),
+            ));
+        }
+        if !dex_value_is_object_like(runnable) {
+            return None;
+        }
+        let task = self.allocate_object("Ljava/util/concurrent/FutureTask;".to_owned());
+        self.write_stored_instance_field(&task, &future_task_runnable_field(), runnable.clone());
+        self.write_stored_instance_field(
+            &task,
+            &future_task_runnable_result_field(),
+            DexValue::Null,
+        );
+        let post = DexInvocation {
+            arguments: smallvec::smallvec![executor.clone(), task.clone()],
+            ..invocation.clone()
+        };
+        self.post_handler_runnable(&post)?;
+
+        Some(DexExecutionResult::Value(task))
+    }
+
     pub(in crate::dex_run) fn is_thread_pool_executor(&self, value: &DexValue) -> bool {
         matches!(value, DexValue::Object(_))
             && self.value_matches_type(value, "Ljava/util/concurrent/ThreadPoolExecutor;")
@@ -1500,6 +1581,64 @@ impl DexProgram {
             &task,
             &future_task_runnable_result_field(),
             DexValue::Null,
+        );
+        self.runtime.borrow_mut().post_handler_runnable(
+            map_identity_key(executor),
+            task.clone(),
+            delay_millis,
+            false,
+        );
+
+        Some(DexExecutionResult::Value(task))
+    }
+
+    pub(in crate::dex_run) fn scheduled_thread_pool_executor_schedule_with_fixed_delay(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        // cite: libcore ScheduledThreadPoolExecutor.java#scheduleWithFixedDelay, triggerTime
+        let [executor, command, DexValue::Long(initial_delay), DexValue::Long(initial_delay_high), DexValue::Long(delay), DexValue::Long(delay_high), unit] =
+            invocation.arguments.as_slice()
+        else {
+            return None;
+        };
+        if initial_delay != initial_delay_high || delay != delay_high {
+            return None;
+        }
+        if !self.is_thread_pool_executor(executor) {
+            return None;
+        }
+        if is_android_null_value(command) || is_android_null_value(unit) {
+            return Some(DexExecutionResult::Throw(
+                self.allocate_object("Ljava/lang/NullPointerException;".to_owned()),
+            ));
+        }
+        if !dex_value_is_object_like(command) {
+            return None;
+        }
+        if *delay <= 0 {
+            return Some(DexExecutionResult::Throw(
+                self.allocate_object("Ljava/lang/IllegalArgumentException;".to_owned()),
+            ));
+        }
+        let unit = time_unit_reference_name(unit)?;
+        let initial_nanos = scale_to_nanos(unit, (*initial_delay).max(0))?;
+        let period_nanos = scale_to_nanos(unit, *delay)?;
+        let delay_millis = initial_nanos.saturating_add(999_999) / 1_000_000;
+
+        let task = self.allocate_object(
+            "Ljava/util/concurrent/ScheduledThreadPoolExecutor$ScheduledFutureTask;".to_owned(),
+        );
+        self.write_stored_instance_field(&task, &future_task_runnable_field(), command.clone());
+        self.write_stored_instance_field(
+            &task,
+            &future_task_runnable_result_field(),
+            DexValue::Null,
+        );
+        self.write_stored_instance_field(
+            &task,
+            &scheduled_future_task_period_field(),
+            DexValue::Long(-period_nanos),
         );
         self.runtime.borrow_mut().post_handler_runnable(
             map_identity_key(executor),
@@ -1934,6 +2073,38 @@ impl DexProgram {
         Some(())
     }
 
+    // cite: frameworks-base Message.java#obtain
+    pub(in crate::dex_run) fn message_obtain_with_callback(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexValue> {
+        let [handler, callback] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        if !matches!(handler, DexValue::Null | DexValue::Int(0))
+            && !dex_value_is_object_like(handler)
+        {
+            return None;
+        }
+        if !dex_value_is_object_like(callback) {
+            return None;
+        }
+
+        let message = self.allocate_object("Landroid/os/Message;".to_owned());
+        self.write_stored_instance_field(
+            &message,
+            &message_handler_field("target"),
+            handler.clone(),
+        );
+        self.write_stored_instance_field(
+            &message,
+            &super::handler_message::message_callback_field(),
+            callback.clone(),
+        );
+
+        Some(message)
+    }
+
     // cite: frameworks-base Handler.java#obtainMessage
     // cite: frameworks-base Message.java#obtain
     pub(in crate::dex_run) fn handler_obtain_message(
@@ -2231,6 +2402,16 @@ pub(in crate::dex_run) fn future_task_runnable_result_field() -> DexFieldId {
         class_descriptor: "Ljava/util/concurrent/FutureTask;".to_owned(),
         type_descriptor: "Ljava/lang/Object;".to_owned(),
         name: "runnableResult".to_owned(),
+    }
+}
+
+pub(in crate::dex_run) fn scheduled_future_task_period_field() -> DexFieldId {
+    // cite: libcore ScheduledThreadPoolExecutor.java#ScheduledFutureTask, period
+    DexFieldId {
+        class_descriptor: "Ljava/util/concurrent/ScheduledThreadPoolExecutor$ScheduledFutureTask;"
+            .to_owned(),
+        type_descriptor: "J".to_owned(),
+        name: "period".to_owned(),
     }
 }
 

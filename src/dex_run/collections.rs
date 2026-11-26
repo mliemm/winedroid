@@ -4037,6 +4037,70 @@ impl DexProgram {
         i32::try_from(count).ok()
     }
 
+    // cite: libcore Collections.java#addAll
+    pub(super) fn collections_add_all_array(&self, invocation: &DexInvocation) -> Option<i32> {
+        let [collection, array] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        if !dex_value_is_object_like(collection) {
+            return None;
+        }
+        let array_key = map_identity_key(array);
+        let elements = self
+            .runtime
+            .borrow()
+            .array_entries
+            .get(&array_key)
+            .cloned()?;
+        let changed = !elements.is_empty();
+        self.runtime
+            .borrow_mut()
+            .list_entries
+            .entry(map_identity_key(collection))
+            .or_default()
+            .extend(elements);
+
+        Some(i32::from(changed))
+    }
+
+    pub(super) fn json_object_opt(&self, invocation: &DexInvocation) -> Option<DexValue> {
+        if invocation.arguments.len() != 2 {
+            return None;
+        }
+
+        let object_key = map_identity_key(&invocation.arguments[0]);
+        let DexValue::String(entry_key) = &invocation.arguments[1] else {
+            return None;
+        };
+
+        Some(
+            self.runtime
+                .borrow()
+                .json_entries
+                .get(&(object_key, entry_key.clone().to_string()))
+                .cloned()
+                .unwrap_or(DexValue::Null),
+        )
+    }
+
+    pub(super) fn json_object_has(&self, invocation: &DexInvocation) -> Option<i32> {
+        if invocation.arguments.len() != 2 {
+            return None;
+        }
+
+        let object_key = map_identity_key(&invocation.arguments[0]);
+        let DexValue::String(entry_key) = &invocation.arguments[1] else {
+            return None;
+        };
+        let has = self
+            .runtime
+            .borrow()
+            .json_entries
+            .contains_key(&(object_key, entry_key.clone().to_string()));
+
+        Some(i32::from(has))
+    }
+
     pub(super) fn json_object_is_null(&self, invocation: &DexInvocation) -> Option<i32> {
         if invocation.arguments.len() != 2 {
             return None;

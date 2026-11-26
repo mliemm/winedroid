@@ -8,7 +8,7 @@ fn message_flags_field() -> DexFieldId {
     message_int_field("flags")
 }
 
-fn message_callback_field() -> DexFieldId {
+pub(in crate::dex_run) fn message_callback_field() -> DexFieldId {
     DexFieldId {
         class_descriptor: MESSAGE.to_owned(),
         type_descriptor: "Ljava/lang/Runnable;".to_owned(),
@@ -50,6 +50,22 @@ impl DexProgram {
         };
 
         self.handler_enqueue_message(handler, message, 0)
+    }
+
+    // cite: frameworks-base Handler.java#sendMessageAtTime
+    // cite: frameworks-base MessageQueue.java#enqueueMessage
+    pub(in crate::dex_run) fn handler_send_message_at_time(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        let [handler, message, uptime_millis, high_slot] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        let uptime_millis = wide_long_argument(uptime_millis, high_slot)?;
+        let now_millis = self.runtime.borrow().main_thread_uptime_millis;
+        let delay_millis = uptime_millis.saturating_sub(now_millis);
+
+        self.handler_enqueue_message(handler, message, delay_millis)
     }
 
     // cite: frameworks-base Handler.java#sendMessageDelayed

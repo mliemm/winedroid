@@ -103,14 +103,53 @@ impl DexProgram {
         let Some(resolved) =
             self.resolve_exact_method_in_class_hierarchy(class_descriptor, &on_looper_prepared)?
         else {
-            return Ok(());
+            return if self.park_handler_thread(thread) {
+                Ok(())
+            } else {
+                Err(WinedroidError::new(format!(
+                    "HandlerThread.run could not park the looper thread\nclass: {class_descriptor}"
+                )))
+            };
         };
         match self.execute_method(None, &resolved, Some(&[thread.clone()]), depth + 1)? {
-            DexExecutionResult::Void => Ok(()),
+            DexExecutionResult::Void => {
+                if self.park_handler_thread(thread) {
+                    Ok(())
+                } else {
+                    Err(WinedroidError::new(format!(
+                        "HandlerThread.run could not park the looper thread\nclass: {class_descriptor}"
+                    )))
+                }
+            }
+            DexExecutionResult::Parked(execution) => {
+                let cleanup_execution = execution.clone();
+                if self
+                    .runtime
+                    .borrow_mut()
+                    .store_parked_thread(thread, execution)
+                    .is_some()
+                {
+                    Ok(())
+                } else {
+                    self.discard_parked_execution(&cleanup_execution);
+                    Err(WinedroidError::new(format!(
+                        "HandlerThread.run could not store the parked looper thread\nclass: {class_descriptor}"
+                    )))
+                }
+            }
             _ => Err(WinedroidError::new(format!(
                 "HandlerThread.onLooperPrepared did not complete normally\nclass: {class_descriptor}"
             ))),
         }
+    }
+
+    // cite: frameworks-base HandlerThread.java#run
+    // cite: frameworks-base Looper.java#loop
+    fn park_handler_thread(&self, thread: &DexValue) -> bool {
+        self.runtime
+            .borrow_mut()
+            .store_parked_thread(thread, DexParkedExecution::empty())
+            .is_some()
     }
 
     // cite: frameworks-base HandlerThread.java#getLooper

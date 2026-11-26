@@ -383,6 +383,95 @@ fn builtin_string_format_formats_object_array_arguments() {
 }
 
 #[test]
+fn builtin_string_format_matches_libcore_formatter_conversions() {
+    let program = DexProgram::new(Vec::new());
+    let method = DexMethodId {
+        class_descriptor: "Ljava/lang/String;".to_owned(),
+        name: "format".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "LLL".to_owned(),
+            return_type: "Ljava/lang/String;".to_owned(),
+            parameters: vec![
+                "Ljava/lang/String;".to_owned(),
+                "[Ljava/lang/Object;".to_owned(),
+            ],
+        },
+    };
+    let double = |value: f64| {
+        DexValue::Reference(std::rc::Rc::from(format!(
+            "Ljava/lang/Double;:{:016x}",
+            value.to_bits()
+        )))
+    };
+    let format = |pattern: &str, values: Vec<DexValue>| {
+        let arguments = program.allocate_filled_array("[Ljava/lang/Object;".to_owned(), values);
+        match program.invoke_builtin_method(
+            &method,
+            Some(&test_invocation(vec![
+                DexValue::String(std::rc::Rc::from(pattern)),
+                arguments,
+            ])),
+        ) {
+            Some(DexExecutionResult::Value(DexValue::String(value))) => value.to_string(),
+            other => panic!("String.format({pattern:?}) returned {other:?}"),
+        }
+    };
+
+    assert_eq!(
+        format(
+            "startCheckAndReport immediatelyStart %b",
+            vec![DexValue::Reference(std::rc::Rc::from(
+                "Ljava/lang/Boolean;:false"
+            ))]
+        ),
+        "startCheckAndReport immediatelyStart false"
+    );
+    assert_eq!(
+        format("%s %<s", vec![DexValue::String(std::rc::Rc::from("a"))]),
+        "a a"
+    );
+    assert_eq!(
+        format(
+            "%1$s %2$d",
+            vec![DexValue::String(std::rc::Rc::from("a")), DexValue::Int(5)]
+        ),
+        "a 5"
+    );
+    assert_eq!(format("%,d", vec![DexValue::Int(1234567)]), "1,234,567");
+    assert_eq!(format("%(d", vec![DexValue::Int(-42)]), "(42)");
+    assert_eq!(
+        format("%+d|% d", vec![DexValue::Int(42), DexValue::Int(42)]),
+        "+42| 42"
+    );
+    assert_eq!(
+        format(
+            "%#x|%#X|%#o",
+            vec![DexValue::Int(255), DexValue::Int(255), DexValue::Int(8)]
+        ),
+        "0xff|0XFF|010"
+    );
+    assert_eq!(
+        format("%.3s", vec![DexValue::String(std::rc::Rc::from("abcdef"))]),
+        "abc"
+    );
+    assert_eq!(format("%c", vec![DexValue::Int(65)]), "A");
+    assert_eq!(format("%08.2f", vec![double(3.5)]), "00003.50");
+    assert_eq!(format("%,.2f", vec![double(12345.678)]), "12,345.68");
+    assert_eq!(format("%e", vec![double(1234.5)]), "1.234500e+03");
+    assert_eq!(format("%g", vec![double(0.00001234)]), "1.23400e-05");
+    assert_eq!(format("%g", vec![double(1234.5)]), "1234.50");
+    assert_eq!(format("%#o", vec![DexValue::Int(0)]), "00");
+    assert_eq!(format("%08x", vec![DexValue::Int(-1)]), "ffffffff");
+    assert_eq!(format("%.2e", vec![double(9.999)]), "1.00e+01");
+    assert_eq!(format("%.3g", vec![double(9.9999)]), "10.0");
+    assert_eq!(format("%nX", Vec::new()).replace('\n', "\\n"), "\\nX");
+    assert_eq!(
+        format("%h", vec![DexValue::String(std::rc::Rc::from("abc"))]),
+        "17862"
+    );
+}
+
+#[test]
 fn builtin_string_constructor_reads_char_array_range() {
     let program = DexProgram::new(Vec::new());
     let constructor = DexMethodId {
@@ -2333,4 +2422,45 @@ fn libcore_string_replace_char_sequence_rejects_null_arguments() {
         ));
         assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
     }
+}
+
+#[test]
+fn libcore_string_byte_array_charset_constructor_decodes_utf8_and_latin1() {
+    // cite: libcore String.java#String, StringCoding
+    let program = DexProgram::new(Vec::new());
+    let constructor = builtin_method(
+        "Ljava/lang/String;",
+        "<init>",
+        "V",
+        &["[B", "Ljava/lang/String;"],
+    );
+    let to_string = builtin_method("Ljava/lang/String;", "toString", "Ljava/lang/String;", &[]);
+    let decode = |bytes: Vec<DexValue>, charset: &str| {
+        let value = program.allocate_object("Ljava/lang/String;".to_owned());
+        let array = program.allocate_filled_array("[B".to_owned(), bytes);
+        assert_eq!(
+            program.invoke_builtin_method(
+                &constructor,
+                Some(&test_invocation(vec![
+                    value.clone(),
+                    array,
+                    DexValue::String(std::rc::Rc::from(charset))
+                ]))
+            ),
+            Some(DexExecutionResult::Void)
+        );
+        match program.invoke_builtin_method(&to_string, Some(&test_invocation(vec![value]))) {
+            Some(DexExecutionResult::Value(DexValue::String(text))) => text.to_string(),
+            other => panic!("String.toString returned {other:?}"),
+        }
+    };
+
+    assert_eq!(
+        decode(
+            vec![DexValue::Int(104), DexValue::Int(195), DexValue::Int(169)],
+            "UTF-8"
+        ),
+        "hé"
+    );
+    assert_eq!(decode(vec![DexValue::Int(233)], "ISO-8859-1"), "é");
 }

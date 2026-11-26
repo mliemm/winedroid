@@ -974,6 +974,18 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Landroid/view/Display;"
+            && matches!(method.name.as_str(), "getMetrics" | "getRealMetrics")
+            && method
+                .proto
+                .descriptor_is("(Landroid/util/DisplayMetrics;)V")
+        {
+            let invocation = invocation?;
+            self.display_write_metrics(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.class_descriptor == "Landroid/view/Display;"
             && method.name == "getWidth"
             && method.proto.descriptor_is("()I")
         {
