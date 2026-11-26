@@ -270,6 +270,8 @@ impl DexProgram {
         let mut word = 0;
         for parameter in &method.proto.parameters {
             let value = &arguments[word];
+            let invalid_argument =
+                || WinedroidError::new(format!("invalid JNI argument for {parameter}: {value}"));
             call = match (parameter.as_str(), value) {
                 ("Z", DexValue::Int(value)) => call.u8((*value != 0) as u8),
                 ("B", DexValue::Int(value)) => call.i8(*value as i8),
@@ -278,7 +280,8 @@ impl DexProgram {
                 ("I", DexValue::Int(value)) => call.i32(*value),
                 ("J", DexValue::Long(value)) => call.int(*value as u64),
                 ("D", DexValue::Long(value)) => call.f64(f64::from_bits(*value as u64)),
-                ("F", DexValue::Float(value)) => call.f32(*value),
+                // cite: art shadow_frame.h#GetVRegFloat
+                ("F", value) => call.f32(read_float_argument(value).ok_or_else(invalid_argument)?),
                 (
                     descriptor,
                     value @ (DexValue::Null
@@ -287,11 +290,7 @@ impl DexProgram {
                     | DexValue::Object(_)
                     | DexValue::Reference(_)),
                 ) if descriptor.starts_with(['L', '[']) => call.ptr(frame.reference(value.clone())),
-                _ => {
-                    return Err(WinedroidError::new(format!(
-                        "invalid JNI argument for {parameter}: {value}"
-                    )))
-                }
+                _ => return Err(invalid_argument()),
             };
             word += if matches!(parameter.as_str(), "J" | "D") {
                 2
@@ -327,6 +326,45 @@ impl DexProgram {
 mod tests {
     use super::*;
     use crate::native::bridge;
+
+    #[test]
+    fn art_jni_float_argument_preserves_dex_register_bits() {
+        // cite: art shadow_frame.h#GetVRegFloat
+        extern "C" fn echo_float(_env: usize, _class: usize, value: f32) -> f32 {
+            value
+        }
+
+        let dex = dex::parse_dex_file("classes.dex", fixture_dex()).unwrap();
+        let program = DexProgram::new(vec![dex]);
+        let mut method = program
+            .resolve_named_method("Lfx/Native;", "registeredAdd")
+            .unwrap();
+        method.method.proto.shorty = "FF".to_owned();
+        method.method.proto.parameters = vec!["F".to_owned()];
+        method.method.proto.return_type = "F".to_owned();
+        program
+            .jni
+            .bindings
+            .borrow_mut()
+            .insert((&method.method).into(), echo_float as *const () as usize);
+
+        for input in [
+            DexValue::Int((-1.0f32).to_bits() as i32),
+            DexValue::Float(-0.0),
+        ] {
+            let expected = read_float_argument(&input).unwrap().to_bits();
+            let result = program
+                .execute_registered_native(&method, &[input], 0)
+                .unwrap();
+            let DexExecutionResult::Value(DexValue::Float(value)) = result else {
+                panic!("expected a JNI float return");
+            };
+            assert_eq!(value.to_bits(), expected);
+        }
+        assert!(program
+            .execute_registered_native(&method, &[DexValue::Null], 0)
+            .is_err());
+    }
 
     #[test]
     fn art_jni_on_load_registers_and_calls_fixture_method() {
