@@ -459,6 +459,15 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        // cite: libcore LinkedTransferQueue.java#LinkedTransferQueue
+        if method.class_descriptor == "Ljava/util/concurrent/LinkedTransferQueue;"
+            && method.name == "<init>"
+            && method.proto.descriptor_is("()V")
+        {
+            self.initialize_empty_list(invocation?)?;
+            return Some(DexExecutionResult::Void);
+        }
+
         if method.class_descriptor == "Ljava/util/concurrent/LinkedBlockingQueue;"
             && method.name == "<init>"
             && method.proto.descriptor_is("()V")

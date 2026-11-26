@@ -376,6 +376,8 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         // cite: libcore AbstractSequentialList.java#AbstractSequentialList
         "Ljava/util/AbstractSequentialList;" => Some("Ljava/util/AbstractList;"),
         "Ljava/util/AbstractList;" => Some("Ljava/util/AbstractCollection;"),
+        // cite: libcore LinkedTransferQueue.java#LinkedTransferQueue
+        "Ljava/util/concurrent/LinkedTransferQueue;" => Some("Ljava/util/AbstractQueue;"),
         // cite: libcore ScheduledThreadPoolExecutor.java#DelayedWorkQueue
         "Ljava/util/PriorityQueue;"
         | "Ljava/util/concurrent/ConcurrentLinkedQueue;"
@@ -537,6 +539,8 @@ pub(super) fn bootstrap_direct_interface_descriptors(
         "Ljava/util/Deque;" => &["Ljava/util/Queue;"],
         // cite: libcore BlockingQueue.java#BlockingQueue
         "Ljava/util/concurrent/BlockingQueue;" => &["Ljava/util/Queue;"],
+        // cite: libcore TransferQueue.java#TransferQueue
+        "Ljava/util/concurrent/TransferQueue;" => &["Ljava/util/concurrent/BlockingQueue;"],
         "Ljava/util/ArrayList;" | "Ljava/util/Arrays$ArrayList;" => &[
             "Ljava/util/List;",
             "Ljava/util/RandomAccess;",
@@ -567,6 +571,11 @@ pub(super) fn bootstrap_direct_interface_descriptors(
         // cite: libcore LinkedBlockingQueue.java#LinkedBlockingQueue
         "Ljava/util/concurrent/LinkedBlockingQueue;" => &[
             "Ljava/util/concurrent/BlockingQueue;",
+            "Ljava/io/Serializable;",
+        ],
+        // cite: libcore LinkedTransferQueue.java#LinkedTransferQueue
+        "Ljava/util/concurrent/LinkedTransferQueue;" => &[
+            "Ljava/util/concurrent/TransferQueue;",
             "Ljava/io/Serializable;",
         ],
         // cite: libcore SynchronousQueue.java#SynchronousQueue
@@ -679,6 +688,8 @@ pub(super) fn is_bootstrap_interface_descriptor(class_descriptor: &str) -> bool 
             | "Ljava/util/Deque;"
             // cite: libcore BlockingQueue.java#BlockingQueue
             | "Ljava/util/concurrent/BlockingQueue;"
+            // cite: libcore TransferQueue.java#TransferQueue
+            | "Ljava/util/concurrent/TransferQueue;"
             | "Ljava/util/RandomAccess;"
             | "Ljava/util/Set;"
             | "Ljava/util/concurrent/Executor;"

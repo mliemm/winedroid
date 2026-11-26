@@ -3053,6 +3053,36 @@ fn libcore_copy_on_write_array_list_clear_removes_every_element() {
 }
 
 #[test]
+fn libcore_linked_transfer_queue_constructor_creates_empty_blocking_queue() {
+    // cite: libcore LinkedTransferQueue.java#LinkedTransferQueue
+    let program = DexProgram::new(Vec::new());
+    let descriptor = "Ljava/util/concurrent/LinkedTransferQueue;";
+    let constructor = builtin_method(descriptor, "<init>", "V", &[]);
+    let queue = program.allocate_object(descriptor.to_owned());
+    let invocation = test_invocation(vec![queue.clone()]);
+    assert_eq!(
+        program.invoke_builtin_method(&constructor, Some(&invocation)),
+        Some(DexExecutionResult::Void),
+    );
+    assert_eq!(
+        program
+            .runtime
+            .borrow()
+            .list_entries
+            .get(&map_identity_key(&queue)),
+        Some(&Vec::new()),
+    );
+    for parent in [
+        "Ljava/util/AbstractQueue;",
+        "Ljava/util/concurrent/TransferQueue;",
+        "Ljava/util/concurrent/BlockingQueue;",
+        "Ljava/io/Serializable;",
+    ] {
+        assert!(program.value_matches_type(&queue, parent));
+    }
+}
+
+#[test]
 fn libcore_concurrent_linked_queue_poll_removes_the_head() {
     // cite: libcore ConcurrentLinkedQueue.java#poll
     let program = DexProgram::new(Vec::new());
