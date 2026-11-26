@@ -682,6 +682,20 @@ impl DexRunInvocationHandler<'_> {
             }
         }
 
+        // cite: frameworks-base Application.java#unregisterActivityLifecycleCallbacks
+        if method.name == "unregisterActivityLifecycleCallbacks"
+            && proto_descriptor == "(Landroid/app/Application$ActivityLifecycleCallbacks;)V"
+            && self
+                .program
+                .descriptor_matches_type(&method.class_descriptor, "Landroid/app/Application;")
+            && self
+                .program
+                .unregister_application_activity_lifecycle_callback(&invocation, self.depth + 1)?
+                .is_some()
+        {
+            return Ok(DexInvocationResult::Void);
+        }
+
         if let Some(result) = self
             .program
             .invoke_builtin_method_in_hierarchy(&method, &invocation)

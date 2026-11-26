@@ -156,6 +156,52 @@ fn frameworks_base_application_registers_lifecycle_callbacks_without_dedupe() {
     );
 }
 
+// cite: frameworks-base Application.java#registerActivityLifecycleCallbacks, unregisterActivityLifecycleCallbacks
+// cite: libcore ArrayList.java#remove
+#[test]
+fn application_unregister_removes_one_matching_registration() {
+    let program = DexProgram::new(Vec::new());
+    let application = program.application_value();
+    let make_callback = |name: &str| {
+        DexValue::Reference(std::rc::Rc::from(format!(
+            "Landroid/app/Application$ActivityLifecycleCallbacks;:{name}"
+        )))
+    };
+    let first = make_callback("first");
+    let second = make_callback("second");
+    let register = |callback| {
+        program
+            .register_application_activity_lifecycle_callback(&test_invocation(vec![
+                application.clone(),
+                callback,
+            ]))
+            .unwrap();
+    };
+    let unregister = |callback| {
+        program
+            .unregister_application_activity_lifecycle_callback(
+                &test_invocation(vec![application.clone(), callback]),
+                0,
+            )
+            .unwrap()
+            .unwrap();
+    };
+    register(first.clone());
+    register(second.clone());
+    register(first.clone());
+    unregister(first.clone());
+    unregister(make_callback("absent"));
+    unregister(DexValue::Null);
+    assert_eq!(
+        program
+            .runtime
+            .borrow()
+            .activity_lifecycle_callbacks
+            .get(&map_identity_key(&application)),
+        Some(&vec![second, first]),
+    );
+}
+
 #[test]
 fn frameworks_base_activity_dispatch_order_puts_application_callbacks_first_for_created_not_post_created(
 ) {

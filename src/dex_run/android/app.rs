@@ -833,6 +833,48 @@ impl DexProgram {
         Some(())
     }
 
+    pub(in crate::dex_run) fn unregister_application_activity_lifecycle_callback(
+        &self,
+        invocation: &DexInvocation,
+        depth: usize,
+    ) -> Result<Option<()>> {
+        let [application, callback] = invocation.arguments.as_slice() else {
+            return Ok(None);
+        };
+        if !dex_value_is_object_like(application) {
+            return Ok(None);
+        }
+
+        // cite: frameworks-base Application.java#unregisterActivityLifecycleCallbacks
+        // cite: libcore ArrayList.java#remove
+        let key = map_identity_key(&self.application_value());
+        let callbacks = self
+            .runtime
+            .borrow()
+            .activity_lifecycle_callbacks
+            .get(&key)
+            .cloned();
+        if let Some(callbacks) = callbacks {
+            for registered in callbacks {
+                if self.runtime_values_equal(callback, &registered, depth + 1, true)? {
+                    if let Some(callbacks) = self
+                        .runtime
+                        .borrow_mut()
+                        .activity_lifecycle_callbacks
+                        .get_mut(&key)
+                    {
+                        if let Some(index) = callbacks.iter().position(|value| *value == registered)
+                        {
+                            callbacks.remove(index);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        Ok(Some(()))
+    }
+
     fn dispatch_activity_lifecycle_callbacks(
         &self,
         activity_receiver: &DexValue,
