@@ -6,6 +6,21 @@ impl DexProgram {
         method: &DexMethodId,
         invocation: Option<&DexInvocation>,
     ) -> Option<DexExecutionResult> {
+        // cite: libcore String.java#trim
+        if method.matches_builtin_signature("Ljava/lang/String;", "trim", "()Ljava/lang/String;") {
+            let invocation = invocation?;
+            let [receiver] = invocation.arguments.as_slice() else {
+                return None;
+            };
+            let text = self.string_text(receiver)?;
+            let trimmed = text.trim_matches(|character| character <= '\u{20}');
+            let value = if trimmed.len() == text.len() {
+                receiver.clone()
+            } else {
+                DexValue::String(Rc::from(trimmed))
+            };
+            return Some(DexExecutionResult::Value(value));
+        }
         if method.class_descriptor == "Ljava/lang/String;"
             && method.name == "<init>"
             && method.proto.descriptor_is("([CII)V")
@@ -244,6 +259,16 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Ljava/lang/String;"
+            && method.name == "toCharArray"
+            && method.proto.descriptor_is("()[C")
+        {
+            let invocation = invocation?;
+            let value = self.string_to_char_array(invocation)?;
+
+            return Some(DexExecutionResult::Value(value));
+        }
+
+        if method.class_descriptor == "Ljava/lang/String;"
             && method.name == "hashCode"
             && method.proto.descriptor_is("()I")
         {
@@ -410,6 +435,17 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(DexValue::String(
                 std::rc::Rc::from(value),
             )));
+        }
+
+        if method.class_descriptor == "Ljava/lang/String;"
+            && method.name == "replace"
+            && method.proto.descriptor_is(
+                "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Ljava/lang/String;",
+            )
+        {
+            let invocation = invocation?;
+
+            return self.string_replace_sequences(invocation);
         }
 
         if method.class_descriptor == "Ljava/lang/String;"
@@ -760,6 +796,17 @@ impl DexProgram {
         {
             let invocation = invocation?;
             let value = self.enum_compare_to(&invocation.arguments)?;
+
+            return Some(DexExecutionResult::Int(value));
+        }
+
+        if method.class_descriptor == "Ljava/lang/Enum;"
+            && method.name == "equals"
+            && method.proto.descriptor_is("(Ljava/lang/Object;)Z")
+        {
+            // cite: libcore Enum.java#equals
+            let invocation = invocation?;
+            let value = object_equals(invocation)?;
 
             return Some(DexExecutionResult::Int(value));
         }

@@ -6,17 +6,23 @@ use super::call_assign::CallBuilder;
 use super::data_fault;
 use super::guest_thread::current_record;
 use super::host_log;
-use super::signal_frame::{self, Delivery, StackRecord, FRAME_BYTES, SIGINFO_OFFSET, SI_TKILL, UCONTEXT_OFFSET};
-use super::signal_numbers::{bit, is_synchronous, linux_to_darwin, to_darwin_mask, SIGKILL, SIGSTOP};
+use super::signal_frame::{
+    self, Delivery, StackRecord, FRAME_BYTES, SIGINFO_OFFSET, SI_TKILL, UCONTEXT_OFFSET,
+};
+use super::signal_numbers::{
+    bit, is_synchronous, linux_to_darwin, to_darwin_mask, SIGKILL, SIGSTOP,
+};
 use super::signal_state::{
-    action_of, alternate, mask, publish_action, raise_pending, set_mask, take_deliverable, take_thread_directed, Action, DEFAULT_ACTION, SA_NOCLDSTOP, SA_NOCLDWAIT, SA_NODEFER, SA_ONSTACK,
-    SA_RESETHAND, SA_RESTART, SS_DISABLE, SS_ONSTACK,
+    action_of, alternate, mask, publish_action, raise_pending, set_mask, take_deliverable,
+    take_thread_directed, Action, DEFAULT_ACTION, SA_NOCLDSTOP, SA_NOCLDWAIT, SA_NODEFER,
+    SA_ONSTACK, SA_RESETHAND, SA_RESTART, SS_DISABLE, SS_ONSTACK,
 };
 use super::thread_list;
 
 const DARWIN_SIGNALS: usize = 32;
 
-static PREVIOUS: [AtomicPtr<libc::sigaction>; DARWIN_SIGNALS] = [const { AtomicPtr::new(std::ptr::null_mut()) }; DARWIN_SIGNALS];
+static PREVIOUS: [AtomicPtr<libc::sigaction>; DARWIN_SIGNALS] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; DARWIN_SIGNALS];
 static INSTALL: Mutex<()> = Mutex::new(());
 
 fn router_address() -> usize {
@@ -25,12 +31,15 @@ fn router_address() -> usize {
 
 unsafe fn chain(signal: libc::c_int, info: *mut libc::siginfo_t, context: *mut libc::c_void) {
     let previous = PREVIOUS[signal as usize].load(Ordering::Acquire);
-    let Some(previous) = previous.as_ref() else { return restore_default(signal) };
+    let Some(previous) = previous.as_ref() else {
+        return restore_default(signal);
+    };
     if previous.sa_sigaction == libc::SIG_DFL || previous.sa_sigaction == libc::SIG_IGN {
         return restore_default(signal);
     }
     if previous.sa_flags & libc::SA_SIGINFO != 0 {
-        let handler: extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void) = std::mem::transmute(previous.sa_sigaction);
+        let handler: extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void) =
+            std::mem::transmute(previous.sa_sigaction);
         handler(signal, info, context);
     } else {
         let handler: extern "C" fn(libc::c_int) = std::mem::transmute(previous.sa_sigaction);
@@ -50,8 +59,15 @@ fn forward_to_attached_thread(darwin_signal: libc::c_int) {
     }
 }
 
-extern "C" fn router(darwin_signal: libc::c_int, info: *mut libc::siginfo_t, context: *mut libc::c_void) {
-    let Some(delivery) = signal_frame::classify(darwin_signal, info as usize, context as usize) else { return unsafe { chain(darwin_signal, info, context) } };
+extern "C" fn router(
+    darwin_signal: libc::c_int,
+    info: *mut libc::siginfo_t,
+    context: *mut libc::c_void,
+) {
+    let Some(delivery) = signal_frame::classify(darwin_signal, info as usize, context as usize)
+    else {
+        return unsafe { chain(darwin_signal, info, context) };
+    };
     let action = action_of(delivery.signal);
     if !action.has_handler() {
         return unsafe { chain(darwin_signal, info, context) };
@@ -73,15 +89,25 @@ extern "C" fn router(darwin_signal: libc::c_int, info: *mut libc::siginfo_t, con
 }
 
 fn apply_host(darwin: i32, action: &Action) -> Result<(), i32> {
-    let _guard = INSTALL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = INSTALL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let current = PREVIOUS[darwin as usize].load(Ordering::Acquire);
     if !action.has_handler() {
         let mut restore: libc::sigaction = unsafe { std::mem::zeroed() };
         match unsafe { current.as_ref() } {
             Some(previous) => restore = *previous,
-            None => restore.sa_sigaction = if action.handler == 1 { libc::SIG_IGN } else { libc::SIG_DFL },
+            None => {
+                restore.sa_sigaction = if action.handler == 1 {
+                    libc::SIG_IGN
+                } else {
+                    libc::SIG_DFL
+                }
+            }
         }
-        if action.handler == 1 && !is_synchronous(super::signal_numbers::darwin_to_linux(darwin).unwrap_or(0)) {
+        if action.handler == 1
+            && !is_synchronous(super::signal_numbers::darwin_to_linux(darwin).unwrap_or(0))
+        {
             restore.sa_sigaction = libc::SIG_IGN;
         }
         return match unsafe { libc::sigaction(darwin, &restore, std::ptr::null_mut()) } {
@@ -92,7 +118,12 @@ fn apply_host(darwin: i32, action: &Action) -> Result<(), i32> {
     let mut host: libc::sigaction = unsafe { std::mem::zeroed() };
     host.sa_sigaction = router_address();
     host.sa_flags = libc::SA_SIGINFO | libc::SA_ONSTACK;
-    for (guest, flag) in [(SA_RESTART, libc::SA_RESTART), (SA_NODEFER, libc::SA_NODEFER), (SA_NOCLDSTOP, libc::SA_NOCLDSTOP), (SA_NOCLDWAIT, libc::SA_NOCLDWAIT)] {
+    for (guest, flag) in [
+        (SA_RESTART, libc::SA_RESTART),
+        (SA_NODEFER, libc::SA_NODEFER),
+        (SA_NOCLDSTOP, libc::SA_NOCLDSTOP),
+        (SA_NOCLDWAIT, libc::SA_NOCLDWAIT),
+    ] {
         if action.flags & guest != 0 {
             host.sa_flags |= flag;
         }
@@ -110,10 +141,19 @@ fn apply_host(darwin: i32, action: &Action) -> Result<(), i32> {
 
 pub fn install(signal: i32, action: &Action) -> Result<(), i32> {
     // cite: bionic sigaction.cpp#sigaction
-    let Some(darwin) = linux_to_darwin(signal) else { return Ok(()) };
+    let Some(darwin) = linux_to_darwin(signal) else {
+        return Ok(());
+    };
     apply_host(darwin, action)?;
     if matches!(signal, 7 | 11) {
-        apply_host(if darwin == libc::SIGBUS { libc::SIGSEGV } else { libc::SIGBUS }, action)?;
+        apply_host(
+            if darwin == libc::SIGBUS {
+                libc::SIGSEGV
+            } else {
+                libc::SIGBUS
+            },
+            action,
+        )?;
     }
     Ok(())
 }
@@ -133,13 +173,22 @@ fn current_frame_base(context: Option<usize>, action: &Action) -> Option<usize> 
 
 fn stack_record(on_alternate: bool) -> StackRecord {
     match alternate().filter(|stack| !stack.disabled) {
-        Some(stack) => StackRecord { base: stack.base, size: stack.size, flags: if on_alternate { SS_ONSTACK } else { 0 } },
-        None => StackRecord { base: 0, size: 0, flags: SS_DISABLE },
+        Some(stack) => StackRecord {
+            base: stack.base,
+            size: stack.size,
+            flags: if on_alternate { SS_ONSTACK } else { 0 },
+        },
+        None => StackRecord {
+            base: 0,
+            size: 0,
+            flags: SS_DISABLE,
+        },
     }
 }
 
 fn on_alternate_stack(sp: u64) -> bool {
-    alternate().is_some_and(|stack| !stack.disabled && (stack.base..stack.base + stack.size).contains(&sp))
+    alternate()
+        .is_some_and(|stack| !stack.disabled && (stack.base..stack.base + stack.size).contains(&sp))
 }
 
 fn alternate_top(action: &Action) -> Option<usize> {
@@ -149,7 +198,9 @@ fn alternate_top(action: &Action) -> Option<usize> {
 
 pub fn current_stack_pointer() -> u64 {
     let value: u64;
-    unsafe { std::arch::asm!("mov {}, sp", out(reg) value, options(nomem, nostack, preserves_flags)) };
+    unsafe {
+        std::arch::asm!("mov {}, sp", out(reg) value, options(nomem, nostack, preserves_flags))
+    };
     value
 }
 
@@ -166,24 +217,53 @@ fn deliver(delivery: &Delivery, context: Option<usize>) {
         None => {
             heap = vec![0u128; FRAME_BYTES.div_ceil(16)];
             let on_alternate = on_alternate_stack(current_stack_pointer());
-            (heap.as_ptr() as usize, if on_alternate { None } else { alternate_top(&action) })
+            (
+                heap.as_ptr() as usize,
+                if on_alternate {
+                    None
+                } else {
+                    alternate_top(&action)
+                },
+            )
         }
     };
     let handler_sp = handler_stack.map_or(current_stack_pointer(), |top| top as u64);
     let saved_mask = mask();
     signal_frame::write_siginfo(frame + SIGINFO_OFFSET, delivery);
-    signal_frame::write_ucontext(frame + UCONTEXT_OFFSET, saved_mask, &stack_record(on_alternate_stack(handler_sp)), context, if delivery.fault { delivery.address } else { 0 }, delivery.fault);
+    signal_frame::write_ucontext(
+        frame + UCONTEXT_OFFSET,
+        saved_mask,
+        &stack_record(on_alternate_stack(handler_sp)),
+        context,
+        if delivery.fault { delivery.address } else { 0 },
+        delivery.fault,
+    );
     if let Some(context) = context {
         let source = signal_frame::mcontext(context);
-        write_value::<u64>(frame, super::bionic::guest_mem::read_value::<u64>(source + 248));
-        write_value::<u64>(frame + 8, super::bionic::guest_mem::read_value::<u64>(source + 256));
+        write_value::<u64>(
+            frame,
+            super::bionic::guest_mem::read_value::<u64>(source + 248),
+        );
+        write_value::<u64>(
+            frame + 8,
+            super::bionic::guest_mem::read_value::<u64>(source + 256),
+        );
     }
-    let handler_mask = saved_mask | action.mask | if action.flags & SA_NODEFER != 0 { 0 } else { bit(signal) };
+    let handler_mask = saved_mask
+        | action.mask
+        | if action.flags & SA_NODEFER != 0 {
+            0
+        } else {
+            bit(signal)
+        };
     set_mask(handler_mask);
     if context.is_none() {
         apply_darwin_mask(mask());
     }
-    let call = CallBuilder::new(action.handler as usize).i32(signal).ptr(frame + SIGINFO_OFFSET).ptr(frame + UCONTEXT_OFFSET);
+    let call = CallBuilder::new(action.handler as usize)
+        .i32(signal)
+        .ptr(frame + SIGINFO_OFFSET)
+        .ptr(frame + UCONTEXT_OFFSET);
     let call = match handler_stack {
         Some(top) => call.on_stack(top),
         None => call,
@@ -192,7 +272,8 @@ fn deliver(delivery: &Delivery, context: Option<usize>) {
         host_log::line(&format!("FIXME: guest signal handler for signal {signal} failed: {error}; next missing primitive: guest signal handler failure"));
         std::process::abort();
     }
-    let restored = signal_frame::handler_mask(frame + UCONTEXT_OFFSET) & !(bit(SIGKILL) | bit(SIGSTOP));
+    let restored =
+        signal_frame::handler_mask(frame + UCONTEXT_OFFSET) & !(bit(SIGKILL) | bit(SIGSTOP));
     set_mask(restored);
     match context {
         Some(context) => {
@@ -210,8 +291,19 @@ pub fn apply_darwin_mask(linux_mask: u64) {
 
 pub fn deliver_pending() {
     while let Some(signal) = take_deliverable() {
-        let code = if take_thread_directed(signal) { SI_TKILL } else { 0 };
-        let delivery = Delivery { signal, code, address: 0, pid: unsafe { libc::getpid() }, uid: unsafe { libc::getuid() }, fault: false };
+        let code = if take_thread_directed(signal) {
+            SI_TKILL
+        } else {
+            0
+        };
+        let delivery = Delivery {
+            signal,
+            code,
+            address: 0,
+            pid: unsafe { libc::getpid() },
+            uid: unsafe { libc::getuid() },
+            fault: false,
+        };
         if action_of(signal).has_handler() {
             deliver(&delivery, None);
         }

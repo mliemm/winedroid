@@ -3,10 +3,14 @@ use std::sync::Mutex;
 use super::super::bridge::CallContext;
 use super::super::guest_thread;
 use super::super::host_log;
-use super::super::signal_numbers::{self, bit, darwin_to_linux, filter_reserved, is_valid, is_virtual, linux_to_darwin, to_darwin_mask, to_linux_mask, SIGKILL, SIGSTOP};
+use super::super::signal_numbers::{
+    self, bit, darwin_to_linux, filter_reserved, is_valid, is_virtual, linux_to_darwin,
+    to_darwin_mask, to_linux_mask, SIGKILL, SIGSTOP,
+};
 use super::super::signal_router;
 use super::super::signal_state::{
-    self, action_of, alternate, mark_thread_directed, publish_action, raise_pending, set_alternate, set_mask, Action, AlternateStack, SA_RESTART, SS_DISABLE, SS_ONSTACK,
+    self, action_of, alternate, mark_thread_directed, publish_action, raise_pending, set_alternate,
+    set_mask, Action, AlternateStack, SA_RESTART, SS_DISABLE, SS_ONSTACK,
 };
 use super::super::thread_list;
 use super::abi_types::EINVAL;
@@ -50,7 +54,12 @@ fn write_action(address: usize, action: &Action) {
 }
 
 fn read_action(address: usize) -> Action {
-    Action { flags: read_value(address), handler: read_value(address + 8), mask: read_value(address + 16), restorer: read_value(address + 24) }
+    Action {
+        flags: read_value(address),
+        handler: read_value(address + 8),
+        mask: read_value(address + 16),
+        restorer: read_value(address + 24),
+    }
 }
 
 pub fn change_action(signal: i32, new: Option<Action>, old: Option<usize>) -> Result<(), i32> {
@@ -58,7 +67,9 @@ pub fn change_action(signal: i32, new: Option<Action>, old: Option<usize>) -> Re
     if !is_valid(signal) || (new.is_some() && matches!(signal, SIGKILL | SIGSTOP)) {
         return Err(EINVAL);
     }
-    let _guard = ACTION_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = ACTION_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(old) = old {
         write_action(old, &action_of(signal));
     }
@@ -105,7 +116,10 @@ fn suspend(temporary: u64) {
 }
 
 fn tid_to_record(tid: i32) -> Option<usize> {
-    guest_thread::live_records().into_iter().find(|(_, candidate)| *candidate == tid).map(|(record, _)| record)
+    guest_thread::live_records()
+        .into_iter()
+        .find(|(_, candidate)| *candidate == tid)
+        .map(|(record, _)| record)
 }
 
 fn send_to_thread(record: usize, signal: i32) -> i32 {
@@ -129,7 +143,9 @@ fn send_to_thread(record: usize, signal: i32) -> i32 {
         raise_pending(signal);
         return 0;
     }
-    let (Some(host), Some(darwin)) = (thread_list::host_of(record), linux_to_darwin(signal)) else { return ESRCH };
+    let (Some(host), Some(darwin)) = (thread_list::host_of(record), linux_to_darwin(signal)) else {
+        return ESRCH;
+    };
     if myself {
         mark_thread_directed(signal);
     }
@@ -156,7 +172,11 @@ fn kill_process(pid: i32, signal: i32) -> i32 {
         return EINVAL;
     }
     if pid != unsafe { libc::getpid() } {
-        return if signal == 0 && pid > 0 && unsafe { libc::kill(pid, 0) } == 0 { 0 } else { EPERM };
+        return if signal == 0 && pid > 0 && unsafe { libc::kill(pid, 0) } == 0 {
+            0
+        } else {
+            EPERM
+        };
     }
     if signal == 0 {
         return 0;
@@ -173,12 +193,25 @@ fn kill_process(pid: i32, signal: i32) -> i32 {
 fn alternate_stack(context: &mut CallContext) {
     // cite: bionic SYSCALLS.TXT#sigaltstack
     let (new, old) = (context.arg_ptr(0), context.arg_ptr(1));
-    let current = alternate().unwrap_or(AlternateStack { base: 0, size: 0, disabled: true });
+    let current = alternate().unwrap_or(AlternateStack {
+        base: 0,
+        size: 0,
+        disabled: true,
+    });
     let sp = signal_router::current_stack_pointer();
     let on_stack = !current.disabled && (current.base..current.base + current.size).contains(&sp);
     if old != 0 {
         write_value::<u64>(old, current.base);
-        write_value::<i32>(old + 8, if current.disabled { SS_DISABLE } else if on_stack { SS_ONSTACK } else { 0 });
+        write_value::<i32>(
+            old + 8,
+            if current.disabled {
+                SS_DISABLE
+            } else if on_stack {
+                SS_ONSTACK
+            } else {
+                0
+            },
+        );
         write_value::<u64>(old + 16, current.size);
     }
     if new == 0 {
@@ -187,18 +220,27 @@ fn alternate_stack(context: &mut CallContext) {
     if on_stack {
         return fail(context, EPERM);
     }
-    let (base, flags, size): (u64, i32, u64) = (read_value(new), read_value(new + 8), read_value(new + 16));
+    let (base, flags, size): (u64, i32, u64) =
+        (read_value(new), read_value(new + 8), read_value(new + 16));
     if flags & !SS_DISABLE != 0 {
         return fail(context, EINVAL);
     }
     if flags & SS_DISABLE != 0 {
-        set_alternate(AlternateStack { base: 0, size: 0, disabled: true });
+        set_alternate(AlternateStack {
+            base: 0,
+            size: 0,
+            disabled: true,
+        });
         return context.ret_i32(0);
     }
     if size < MIN_ALTERNATE_STACK {
         return fail(context, ENOMEM);
     }
-    set_alternate(AlternateStack { base, size, disabled: false });
+    set_alternate(AlternateStack {
+        base,
+        size,
+        disabled: false,
+    });
     context.ret_i32(0);
 }
 
@@ -222,8 +264,12 @@ fn register_set_operations() {
             write_value::<u64>(set, u64::MAX);
             context.ret_i32(0);
         });
-        in_libc(&format!("sigaddset{suffix}"), |context| set_operation(context, |set, signal| set | bit(signal)));
-        in_libc(&format!("sigdelset{suffix}"), |context| set_operation(context, |set, signal| set & !bit(signal)));
+        in_libc(&format!("sigaddset{suffix}"), |context| {
+            set_operation(context, |set, signal| set | bit(signal))
+        });
+        in_libc(&format!("sigdelset{suffix}"), |context| {
+            set_operation(context, |set, signal| set & !bit(signal))
+        });
         in_libc(&format!("sigismember{suffix}"), |context| {
             // cite: bionic signal.cpp#sigismember
             let (set, signal) = (context.arg_ptr(0), context.arg_i32(1));
@@ -249,7 +295,12 @@ fn register_actions() {
     in_libc("signal", |context| {
         // cite: bionic signal.cpp#_signal
         let signal = context.arg_i32(0);
-        let action = Action { flags: SA_RESTART, handler: context.arg_u64(1), mask: 0, restorer: 0 };
+        let action = Action {
+            flags: SA_RESTART,
+            handler: context.arg_u64(1),
+            mask: 0,
+            restorer: 0,
+        };
         let previous = action_of(signal);
         match change_action(signal, Some(action), None) {
             Ok(()) => context.ret_u64(previous.handler),
@@ -265,7 +316,11 @@ fn register_masks() {
     for name in ["sigprocmask", "sigprocmask64"] {
         in_libc(name, |context| {
             let (new, old) = (context.arg_ptr(1), context.arg_ptr(2));
-            match process_mask(context.arg_i32(0), (new != 0).then(|| read_value(new)), (old != 0).then_some(old)) {
+            match process_mask(
+                context.arg_i32(0),
+                (new != 0).then(|| read_value(new)),
+                (old != 0).then_some(old),
+            ) {
                 Ok(()) => context.ret_i32(0),
                 Err(code) => fail(context, code),
             }
@@ -275,7 +330,11 @@ fn register_masks() {
         in_libc(name, |context| {
             // cite: bionic signal.cpp#pthread_sigmask64
             let (new, old) = (context.arg_ptr(1), context.arg_ptr(2));
-            let outcome = process_mask(context.arg_i32(0), (new != 0).then(|| read_value(new)), (old != 0).then_some(old));
+            let outcome = process_mask(
+                context.arg_i32(0),
+                (new != 0).then(|| read_value(new)),
+                (old != 0).then_some(old),
+            );
             context.ret_i32(outcome.err().unwrap_or(0));
         });
     }
@@ -284,7 +343,10 @@ fn register_masks() {
             // cite: bionic signal.cpp#sigpending
             let mut host: libc::sigset_t = 0;
             unsafe { libc::sigpending(&mut host) };
-            write_value::<u64>(context.arg_ptr(0), to_linux_mask(host) | (signal_state::pending() & signal_state::mask()));
+            write_value::<u64>(
+                context.arg_ptr(0),
+                to_linux_mask(host) | (signal_state::pending() & signal_state::mask()),
+            );
             context.ret_i32(0);
         });
     }
@@ -310,7 +372,10 @@ fn register_masks() {
         let mut received = 0;
         let status = unsafe { libc::sigwait(&waitable, &mut received) };
         if status == 0 {
-            write_value::<i32>(context.arg_ptr(1), darwin_to_linux(received).unwrap_or(received));
+            write_value::<i32>(
+                context.arg_ptr(1),
+                darwin_to_linux(received).unwrap_or(received),
+            );
         }
         context.ret_i32(status);
     });
@@ -318,11 +383,19 @@ fn register_masks() {
 
 fn register_delivery() {
     in_libc("sigaltstack", alternate_stack);
-    in_libc("__libc_current_sigrtmin", |context| context.ret_i32(signal_numbers::rt_min()));
-    in_libc("__libc_current_sigrtmax", |context| context.ret_i32(signal_numbers::rt_max()));
+    in_libc("__libc_current_sigrtmin", |context| {
+        context.ret_i32(signal_numbers::rt_min())
+    });
+    in_libc("__libc_current_sigrtmax", |context| {
+        context.ret_i32(signal_numbers::rt_max())
+    });
     in_libc("raise", |context| {
         // cite: bionic raise.cpp#raise
-        let outcome = tgkill(unsafe { libc::getpid() }, current_thread::tid(), context.arg_i32(0));
+        let outcome = tgkill(
+            unsafe { libc::getpid() },
+            current_thread::tid(),
+            context.arg_i32(0),
+        );
         if outcome < 0 {
             return fail(context, (-outcome) as i32);
         }
@@ -337,24 +410,32 @@ fn register_delivery() {
         signal_router::deliver_pending();
         context.ret_i32(0);
     });
-    in_libc("kill", |context| match kill_process(context.arg_i32(0), context.arg_i32(1)) {
-        0 => {
-            signal_router::deliver_pending();
-            context.ret_i32(0);
+    in_libc("kill", |context| {
+        match kill_process(context.arg_i32(0), context.arg_i32(1)) {
+            0 => {
+                signal_router::deliver_pending();
+                context.ret_i32(0);
+            }
+            code => fail(context, code),
         }
-        code => fail(context, code),
     });
     in_libc("killpg", |context| {
         // cite: bionic killpg.cpp#killpg
         let group = context.arg_i32(0);
-        match if group < 0 { EINVAL } else { kill_process(-group, context.arg_i32(1)) } {
+        match if group < 0 {
+            EINVAL
+        } else {
+            kill_process(-group, context.arg_i32(1))
+        } {
             0 => context.ret_i32(0),
             code => fail(context, code),
         }
     });
     in_libc("pthread_kill", |context| {
         // cite: bionic pthread_kill.cpp#pthread_kill
-        let Some(record) = thread_list::find(context.arg_ptr(0), "pthread_kill") else { return context.ret_i32(ESRCH) };
+        let Some(record) = thread_list::find(context.arg_ptr(0), "pthread_kill") else {
+            return context.ret_i32(ESRCH);
+        };
         let tid = guest_thread::tid_of(record).unwrap_or(0);
         if tid == 0 {
             return context.ret_i32(ESRCH);

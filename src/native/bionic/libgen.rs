@@ -1,9 +1,9 @@
 use std::cell::RefCell;
 
+use super::super::bridge::CallContext;
 use super::abi_types::{ENAMETOOLONG, ERANGE};
 use super::export::in_libc;
 use super::guest_mem::{optional_cstr, write_bytes, write_value};
-use super::super::bridge::CallContext;
 
 const MAX_PATH_LENGTH: usize = 4096;
 
@@ -14,7 +14,9 @@ thread_local! {
 
 fn base_of(path: Option<&[u8]>) -> Vec<u8> {
     // cite: bionic libgen.cpp#__basename_r
-    let Some(path) = path.filter(|path| !path.is_empty()) else { return b".".to_vec() };
+    let Some(path) = path.filter(|path| !path.is_empty()) else {
+        return b".".to_vec();
+    };
     let mut end = path.len() - 1;
     while end > 0 && path[end] == b'/' {
         end -= 1;
@@ -31,7 +33,9 @@ fn base_of(path: Option<&[u8]>) -> Vec<u8> {
 
 fn directory_of(path: Option<&[u8]>) -> Vec<u8> {
     // cite: bionic libgen.cpp#__dirname_r
-    let Some(path) = path.filter(|path| !path.is_empty()) else { return b".".to_vec() };
+    let Some(path) = path.filter(|path| !path.is_empty()) else {
+        return b".".to_vec();
+    };
     let mut end = path.len() - 1;
     while end > 0 && path[end] == b'/' {
         end -= 1;
@@ -40,7 +44,11 @@ fn directory_of(path: Option<&[u8]>) -> Vec<u8> {
         end -= 1;
     }
     if end == 0 {
-        return if path[0] == b'/' { b"/".to_vec() } else { b".".to_vec() };
+        return if path[0] == b'/' {
+            b"/".to_vec()
+        } else {
+            b".".to_vec()
+        };
     }
     loop {
         end -= 1;
@@ -51,7 +59,12 @@ fn directory_of(path: Option<&[u8]>) -> Vec<u8> {
     path[..=end].to_vec()
 }
 
-fn into_buffer(context: &mut CallContext, result: Vec<u8>, long_name_errno: Option<i32>, buffer: &'static std::thread::LocalKey<RefCell<Box<[u8; MAX_PATH_LENGTH]>>>) {
+fn into_buffer(
+    context: &mut CallContext,
+    result: Vec<u8>,
+    long_name_errno: Option<i32>,
+    buffer: &'static std::thread::LocalKey<RefCell<Box<[u8; MAX_PATH_LENGTH]>>>,
+) {
     if let Some(code) = long_name_errno {
         context.set_errno(code);
         context.ret_ptr(0);

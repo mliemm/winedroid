@@ -923,10 +923,8 @@ fn art_integer_int_value_on_null_receiver_throws_null_pointer_exception() {
 
         assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
         assert_eq!(
-            program.invoke_builtin_method(
-                &int_value,
-                Some(&test_invocation(vec![DexValue::Int(0)]))
-            ),
+            program
+                .invoke_builtin_method(&int_value, Some(&test_invocation(vec![DexValue::Int(0)]))),
             Some(DexExecutionResult::Int(0))
         );
     }
@@ -937,7 +935,12 @@ fn libcore_long_parse_long_accepts_range_and_throws_number_format_exception_outs
     // cite: libcore Long.java#parseLong
     // cite: libcore NumberFormatException.java#forInputString
     let program = DexProgram::new(Vec::new());
-    let parse_long = builtin_method("Ljava/lang/Long;", "parseLong", "J", &["Ljava/lang/String;"]);
+    let parse_long = builtin_method(
+        "Ljava/lang/Long;",
+        "parseLong",
+        "J",
+        &["Ljava/lang/String;"],
+    );
     let parse = |input: DexValue| {
         program.invoke_builtin_method(&parse_long, Some(&test_invocation(vec![input])))
     };
@@ -984,4 +987,214 @@ fn libcore_long_parse_long_accepts_range_and_throws_number_format_exception_outs
         thrown_detail_message(&program, &exception),
         Some("Cannot parse null string".to_owned())
     );
+}
+
+fn locale_accessor(name: &str, locale: &str) -> Option<DexExecutionResult> {
+    let program = DexProgram::new(Vec::new());
+    let method = DexMethodId {
+        class_descriptor: "Ljava/util/Locale;".to_owned(),
+        name: name.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "L".to_owned(),
+            return_type: "Ljava/lang/String;".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let invocation = test_invocation(vec![DexValue::Reference(std::rc::Rc::from(format!(
+        "Ljava/util/Locale;:{locale}"
+    )))]);
+
+    program.invoke_builtin_method(&method, Some(&invocation))
+}
+
+fn locale_string(name: &str, locale: &str) -> String {
+    match locale_accessor(name, locale) {
+        Some(DexExecutionResult::Value(DexValue::String(value))) => value.to_string(),
+        other => panic!("{name} on {locale}: {other:?}"),
+    }
+}
+
+#[test]
+fn libcore_locale_get_language_reads_the_language_subtag_lowercased() {
+    // cite: libcore Locale.java#getLanguage, forLanguageTag
+    assert_eq!(locale_string("getLanguage", "default"), "en");
+    assert_eq!(locale_string("getLanguage", "ROOT"), "");
+    assert_eq!(locale_string("getLanguage", "FRANCE"), "fr");
+    assert_eq!(locale_string("getLanguage", "ZH-hant-tw"), "zh");
+    assert_eq!(locale_string("getLanguage", "pt-BR"), "pt");
+}
+
+#[test]
+fn libcore_base_locale_maps_he_yi_id_to_the_legacy_iso_codes() {
+    // cite: libcore BaseLocale.java#getInstance
+    assert_eq!(locale_string("getLanguage", "he-IL"), "iw");
+    assert_eq!(locale_string("getLanguage", "yi"), "ji");
+    assert_eq!(locale_string("getLanguage", "id-ID"), "in");
+}
+
+#[test]
+fn libcore_locale_get_country_reads_the_region_subtag_uppercased() {
+    // cite: libcore Locale.java#getCountry
+    // cite: libcore LanguageTag.java#isRegion
+    assert_eq!(locale_string("getCountry", "default"), "US");
+    assert_eq!(locale_string("getCountry", "UK"), "GB");
+    assert_eq!(locale_string("getCountry", "ENGLISH"), "");
+    assert_eq!(locale_string("getCountry", "pt-br"), "BR");
+    assert_eq!(locale_string("getCountry", "zh-Hans-CN"), "CN");
+    assert_eq!(locale_string("getCountry", "es-419"), "419");
+    assert_eq!(locale_string("getCountry", "en-12"), "");
+}
+
+#[test]
+fn libcore_language_tag_extlang_replaces_the_language_and_und_is_empty() {
+    // cite: libcore InternalLocaleBuilder.java#setLanguageTag
+    assert_eq!(locale_string("getLanguage", "zh-yue-HK"), "yue");
+    assert_eq!(locale_string("getLanguage", "und-US"), "");
+    assert_eq!(locale_string("getLanguage", "UND-US"), "und");
+    assert_eq!(locale_string("getCountry", "und-US"), "US");
+}
+
+#[test]
+fn libcore_locale_get_variant_joins_variant_subtags_with_underscore() {
+    // cite: libcore InternalLocaleBuilder.java#setLanguageTag
+    assert_eq!(locale_string("getVariant", "sl-rozaj-biske"), "rozaj_biske");
+    assert_eq!(locale_string("getVariant", "de-DE-1996"), "1996");
+    assert_eq!(locale_string("getVariant", "en-US"), "");
+}
+
+#[test]
+fn libcore_locale_ill_formed_tag_yields_the_root_locale() {
+    // cite: libcore LanguageTag.java#parse
+    assert_eq!(locale_string("getLanguage", "en_US"), "");
+    assert_eq!(locale_string("getLanguage", "x"), "");
+    assert_eq!(locale_string("getCountry", "x-US"), "");
+}
+
+#[test]
+fn libcore_locale_legacy_language_tags_are_a_missing_primitive() {
+    // cite: libcore LanguageTag.java#LEGACY
+    assert_eq!(locale_accessor("getLanguage", "i-klingon"), None);
+    assert_eq!(locale_accessor("getLanguage", "en-GB-oed"), None);
+}
+
+fn constructed_locale(
+    program: &DexProgram,
+    arguments: &[DexValue],
+) -> (DexValue, Option<DexExecutionResult>) {
+    let locale = program.allocate_object("Ljava/util/Locale;".to_owned());
+    let descriptor = if arguments.len() == 2 {
+        "(Ljava/lang/String;Ljava/lang/String;)V"
+    } else {
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V"
+    };
+    let constructor = DexMethodId {
+        class_descriptor: "Ljava/util/Locale;".to_owned(),
+        name: "<init>".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "V".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: descriptor
+                .trim_start_matches('(')
+                .trim_end_matches(")V")
+                .split_inclusive(';')
+                .map(str::to_owned)
+                .collect(),
+        },
+    };
+    let mut values = vec![locale.clone()];
+    values.extend_from_slice(arguments);
+    let result = program.invoke_builtin_method(&constructor, Some(&test_invocation(values)));
+
+    (locale, result)
+}
+
+fn string_argument(value: &str) -> DexValue {
+    DexValue::String(std::rc::Rc::from(value))
+}
+
+fn accessor_on(program: &DexProgram, name: &str, locale: &DexValue) -> Option<DexExecutionResult> {
+    let method = DexMethodId {
+        class_descriptor: "Ljava/util/Locale;".to_owned(),
+        name: name.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "L".to_owned(),
+            return_type: "Ljava/lang/String;".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+
+    program.invoke_builtin_method(&method, Some(&test_invocation(vec![locale.clone()])))
+}
+
+fn accessor_string(program: &DexProgram, name: &str, locale: &DexValue) -> String {
+    match accessor_on(program, name, locale) {
+        Some(DexExecutionResult::Value(DexValue::String(value))) => value.to_string(),
+        other => panic!("{name}: {other:?}"),
+    }
+}
+
+#[test]
+fn libcore_locale_language_country_constructor_normalizes_case() {
+    // cite: libcore Locale.java#Locale
+    // cite: libcore BaseLocale.java#getInstance
+    let program = DexProgram::new(Vec::new());
+    let (locale, result) =
+        constructed_locale(&program, &[string_argument("EN"), string_argument("us")]);
+
+    assert_eq!(result, Some(DexExecutionResult::Void));
+    assert_eq!(accessor_string(&program, "getLanguage", &locale), "en");
+    assert_eq!(accessor_string(&program, "getCountry", &locale), "US");
+    assert_eq!(accessor_string(&program, "getVariant", &locale), "");
+}
+
+#[test]
+fn libcore_locale_constructor_stores_old_iso_language_codes_and_the_variant_as_given() {
+    // cite: libcore Locale.java#convertOldISOCodes
+    let program = DexProgram::new(Vec::new());
+    let (hebrew, _) = constructed_locale(&program, &[string_argument("he"), string_argument("il")]);
+    let (indonesian, _) = constructed_locale(
+        &program,
+        &[
+            string_argument("ID"),
+            string_argument(""),
+            string_argument("Posix"),
+        ],
+    );
+
+    assert_eq!(accessor_string(&program, "getLanguage", &hebrew), "iw");
+    assert_eq!(accessor_string(&program, "getLanguage", &indonesian), "in");
+    assert_eq!(
+        accessor_string(&program, "getVariant", &indonesian),
+        "Posix"
+    );
+}
+
+#[test]
+fn libcore_locale_constructor_null_argument_throws_null_pointer_exception() {
+    // cite: libcore Locale.java#Locale
+    let program = DexProgram::new(Vec::new());
+    let (_, result) = constructed_locale(&program, &[string_argument("en"), DexValue::Null]);
+
+    let Some(DexExecutionResult::Throw(exception)) = result else {
+        panic!("null country should throw: {result:?}");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
+}
+
+#[test]
+fn libcore_locale_three_argument_constructor_null_language_or_variant_throws_null_pointer_exception(
+) {
+    // cite: libcore Locale.java#Locale
+    let program = DexProgram::new(Vec::new());
+    for arguments in [
+        [DexValue::Null, string_argument("US"), string_argument("")],
+        [string_argument("en"), string_argument("US"), DexValue::Null],
+    ] {
+        let (_, result) = constructed_locale(&program, &arguments);
+
+        let Some(DexExecutionResult::Throw(exception)) = result else {
+            panic!("null argument should throw: {result:?}");
+        };
+        assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
+    }
 }

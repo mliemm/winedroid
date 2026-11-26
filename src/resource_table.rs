@@ -1592,7 +1592,7 @@ fn checked_chunk_end(data: &[u8], offset: usize, size: u32) -> Result<usize> {
 
 #[derive(Debug, Clone)]
 struct StringPool {
-    strings: Vec<String>,
+    strings: Vec<std::result::Result<String, String>>,
 }
 
 fn cached_string_pool(
@@ -1654,13 +1654,14 @@ impl StringPool {
             }
 
             let bytes = &data[string_offset..chunk_end];
+            // cite: frameworks-base ResourceTypes.cpp#stringAt
             let string = if is_utf8 {
-                decode_utf8_string(bytes)?
+                decode_utf8_string(bytes)
             } else {
-                decode_utf16_string(bytes)?
+                decode_utf16_string(bytes)
             };
 
-            strings.push(string);
+            strings.push(string.map_err(|error| error.to_string()));
         }
 
         Ok(Self { strings })
@@ -1669,8 +1670,8 @@ impl StringPool {
     fn required(&self, index: u32) -> Result<String> {
         self.strings
             .get(index as usize)
-            .cloned()
             .ok_or_else(|| WinedroidError::new(format!("string pool index {index} is invalid")))
+            .and_then(|value| value.clone().map_err(WinedroidError::new))
     }
 }
 
@@ -1686,10 +1687,36 @@ fn decode_utf8_string(data: &[u8]) -> Result<String> {
         return Err(WinedroidError::new("UTF-8 string is not null-terminated"));
     }
 
-    let value = std::str::from_utf8(&data[value_offset..terminator_offset])
-        .map_err(|error| WinedroidError::with_source("invalid UTF-8 string", error))?;
+    decode_resource_utf8(&data[value_offset..terminator_offset])
+}
 
-    Ok(value.to_owned())
+fn decode_resource_utf8(mut bytes: &[u8]) -> Result<String> {
+    let mut decoded = String::new();
+    loop {
+        let error = match std::str::from_utf8(bytes) {
+            Ok(tail) => {
+                decoded.push_str(tail);
+                return Ok(decoded);
+            }
+            Err(error) => error,
+        };
+        let (valid, remaining) = bytes.split_at(error.valid_up_to());
+        // cite: frameworks-base Util.cpp#ModifiedUtf8ToUtf8
+        let [0xed, high @ 0xa0..=0xaf, high_tail @ 0x80..=0xbf, 0xed, low @ 0xb0..=0xbf, low_tail @ 0x80..=0xbf, tail @ ..] =
+            remaining
+        else {
+            return Err(WinedroidError::with_source("invalid UTF-8 string", error));
+        };
+        let high = (u32::from(high & 0x0f) << 6) | u32::from(high_tail & 0x3f);
+        let low = (u32::from(low & 0x0f) << 6) | u32::from(low_tail & 0x3f);
+        let scalar = char::from_u32(0x10000 + (high << 10) + low)
+            .ok_or_else(|| WinedroidError::new("invalid UTF-8 surrogate pair"))?;
+        let prefix = std::str::from_utf8(valid)
+            .map_err(|error| WinedroidError::with_source("invalid UTF-8 string", error))?;
+        decoded.push_str(prefix);
+        decoded.push(scalar);
+        bytes = tail;
+    }
 }
 
 fn decode_utf16_string(data: &[u8]) -> Result<String> {
@@ -2520,6 +2547,30 @@ mod tests {
         write_u16(&mut config, 20, screen_width);
         write_u16(&mut config, 22, screen_height);
         config
+    }
+
+    #[test]
+    fn aapt_string_pool_decodes_modified_utf8_surrogate_pairs() {
+        let pairs = [b'a', 0xed, 0xa0, 0xbd, 0xed, 0xb8, 0x80, b'b'];
+        let mut wire = vec![4, pairs.len() as u8];
+        wire.extend(pairs);
+        wire.push(0);
+        assert_eq!(decode_utf8_string(&wire).unwrap(), "a😀b");
+        assert!(decode_resource_utf8(&pairs[..4]).is_err());
+    }
+
+    #[test]
+    fn resource_types_string_at_defers_invalid_string_until_requested() {
+        let mut data = string_pool(&["bad", "good"]);
+        data[28 + 8 + 2] = 0xff;
+        let header = read_chunk_header(&data, 0).unwrap();
+        let pool = StringPool::parse(&data, 0, data.len(), header).expect("pool parses");
+        assert_eq!(pool.required(1).unwrap(), "good");
+        assert!(pool
+            .required(0)
+            .unwrap_err()
+            .to_string()
+            .contains("invalid UTF-8"));
     }
 
     fn string_pool(values: &[&str]) -> Vec<u8> {

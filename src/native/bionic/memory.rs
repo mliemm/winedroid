@@ -76,7 +76,8 @@ fn aligned(context: &mut CallContext, round_to_power_of_two: bool) {
         alignment = alignment.checked_next_power_of_two().unwrap_or(0);
     }
     let mut result: *mut libc::c_void = std::ptr::null_mut();
-    let status = unsafe { libc::posix_memalign(&mut result, alignment, context.arg_u64(1) as usize) };
+    let status =
+        unsafe { libc::posix_memalign(&mut result, alignment, context.arg_u64(1) as usize) };
     if status != 0 {
         context.set_errno(status);
         context.ret_ptr(0);
@@ -87,14 +88,24 @@ fn aligned(context: &mut CallContext, round_to_power_of_two: bool) {
 
 fn mallinfo(context: &mut CallContext) {
     // cite: bionic malloc.h#mallinfo
-    let mut statistics = ZoneStatistics { blocks_in_use: 0, size_in_use: 0, max_size_in_use: 0, size_allocated: 0 };
+    let mut statistics = ZoneStatistics {
+        blocks_in_use: 0,
+        size_in_use: 0,
+        max_size_in_use: 0,
+        size_allocated: 0,
+    };
     unsafe { malloc_zone_statistics(std::ptr::null_mut(), &mut statistics) };
     let mut fields = [0u64; MALLINFO_SIZE / 8];
     fields[0] = statistics.size_allocated as u64;
     fields[5] = statistics.max_size_in_use as u64;
     fields[7] = statistics.size_in_use as u64;
-    fields[8] = statistics.size_allocated.saturating_sub(statistics.size_in_use) as u64;
-    let bytes: Vec<u8> = fields.iter().flat_map(|field| field.to_le_bytes()).collect();
+    fields[8] = statistics
+        .size_allocated
+        .saturating_sub(statistics.size_in_use) as u64;
+    let bytes: Vec<u8> = fields
+        .iter()
+        .flat_map(|field| field.to_le_bytes())
+        .collect();
     context.ret_sret(&bytes);
 }
 
@@ -121,23 +132,36 @@ pub fn register() {
         let pointer = unsafe { libc::malloc(context.arg_u64(0) as usize) };
         return_allocation(context, pointer);
     });
-    in_libc("free", |context| unsafe { libc::free(context.arg_ptr(0) as *mut libc::c_void) });
+    in_libc("free", |context| unsafe {
+        libc::free(context.arg_ptr(0) as *mut libc::c_void)
+    });
     in_libc("calloc", |context| {
         // cite: bionic malloc_common.cpp#calloc
-        let pointer = unsafe { libc::calloc(context.arg_u64(0) as usize, context.arg_u64(1) as usize) };
+        let pointer =
+            unsafe { libc::calloc(context.arg_u64(0) as usize, context.arg_u64(1) as usize) };
         return_allocation(context, pointer);
     });
     in_libc("realloc", realloc);
     in_libc("reallocarray", reallocarray);
     in_libc("posix_memalign", |context| {
-        let status = unsafe { libc::posix_memalign(context.arg_ptr(0) as *mut *mut libc::c_void, context.arg_u64(1) as usize, context.arg_u64(2) as usize) };
+        let status = unsafe {
+            libc::posix_memalign(
+                context.arg_ptr(0) as *mut *mut libc::c_void,
+                context.arg_u64(1) as usize,
+                context.arg_u64(2) as usize,
+            )
+        };
         context.ret_i32(status);
     });
     in_libc("memalign", |context| aligned(context, true));
     in_libc("aligned_alloc", |context| aligned(context, false));
     in_libc("malloc_usable_size", |context| {
         let pointer = context.arg_ptr(0);
-        context.ret_u64(if pointer == 0 { 0 } else { unsafe { malloc_size(pointer as *const libc::c_void) as u64 } });
+        context.ret_u64(if pointer == 0 {
+            0
+        } else {
+            unsafe { malloc_size(pointer as *const libc::c_void) as u64 }
+        });
     });
     in_libc("mallinfo", mallinfo);
     in_libc("mallopt", mallopt);

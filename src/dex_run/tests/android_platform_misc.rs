@@ -1630,7 +1630,10 @@ fn frameworks_base_log_get_stack_trace_string_returns_empty_for_null() {
     // cite: frameworks-base Log.java#getStackTraceString
     let program = DexProgram::new(Vec::new());
 
-    assert_eq!(stack_trace_string(&program, DexValue::Null), string_result(""));
+    assert_eq!(
+        stack_trace_string(&program, DexValue::Null),
+        string_result("")
+    );
 }
 
 #[test]
@@ -1698,12 +1701,92 @@ fn frameworks_base_log_get_stack_trace_string_rejects_a_non_throwable() {
 fn frameworks_base_environment_get_data_directory_returns_the_default_data_root() {
     // cite: frameworks-base Environment.java#getDataDirectory, DIR_ANDROID_DATA_PATH
     let program = DexProgram::new(Vec::new());
-    let method = builtin_method("Landroid/os/Environment;", "getDataDirectory", "Ljava/io/File;", &[]);
+    let method = builtin_method(
+        "Landroid/os/Environment;",
+        "getDataDirectory",
+        "Ljava/io/File;",
+        &[],
+    );
 
     assert_eq!(
         program.invoke_builtin_method(&method, None),
         Some(DexExecutionResult::Value(DexValue::Reference(
             std::rc::Rc::from("Ljava/io/File;:/data")
         )))
+    );
+}
+
+fn web_view_set_data_directory_suffix_method() -> DexMethodId {
+    DexMethodId {
+        class_descriptor: "Landroid/webkit/WebView;".to_owned(),
+        name: "setDataDirectorySuffix".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VL".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec!["Ljava/lang/String;".to_owned()],
+        },
+    }
+}
+
+// cite: frameworks-base WebView.java#setDataDirectorySuffix
+// cite: frameworks-base WebViewFactory.java#setDataDirectorySuffix, sDataDirectorySuffix
+#[test]
+fn web_view_set_data_directory_suffix_stores_suffix_in_web_view_factory() {
+    let program = DexProgram::new(Vec::new());
+    let method = web_view_set_data_directory_suffix_method();
+    let suffix = DexValue::String(std::rc::Rc::from("push"));
+
+    assert_eq!(
+        program.invoke_builtin_method(&method, Some(&test_invocation(vec![suffix.clone()]))),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.read_stored_static_field(&DexFieldId {
+            class_descriptor: "Landroid/webkit/WebViewFactory;".to_owned(),
+            type_descriptor: "Ljava/lang/String;".to_owned(),
+            name: "sDataDirectorySuffix".to_owned(),
+        }),
+        Some(suffix)
+    );
+}
+
+// cite: frameworks-base WebViewFactory.java#setDataDirectorySuffix
+#[test]
+fn web_view_set_data_directory_suffix_refuses_path_separator_and_null() {
+    let program = DexProgram::new(Vec::new());
+    let method = web_view_set_data_directory_suffix_method();
+
+    let separator = program.invoke_builtin_method(
+        &method,
+        Some(&test_invocation(vec![DexValue::String(std::rc::Rc::from(
+            "a/b",
+        ))])),
+    );
+    let Some(DexExecutionResult::Throw(exception)) = separator else {
+        panic!("a suffix with a path separator should throw");
+    };
+    assert_eq!(
+        thrown_detail_message(&program, &exception).as_deref(),
+        Some("Suffix a/b contains a path separator")
+    );
+
+    for null in [DexValue::Null, DexValue::Int(0)] {
+        assert!(matches!(
+            program.invoke_builtin_method(&method, Some(&test_invocation(vec![null]))),
+            Some(DexExecutionResult::Throw(_))
+        ));
+    }
+}
+
+#[test]
+fn frameworks_binder_get_calling_uid_outside_a_transaction_is_the_process_uid() {
+    // cite: frameworks-base Binder.java#getCallingUid
+    let program = DexProgram::new(Vec::new());
+    let calling_uid = builtin_method("Landroid/os/Binder;", "getCallingUid", "I", &[]);
+    let my_uid = builtin_method("Landroid/os/Process;", "myUid", "I", &[]);
+
+    assert_eq!(
+        program.invoke_builtin_method(&calling_uid, Some(&test_invocation(Vec::new()))),
+        program.invoke_builtin_method(&my_uid, Some(&test_invocation(Vec::new())))
     );
 }

@@ -39,10 +39,13 @@ pub fn write_cstr_truncated(address: usize, capacity: usize, text: &[u8]) -> usi
     text.len()
 }
 
-static INTERNED: std::sync::Mutex<Option<std::collections::HashMap<String, usize>>> = std::sync::Mutex::new(None);
+static INTERNED: std::sync::Mutex<Option<std::collections::HashMap<String, usize>>> =
+    std::sync::Mutex::new(None);
 
 pub fn intern(text: &str) -> usize {
     let mut guard = INTERNED.lock().expect("interned strings");
     let map = guard.get_or_insert_with(std::collections::HashMap::new);
-    *map.entry(text.to_string()).or_insert_with(|| Box::leak(Box::new(std::ffi::CString::new(text).unwrap_or_default())).as_ptr() as usize)
+    *map.entry(text.to_string()).or_insert_with(|| {
+        Box::leak(Box::new(std::ffi::CString::new(text).unwrap_or_default())).as_ptr() as usize
+    })
 }

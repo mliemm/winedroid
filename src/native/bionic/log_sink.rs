@@ -19,13 +19,21 @@ pub fn start_capture() {
 }
 
 pub fn take_capture() -> Vec<LogRecord> {
-    CAPTURE.with(|capture| capture.borrow_mut().take()).unwrap_or_default()
+    CAPTURE
+        .with(|capture| capture.borrow_mut().take())
+        .unwrap_or_default()
 }
 
 pub fn priority_letter(priority: i32) -> char {
     // cite: logging logger_write.cpp#filestream_logger, log_characters
     const LETTERS: &[u8; 9] = b"XXVDIWEF\0";
-    let index = if priority < 0 { 0 } else if priority > 8 { 7 } else { priority as usize };
+    let index = if priority < 0 {
+        0
+    } else if priority > 8 {
+        7
+    } else {
+        priority as usize
+    };
     LETTERS[index] as char
 }
 
@@ -36,7 +44,12 @@ fn timestamp() -> String {
     unsafe {
         libc::time(&mut now);
         libc::localtime_r(&now, &mut parts);
-        let written = libc::strftime(text.as_mut_ptr() as *mut libc::c_char, text.len(), c"%m-%d %H:%M:%S".as_ptr(), &parts);
+        let written = libc::strftime(
+            text.as_mut_ptr() as *mut libc::c_char,
+            text.len(),
+            c"%m-%d %H:%M:%S".as_ptr(),
+            &parts,
+        );
         String::from_utf8_lossy(&text[..written]).into_owned()
     }
 }
@@ -44,8 +57,21 @@ fn timestamp() -> String {
 fn stderr_line(record: &LogRecord) -> String {
     let (pid, mut tid) = (unsafe { libc::getpid() }, 0u64);
     unsafe { libc::pthread_threadid_np(0, &mut tid) };
-    let location = record.file.as_ref().map(|file| format!(" {file}:{}", record.line)).unwrap_or_default();
-    format!("{} {} {} {:5} {:5}{}] {}\n", record.tag, priority_letter(record.priority), timestamp(), pid, tid, location, record.message)
+    let location = record
+        .file
+        .as_ref()
+        .map(|file| format!(" {file}:{}", record.line))
+        .unwrap_or_default();
+    format!(
+        "{} {} {} {:5} {:5}{}] {}\n",
+        record.tag,
+        priority_letter(record.priority),
+        timestamp(),
+        pid,
+        tid,
+        location,
+        record.message
+    )
 }
 
 pub fn write_stderr(record: &LogRecord) {

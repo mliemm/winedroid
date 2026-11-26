@@ -19,8 +19,14 @@ impl Session {
     }
 
     fn in_variant(variant: &str) -> Self {
-        let serial = SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        Self { bridged: Bridged::load(variant, "libfx_signals.so"), _serial: serial, installed: Default::default() }
+        let serial = SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self {
+            bridged: Bridged::load(variant, "libfx_signals.so"),
+            _serial: serial,
+            installed: Default::default(),
+        }
     }
 
     fn call(&self, name: &str) -> CallBuilder {
@@ -33,12 +39,27 @@ impl Session {
 
     fn recorder(&self, signal: i32, flags: u32) {
         self.installed.borrow_mut().push(signal);
-        assert_eq!(self.call("fx_install_recorder").i32(signal).u32(flags).invoke().unwrap().i32(), 0);
+        assert_eq!(
+            self.call("fx_install_recorder")
+                .i32(signal)
+                .u32(flags)
+                .invoke()
+                .unwrap()
+                .i32(),
+            0
+        );
     }
 
     fn skipper(&self, signal: i32) {
         self.installed.borrow_mut().push(signal);
-        assert_eq!(self.call("fx_install_skipper").i32(signal).invoke().unwrap().i32(), 0);
+        assert_eq!(
+            self.call("fx_install_skipper")
+                .i32(signal)
+                .invoke()
+                .unwrap()
+                .i32(),
+            0
+        );
     }
 }
 

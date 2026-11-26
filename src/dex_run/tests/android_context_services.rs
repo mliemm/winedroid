@@ -3,6 +3,7 @@ use super::helpers::*;
 
 #[test]
 fn builtin_context_get_system_service_returns_named_reference() {
+    // cite: frameworks-base Context.java#CONNECTIVITY_SERVICE
     let program = DexProgram::new(Vec::new());
     let method = DexMethodId {
         class_descriptor: "Landroid/content/Context;".to_owned(),
@@ -21,7 +22,7 @@ fn builtin_context_get_system_service_returns_named_reference() {
     assert_eq!(
         program.invoke_builtin_method(&method, Some(&invocation)),
         Some(DexExecutionResult::Value(DexValue::Reference(
-            std::rc::Rc::from("Landroid/content/SystemService;:connectivity")
+            std::rc::Rc::from("Landroid/net/ConnectivityManager;:connectivity")
         )))
     );
 }
@@ -239,6 +240,90 @@ fn builtin_context_get_class_loader_returns_application_loader() {
         program.invoke_builtin_method(&method, None),
         Some(DexExecutionResult::Value(DexValue::Reference(
             std::rc::Rc::from("Ljava/lang/ClassLoader;.app")
+        )))
+    );
+}
+
+// cite: frameworks-base SystemServiceRegistry.java#ACTIVITY_SERVICE, ActivityManager
+#[test]
+fn frameworks_system_service_registry_returns_typed_activity_manager() {
+    let program = DexProgram::new(Vec::new());
+    let by_name = builtin_method(
+        "Landroid/content/Context;",
+        "getSystemService",
+        "Ljava/lang/Object;",
+        &["Ljava/lang/String;"],
+    );
+    let invocation = test_invocation(vec![
+        DexValue::Reference(std::rc::Rc::from("context")),
+        DexValue::String(std::rc::Rc::from("activity")),
+    ]);
+    let expected = DexValue::Reference(std::rc::Rc::from("Landroid/app/ActivityManager;:activity"));
+
+    assert_eq!(
+        program.invoke_builtin_method(&by_name, Some(&invocation)),
+        Some(DexExecutionResult::Value(expected.clone()))
+    );
+    assert!(program.value_matches_type(&expected, "Landroid/app/ActivityManager;"));
+}
+
+// cite: frameworks-base ActivityManager.java#isLowRamDevice, isLowRamDeviceStatic
+#[test]
+fn frameworks_activity_manager_reports_device_memory_class() {
+    let program = DexProgram::new(Vec::new());
+    let invocation = test_invocation(vec![DexValue::Reference(std::rc::Rc::from(
+        "Landroid/app/ActivityManager;:activity",
+    ))]);
+    for name in ["isLowRamDevice", "isLowRamDeviceStatic"] {
+        let method = builtin_method("Landroid/app/ActivityManager;", name, "Z", &[]);
+        assert_eq!(
+            program.invoke_builtin_method(&method, Some(&invocation)),
+            Some(DexExecutionResult::Int(0))
+        );
+    }
+}
+
+// cite: frameworks-base ActivityManager.java#getRunningAppProcesses, RunningAppProcessInfo
+#[test]
+fn frameworks_activity_manager_running_app_processes_lists_this_process() {
+    let program = DexProgram::new(Vec::new());
+    let list_method = builtin_method(
+        "Landroid/app/ActivityManager;",
+        "getRunningAppProcesses",
+        "Ljava/util/List;",
+        &[],
+    );
+    let invocation = test_invocation(vec![DexValue::Reference(std::rc::Rc::from(
+        "Landroid/app/ActivityManager;:activity",
+    ))]);
+    let Some(DexExecutionResult::Value(list)) =
+        program.invoke_builtin_method(&list_method, Some(&invocation))
+    else {
+        panic!("getRunningAppProcesses should return a list");
+    };
+    let entries = program
+        .runtime
+        .borrow()
+        .list_entries
+        .get(&map_identity_key(&list))
+        .cloned()
+        .expect("list entries");
+    assert_eq!(entries.len(), 1);
+    let field = |name: &str, type_descriptor: &str| DexFieldId {
+        class_descriptor: "Landroid/app/ActivityManager$RunningAppProcessInfo;".to_owned(),
+        type_descriptor: type_descriptor.to_owned(),
+        name: name.to_owned(),
+    };
+
+    assert_eq!(
+        program.read_stored_instance_field(&entries[0], &field("pid", "I")),
+        Some(DexValue::Int(BOOTSTRAP_PROCESS_ID))
+    );
+    assert_eq!(
+        program
+            .read_stored_instance_field(&entries[0], &field("processName", "Ljava/lang/String;")),
+        Some(DexValue::String(std::rc::Rc::from(
+            program.bootstrap_process_name()
         )))
     );
 }

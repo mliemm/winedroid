@@ -6,8 +6,17 @@ use super::guest_mem::{write_bytes, write_value};
 const EAFNOSUPPORT: i32 = 97;
 
 extern "C" {
-    fn inet_pton(af: libc::c_int, source: *const libc::c_char, destination: *mut libc::c_void) -> libc::c_int;
-    fn inet_ntop(af: libc::c_int, source: *const libc::c_void, destination: *mut libc::c_char, size: libc::socklen_t) -> *const libc::c_char;
+    fn inet_pton(
+        af: libc::c_int,
+        source: *const libc::c_char,
+        destination: *mut libc::c_void,
+    ) -> libc::c_int;
+    fn inet_ntop(
+        af: libc::c_int,
+        source: *const libc::c_void,
+        destination: *mut libc::c_char,
+        size: libc::socklen_t,
+    ) -> *const libc::c_char;
 }
 
 thread_local! {
@@ -19,10 +28,18 @@ fn error(code: i32) -> i64 {
 }
 
 pub fn register() {
-    in_libc("htons", |context| context.ret_u32(u32::from((context.arg_u32(0) as u16).to_be())));
-    in_libc("htonl", |context| context.ret_u32(context.arg_u32(0).to_be()));
-    in_libc("ntohs", |context| context.ret_u32(u32::from((context.arg_u32(0) as u16).to_be())));
-    in_libc("ntohl", |context| context.ret_u32(context.arg_u32(0).to_be()));
+    in_libc("htons", |context| {
+        context.ret_u32(u32::from((context.arg_u32(0) as u16).to_be()))
+    });
+    in_libc("htonl", |context| {
+        context.ret_u32(context.arg_u32(0).to_be())
+    });
+    in_libc("ntohs", |context| {
+        context.ret_u32(u32::from((context.arg_u32(0) as u16).to_be()))
+    });
+    in_libc("ntohl", |context| {
+        context.ret_u32(context.arg_u32(0).to_be())
+    });
     in_libc("inet_pton", |context| {
         // cite: bionic inet_pton.c#inet_pton
         let family = context.arg_i32(0);
@@ -36,7 +53,13 @@ pub fn register() {
             super::linux_abi::socket::AF_INET6 => libc::AF_INET6,
             _ => return finish_int(context, error(EAFNOSUPPORT)),
         };
-        let status = unsafe { inet_pton(host_family, source as *const libc::c_char, destination as *mut libc::c_void) };
+        let status = unsafe {
+            inet_pton(
+                host_family,
+                source as *const libc::c_char,
+                destination as *mut libc::c_void,
+            )
+        };
         finish_int(context, i64::from(status))
     });
     in_libc("inet_ntop", |context| {
@@ -58,7 +81,14 @@ pub fn register() {
                 return;
             }
         };
-        let status = unsafe { inet_ntop(host_family, source as *const libc::c_void, destination as *mut libc::c_char, capacity as libc::socklen_t) };
+        let status = unsafe {
+            inet_ntop(
+                host_family,
+                source as *const libc::c_void,
+                destination as *mut libc::c_char,
+                capacity as libc::socklen_t,
+            )
+        };
         if status.is_null() {
             context.set_errno(EINVAL);
             context.ret_ptr(0);
@@ -74,7 +104,13 @@ pub fn register() {
             return;
         }
         let mut address = [0u8; 4];
-        let status = unsafe { inet_pton(libc::AF_INET, source as *const libc::c_char, address.as_mut_ptr() as *mut libc::c_void) };
+        let status = unsafe {
+            inet_pton(
+                libc::AF_INET,
+                source as *const libc::c_char,
+                address.as_mut_ptr() as *mut libc::c_void,
+            )
+        };
         if status != 1 {
             context.ret_u32(u32::MAX);
             return;
@@ -87,12 +123,21 @@ pub fn register() {
         let pointer = NT0A_BUFFER.with(|buffer| {
             let mut buffer = buffer.borrow_mut();
             let mut text = [0i8; 16];
-            let status = unsafe { inet_ntop(libc::AF_INET, &packed as *const u32 as *const libc::c_void, text.as_mut_ptr() as *mut libc::c_char, text.len() as libc::socklen_t) };
+            let status = unsafe {
+                inet_ntop(
+                    libc::AF_INET,
+                    &packed as *const u32 as *const libc::c_void,
+                    text.as_mut_ptr() as *mut libc::c_char,
+                    text.len() as libc::socklen_t,
+                )
+            };
             if status.is_null() {
                 return 0usize;
             }
             let length = unsafe { libc::strlen(text.as_ptr()) };
-            write_bytes(buffer.as_mut_ptr() as usize, unsafe { std::slice::from_raw_parts(text.as_ptr() as *const u8, length) });
+            write_bytes(buffer.as_mut_ptr() as usize, unsafe {
+                std::slice::from_raw_parts(text.as_ptr() as *const u8, length)
+            });
             write_value::<u8>(buffer.as_mut_ptr() as usize + length, 0);
             buffer.as_mut_ptr() as usize
         });

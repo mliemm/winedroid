@@ -23,7 +23,14 @@ const LONGEST_PARK_NS: i64 = 1 << 40;
 
 extern "C" {
     fn os_sync_wait_on_address(address: *mut c_void, value: u64, size: usize, flags: u32) -> i32;
-    fn os_sync_wait_on_address_with_timeout(address: *mut c_void, value: u64, size: usize, flags: u32, clock: u32, timeout_ns: u64) -> i32;
+    fn os_sync_wait_on_address_with_timeout(
+        address: *mut c_void,
+        value: u64,
+        size: usize,
+        flags: u32,
+        clock: u32,
+        timeout_ns: u64,
+    ) -> i32;
     fn os_sync_wake_by_address_any(address: *mut c_void, size: usize, flags: u32) -> i32;
 }
 
@@ -38,11 +45,16 @@ type Bucket = Mutex<Vec<Arc<Waiter>>>;
 static TABLE: [Bucket; BUCKETS] = [const { Mutex::new(Vec::new()) }; BUCKETS];
 
 fn bucket_index(address: usize) -> usize {
-    ((address >> 2) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_shr(56) as usize % BUCKETS
+    ((address >> 2) as u64)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_shr(56) as usize
+        % BUCKETS
 }
 
 fn lock_bucket(index: usize) -> MutexGuard<'static, Vec<Arc<Waiter>>> {
-    TABLE[index].lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    TABLE[index]
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 pub(super) fn hold_for_fork(held: &mut Vec<Box<dyn Any>>) {
@@ -79,7 +91,16 @@ fn park(waiter: &Waiter, deadline: Option<Deadline>) -> Parked {
                 if remaining <= 0 {
                     return Parked::Expired;
                 }
-                unsafe { os_sync_wait_on_address_with_timeout(flag, 0, 4, 0, MACH_ABSOLUTE_TIME_CLOCK, remaining.min(LONGEST_PARK_NS) as u64) }
+                unsafe {
+                    os_sync_wait_on_address_with_timeout(
+                        flag,
+                        0,
+                        4,
+                        0,
+                        MACH_ABSOLUTE_TIME_CLOCK,
+                        remaining.min(LONGEST_PARK_NS) as u64,
+                    )
+                }
             }
         };
         if status < 0 {
@@ -110,7 +131,11 @@ pub fn wait(address: usize, expected: u32, bitset: u32, deadline: Option<Deadlin
     if address % 4 != 0 || bitset == 0 {
         return -EINVAL;
     }
-    let waiter = Arc::new(Waiter { address: AtomicUsize::new(address), bitset, woken: AtomicU32::new(0) });
+    let waiter = Arc::new(Waiter {
+        address: AtomicUsize::new(address),
+        bitset,
+        woken: AtomicU32::new(0),
+    });
     {
         let mut bucket = lock_bucket(bucket_index(address));
         if word(address).load(Ordering::SeqCst) != expected {
@@ -143,7 +168,9 @@ pub fn wake(address: usize, count: i32, bitset: u32) -> i32 {
         let mut bucket = lock_bucket(bucket_index(address));
         let mut index = 0;
         while index < bucket.len() && (released.len() as i64) < limit {
-            if bucket[index].address.load(Ordering::SeqCst) == address && bucket[index].bitset & bitset != 0 {
+            if bucket[index].address.load(Ordering::SeqCst) == address
+                && bucket[index].bitset & bitset != 0
+            {
                 let waiter = bucket.remove(index);
                 waiter.woken.store(1, Ordering::Release);
                 released.push(waiter);
@@ -158,7 +185,9 @@ pub fn wake(address: usize, count: i32, bitset: u32) -> i32 {
 
 fn notify(released: &[Arc<Waiter>]) {
     for waiter in released {
-        unsafe { os_sync_wake_by_address_any(&waiter.woken as *const AtomicU32 as *mut c_void, 4, 0) };
+        unsafe {
+            os_sync_wake_by_address_any(&waiter.woken as *const AtomicU32 as *mut c_void, 4, 0)
+        };
     }
 }
 
@@ -173,7 +202,11 @@ impl Pair {
         let (low_index, high_index) = (first.min(second), first.max(second));
         let low = lock_bucket(low_index);
         let high = (high_index != low_index).then(|| lock_bucket(high_index));
-        Self { low_index, low, high }
+        Self {
+            low_index,
+            low,
+            high,
+        }
     }
 
     fn at(&mut self, index: usize) -> &mut Vec<Arc<Waiter>> {
@@ -184,7 +217,13 @@ impl Pair {
     }
 }
 
-pub fn requeue(from: usize, wake_count: i32, to: usize, move_count: i32, compare: Option<u32>) -> i32 {
+pub fn requeue(
+    from: usize,
+    wake_count: i32,
+    to: usize,
+    move_count: i32,
+    compare: Option<u32>,
+) -> i32 {
     // cite: bionic futex.h#FUTEX_REQUEUE, FUTEX_CMP_REQUEUE
     if wake_count < 0 || move_count < 0 || from % 4 != 0 || to % 4 != 0 {
         return -EINVAL;
@@ -222,7 +261,13 @@ pub fn requeue(from: usize, wake_count: i32, to: usize, move_count: i32, compare
     total as i32
 }
 
-pub fn wake_op(first: usize, first_count: i32, second: usize, second_count: i32, encoded: u32) -> i32 {
+pub fn wake_op(
+    first: usize,
+    first_count: i32,
+    second: usize,
+    second_count: i32,
+    encoded: u32,
+) -> i32 {
     // cite: bionic futex.h#FUTEX_OP, FUTEX_OP_SET, FUTEX_OP_ADD, FUTEX_OP_OR, FUTEX_OP_ANDN, FUTEX_OP_XOR, FUTEX_OP_CMP_EQ
     if first % 4 != 0 || second % 4 != 0 {
         return -EINVAL;
@@ -279,7 +324,10 @@ pub fn lock_pi(address: usize, tid: i32, deadline: Option<Deadline>) -> i32 {
         let value = target.load(Ordering::SeqCst);
         if value & TID_MASK == 0 {
             let others = if slept { WAITERS } else { value & WAITERS };
-            if target.compare_exchange(value, tid | others, Ordering::Acquire, Ordering::SeqCst).is_ok() {
+            if target
+                .compare_exchange(value, tid | others, Ordering::Acquire, Ordering::SeqCst)
+                .is_ok()
+            {
                 return 0;
             }
             continue;
@@ -288,7 +336,11 @@ pub fn lock_pi(address: usize, tid: i32, deadline: Option<Deadline>) -> i32 {
             return -EDEADLK;
         }
         let marked = value | WAITERS;
-        if value != marked && target.compare_exchange(value, marked, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        if value != marked
+            && target
+                .compare_exchange(value, marked, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+        {
             continue;
         }
         slept = true;
@@ -305,7 +357,16 @@ pub fn trylock_pi(address: usize, tid: i32) -> i32 {
     if value & TID_MASK == tid as u32 {
         return -EDEADLK;
     }
-    if value & TID_MASK == 0 && target.compare_exchange(value, tid as u32 | (value & WAITERS), Ordering::Acquire, Ordering::SeqCst).is_ok() {
+    if value & TID_MASK == 0
+        && target
+            .compare_exchange(
+                value,
+                tid as u32 | (value & WAITERS),
+                Ordering::Acquire,
+                Ordering::SeqCst,
+            )
+            .is_ok()
+    {
         return 0;
     }
     -EAGAIN
@@ -320,7 +381,10 @@ pub fn unlock_pi(address: usize, tid: i32) -> i32 {
             return -EPERM;
         }
         if value & WAITERS == 0 {
-            if target.compare_exchange(value, 0, Ordering::Release, Ordering::SeqCst).is_ok() {
+            if target
+                .compare_exchange(value, 0, Ordering::Release, Ordering::SeqCst)
+                .is_ok()
+            {
                 return 0;
             }
             continue;
@@ -333,5 +397,15 @@ pub fn unlock_pi(address: usize, tid: i32) -> i32 {
 
 #[cfg(test)]
 pub(super) fn queued_at(address: usize) -> usize {
-    TABLE.iter().map(|bucket| bucket.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).iter().filter(|waiter| waiter.address.load(Ordering::SeqCst) == address).count()).sum()
+    TABLE
+        .iter()
+        .map(|bucket| {
+            bucket
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .iter()
+                .filter(|waiter| waiter.address.load(Ordering::SeqCst) == address)
+                .count()
+        })
+        .sum()
 }

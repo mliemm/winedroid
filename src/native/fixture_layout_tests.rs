@@ -44,7 +44,9 @@ fn host_pages_with(elf: &FixtureElf, flag: u32) -> BTreeSet<u64> {
     elf.segments
         .iter()
         .filter(|segment| segment.kind == PT_LOAD && segment.flags & flag != 0 && segment.memsz > 0)
-        .flat_map(|segment| segment.vaddr / HOST_PAGE..=(segment.vaddr + segment.memsz - 1) / HOST_PAGE)
+        .flat_map(|segment| {
+            segment.vaddr / HOST_PAGE..=(segment.vaddr + segment.memsz - 1) / HOST_PAGE
+        })
         .collect()
 }
 
@@ -54,7 +56,10 @@ fn bionic_elf_h_pt_gnu_eh_frame_is_present_in_every_fixture() {
         for name in LIBRARIES {
             let elf = FixtureElf::parse(&fixture_bytes(variant, name));
 
-            assert!(elf.has_segment(PT_GNU_EH_FRAME), "{variant}/{name} PT_GNU_EH_FRAME");
+            assert!(
+                elf.has_segment(PT_GNU_EH_FRAME),
+                "{variant}/{name} PT_GNU_EH_FRAME"
+            );
         }
     }
 }
@@ -65,7 +70,10 @@ fn bionic_elf_common_h_dt_gnu_hash_is_the_only_symbol_hash_table_in_every_fixtur
         for name in LIBRARIES {
             let elf = FixtureElf::parse(&fixture_bytes(variant, name));
 
-            assert!(elf.tag(DT_GNU_HASH).is_some(), "{variant}/{name} DT_GNU_HASH");
+            assert!(
+                elf.tag(DT_GNU_HASH).is_some(),
+                "{variant}/{name} DT_GNU_HASH"
+            );
             assert_eq!(elf.tag(DT_HASH), None, "{variant}/{name} DT_HASH");
         }
     }
@@ -80,7 +88,10 @@ fn fixture_build_command_4k_variants_put_executable_and_writable_bytes_in_one_16
             .copied()
             .collect();
 
-        assert!(!shared.is_empty(), "4k/{name} has no host page holding both RX and RW bytes");
+        assert!(
+            !shared.is_empty(),
+            "4k/{name} has no host page holding both RX and RW bytes"
+        );
     }
 }
 
@@ -101,7 +112,10 @@ fn fixture_build_command_16k_variants_never_share_a_16k_host_page_between_rx_and
 fn fixture_source_string_literals_are_present_in_the_binaries_that_use_them() {
     let table: [(&str, &[(&str, usize)]); 3] = [
         ("libfx_dep.so", &[("libfx_add.so", 2), ("add", 2)]),
-        ("libfx_reloc.so", &[("%d %s %f", 1), ("%s %d", 1), ("fx_reloc", 1)]),
+        (
+            "libfx_reloc.so",
+            &[("%d %s %f", 1), ("%s %d", 1), ("fx_reloc", 1)],
+        ),
         (
             "libfx_jni.so",
             &[
@@ -123,9 +137,15 @@ fn fixture_source_string_literals_are_present_in_the_binaries_that_use_them() {
             let data = fixture_bytes(variant, name);
             for (literal, minimum) in literals {
                 let needle = [&[0], literal.as_bytes(), &[0]].concat();
-                let found = data.windows(needle.len()).filter(|window| *window == needle).count();
+                let found = data
+                    .windows(needle.len())
+                    .filter(|window| *window == needle)
+                    .count();
 
-                assert!(found >= *minimum, "{variant}/{name} has {found} of the literal {literal:?}, wanted {minimum}");
+                assert!(
+                    found >= *minimum,
+                    "{variant}/{name} has {found} of the literal {literal:?}, wanted {minimum}"
+                );
             }
         }
     }

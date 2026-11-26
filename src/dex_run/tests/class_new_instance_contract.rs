@@ -322,7 +322,7 @@ fn art_parked_class_initialization_host_error_clears_all_continuations() {
         )
         .expect_err("missing native primitive should remain an explicit host error");
     assert!(
-        error.to_string().contains("DEX method has no code item"),
+        error.to_string().contains("missingRuntimePrimitive()V"),
         "{error}"
     );
 

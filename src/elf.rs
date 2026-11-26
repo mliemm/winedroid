@@ -3,6 +3,11 @@ use std::fmt;
 use crate::error::{Result, WinedroidError};
 
 const ELF_MAGIC: &[u8; 4] = b"\x7fELF";
+
+pub(crate) fn has_magic(data: &[u8]) -> bool {
+    data.starts_with(ELF_MAGIC)
+}
+
 const EI_CLASS: usize = 4;
 const EI_DATA: usize = 5;
 const ELFCLASS32: u8 = 1;
@@ -104,7 +109,7 @@ impl ElfHeader {
     fn parse(data: &[u8]) -> Result<Self> {
         require_range(data, 0, 16, "ELF ident")?;
 
-        if &data[0..4] != ELF_MAGIC {
+        if !has_magic(data) {
             return Err(WinedroidError::new(
                 "file does not start with an ELF magic header",
             ));

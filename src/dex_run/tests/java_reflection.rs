@@ -2365,6 +2365,46 @@ fn enum_descriptor_matches_serializable_and_comparable() {
 }
 
 #[test]
+fn art_class_get_declared_field_on_looper_returns_declared_fields_and_throws_for_others() {
+    // cite: art java_lang_Class.cc#Class_getDeclaredField, GetDeclaredField
+    // cite: frameworks-base Looper.java#mQueue, mThread
+    let program = DexProgram::new(Vec::new());
+    let get_declared_field = DexMethodId {
+        class_descriptor: "Ljava/lang/Class;".to_owned(),
+        name: "getDeclaredField".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "LL".to_owned(),
+            return_type: "Ljava/lang/reflect/Field;".to_owned(),
+            parameters: vec!["Ljava/lang/String;".to_owned()],
+        },
+    };
+    let looper_class =
+        DexValue::Reference(std::rc::Rc::from("Ljava/lang/Class;:Landroid/os/Looper;"));
+    let declared = |field_name: &str| {
+        program.invoke_builtin_method(
+            &get_declared_field,
+            Some(&test_invocation(vec![
+                looper_class.clone(),
+                DexValue::String(std::rc::Rc::from(field_name)),
+            ])),
+        )
+    };
+
+    assert_eq!(
+        declared("mQueue"),
+        Some(DexExecutionResult::Value(DexValue::Reference(
+            std::rc::Rc::from(
+                "Ljava/lang/reflect/Field;:Landroid/os/Looper;:mQueue:Landroid/os/MessageQueue;:16"
+            )
+        )))
+    );
+    let Some(DexExecutionResult::Throw(exception)) = declared("mBase") else {
+        panic!("Looper declares no mBase and should throw NoSuchFieldException");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/lang/NoSuchFieldException;"));
+}
+
+#[test]
 fn art_class_get_declared_field_follows_own_fields_and_throws_no_such_field() {
     // cite: art java_lang_Class.cc#Class_getDeclaredField, GetDeclaredField
     // cite: art common_throws.cc#ThrowNoSuchFieldException
@@ -2440,4 +2480,140 @@ fn art_class_get_declared_field_follows_own_fields_and_throws_no_such_field() {
         panic!("ContextImpl has no mBase field and should throw NoSuchFieldException");
     };
     assert!(program.value_matches_type(&exception, "Ljava/lang/NoSuchFieldException;"));
+
+    // cite: frameworks-base Context.java#ACCOUNT_SERVICE
+    assert_eq!(
+        declared("android.content.Context", name("ACCOUNT_SERVICE")),
+        Some(DexExecutionResult::Value(DexValue::Reference(
+            std::rc::Rc::from(
+                "Ljava/lang/reflect/Field;:Landroid/content/Context;:ACCOUNT_SERVICE:Ljava/lang/String;:25"
+            )
+        )))
+    );
+    let Some(DexExecutionResult::Throw(exception)) =
+        declared("android.content.Context", name("mBase"))
+    else {
+        panic!("Context declares no mBase field and should throw NoSuchFieldException");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/lang/NoSuchFieldException;"));
+    assert_eq!(
+        program.read_stored_instance_field(&exception, &message_field),
+        Some(name("No field mBase in class Landroid/content/Context;"))
+    );
+
+    // cite: libcore Object.java#Object
+    let Some(DexExecutionResult::Throw(exception)) = declared("java.lang.Object", name("mBase"))
+    else {
+        panic!("Object declares no discoverable field and should throw NoSuchFieldException");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/lang/NoSuchFieldException;"));
+}
+
+#[test]
+fn libcore_no_such_field_exception_constructs_with_message_under_reflective_operation_exception() {
+    // cite: libcore NoSuchFieldException.java#NoSuchFieldException
+    let program = DexProgram::new(Vec::new());
+    let exception = program.allocate_object("Ljava/lang/NoSuchFieldException;".to_owned());
+    let init = |parameters: &[&str]| {
+        builtin_method(
+            "Ljava/lang/NoSuchFieldException;",
+            "<init>",
+            "V",
+            parameters,
+        )
+    };
+    let message = DexValue::String(std::rc::Rc::from("mBase"));
+
+    assert_eq!(
+        program.invoke_builtin_method(&init(&[]), Some(&test_invocation(vec![exception.clone()]))),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &init(&["Ljava/lang/String;"]),
+            Some(&test_invocation(vec![exception.clone(), message.clone()]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.read_stored_instance_field(
+            &exception,
+            &DexFieldId {
+                class_descriptor: "Ljava/lang/Throwable;".to_owned(),
+                type_descriptor: "Ljava/lang/String;".to_owned(),
+                name: "detailMessage".to_owned(),
+            }
+        ),
+        Some(message)
+    );
+    assert!(program.value_matches_type(&exception, "Ljava/lang/ReflectiveOperationException;"));
+    assert!(program.value_matches_type(&exception, "Ljava/lang/Exception;"));
+}
+
+#[test]
+fn art_class_get_declared_field_on_application_info_returns_primary_cpu_abi() {
+    // cite: art java_lang_Class.cc#Class_getDeclaredField, GetDeclaredField
+    // cite: frameworks-base ApplicationInfo.java#primaryCpuAbi
+    let program = DexProgram::new(Vec::new());
+    let get_declared_field = builtin_method(
+        "Ljava/lang/Class;",
+        "getDeclaredField",
+        "Ljava/lang/reflect/Field;",
+        &["Ljava/lang/String;"],
+    );
+    let class = DexValue::Reference(std::rc::Rc::from(
+        "Ljava/lang/Class;:Landroid/content/pm/ApplicationInfo;",
+    ));
+    let declared = |field_name: &str| {
+        program.invoke_builtin_method(
+            &get_declared_field,
+            Some(&test_invocation(vec![
+                class.clone(),
+                DexValue::String(std::rc::Rc::from(field_name)),
+            ])),
+        )
+    };
+
+    assert_eq!(
+        declared("primaryCpuAbi"),
+        Some(DexExecutionResult::Value(DexValue::Reference(
+            std::rc::Rc::from(
+                "Ljava/lang/reflect/Field;:Landroid/content/pm/ApplicationInfo;:primaryCpuAbi:Ljava/lang/String;:1"
+            )
+        )))
+    );
+    let Some(DexExecutionResult::Throw(exception)) = declared("notAField") else {
+        panic!("ApplicationInfo declares no notAField and should throw NoSuchFieldException");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/lang/NoSuchFieldException;"));
+}
+
+#[test]
+fn frameworks_application_info_primary_cpu_abi_follows_installed_native_abi_directory() {
+    // cite: frameworks-base ApplicationInfo.java#primaryCpuAbi
+    let app_dir =
+        std::env::temp_dir().join(format!("winedroid-primary-cpu-abi-{}", std::process::id()));
+    std::fs::remove_dir_all(&app_dir).ok();
+    std::fs::create_dir_all(&app_dir).expect("app dir");
+    let mut program = DexProgram::new(Vec::new());
+    program.apk_path = Some(app_dir.join("source.apk"));
+    program.package_name = Some("com.example".to_owned());
+    let info = DexValue::Reference(std::rc::Rc::from(
+        "Landroid/content/pm/ApplicationInfo;.bootstrap",
+    ));
+    let field = DexFieldId {
+        class_descriptor: "Landroid/content/pm/ApplicationInfo;".to_owned(),
+        type_descriptor: "Ljava/lang/String;".to_owned(),
+        name: "primaryCpuAbi".to_owned(),
+    };
+
+    assert_eq!(program.read_bootstrap_instance_field(&info, &field), None);
+
+    std::fs::create_dir_all(app_dir.join("native/arm64-v8a")).expect("native dir");
+
+    assert_eq!(
+        program.read_bootstrap_instance_field(&info, &field),
+        Some(DexValue::String(std::rc::Rc::from("arm64-v8a")))
+    );
+    std::fs::remove_dir_all(app_dir).ok();
 }

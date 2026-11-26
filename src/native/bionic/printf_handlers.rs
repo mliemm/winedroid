@@ -8,7 +8,11 @@ use super::printf::format;
 use super::stdio_files;
 use super::stream;
 
-fn render(context: &mut CallContext, format_pointer: usize, mut args: GuestVaList) -> Option<Vec<u8>> {
+fn render(
+    context: &mut CallContext,
+    format_pointer: usize,
+    mut args: GuestVaList,
+) -> Option<Vec<u8>> {
     match format(cstr_bytes(format_pointer), &mut args) {
         Ok(text) => Some(text),
         Err(message) => {
@@ -18,7 +22,13 @@ fn render(context: &mut CallContext, format_pointer: usize, mut args: GuestVaLis
     }
 }
 
-fn into_bounded(context: &mut CallContext, destination: usize, capacity: u64, format_pointer: usize, args: GuestVaList) {
+fn into_bounded(
+    context: &mut CallContext,
+    destination: usize,
+    capacity: u64,
+    format_pointer: usize,
+    args: GuestVaList,
+) {
     // cite: bionic stdio.cpp#vsnprintf
     if let Some(text) = render(context, format_pointer, args) {
         write_cstr_truncated(destination, capacity as usize, &text);
@@ -26,17 +36,34 @@ fn into_bounded(context: &mut CallContext, destination: usize, capacity: u64, fo
     }
 }
 
-fn into_unbounded(context: &mut CallContext, destination: usize, format_pointer: usize, args: GuestVaList) {
+fn into_unbounded(
+    context: &mut CallContext,
+    destination: usize,
+    format_pointer: usize,
+    args: GuestVaList,
+) {
     if let Some(text) = render(context, format_pointer, args) {
         write_cstr_truncated(destination, text.len() + 1, &text);
         context.ret_i32(text.len() as i32);
     }
 }
 
-fn checked_unbounded(context: &mut CallContext, destination: usize, compiler_size: u64, format_pointer: usize, args: GuestVaList) {
+fn checked_unbounded(
+    context: &mut CallContext,
+    destination: usize,
+    compiler_size: u64,
+    format_pointer: usize,
+    args: GuestVaList,
+) {
     // cite: bionic fortify.cpp#__vsprintf_chk
-    let Some(text) = render(context, format_pointer, args) else { return };
-    let limit = if compiler_size == u64::MAX { SSIZE_MAX } else { compiler_size };
+    let Some(text) = render(context, format_pointer, args) else {
+        return;
+    };
+    let limit = if compiler_size == u64::MAX {
+        SSIZE_MAX
+    } else {
+        compiler_size
+    };
     write_cstr_truncated(destination, text.len() + 1, &text);
     check_access("vsprintf", "write into", text.len() as u64 + 1, limit);
     context.ret_i32(text.len() as i32);
@@ -61,7 +88,9 @@ fn into_stream(context: &mut CallContext, file: usize, format_pointer: usize, ar
             return;
         }
     };
-    let Some(text) = render(context, format_pointer, args) else { return };
+    let Some(text) = render(context, format_pointer, args) else {
+        return;
+    };
     match stream::write_bytes(&stream, text.as_ptr() as usize, text.len()) {
         Ok(written) if written == text.len() => context.ret_i32(text.len() as i32),
         Ok(_) => {
@@ -75,11 +104,19 @@ fn into_stream(context: &mut CallContext, file: usize, format_pointer: usize, ar
     }
 }
 
-fn into_descriptor(context: &mut CallContext, descriptor: i32, format_pointer: usize, args: GuestVaList) {
-    let Some(text) = render(context, format_pointer, args) else { return };
+fn into_descriptor(
+    context: &mut CallContext,
+    descriptor: i32,
+    format_pointer: usize,
+    args: GuestVaList,
+) {
+    let Some(text) = render(context, format_pointer, args) else {
+        return;
+    };
     let mut done = 0usize;
     while done < text.len() {
-        let result = super::fs_io::write_fd(descriptor, text.as_ptr() as usize + done, text.len() - done);
+        let result =
+            super::fs_io::write_fd(descriptor, text.as_ptr() as usize + done, text.len() - done);
         if result < 0 {
             context.set_errno((-result) as i32);
             context.ret_i32(-1);
@@ -90,14 +127,21 @@ fn into_descriptor(context: &mut CallContext, descriptor: i32, format_pointer: u
     context.ret_i32(text.len() as i32);
 }
 
-fn into_allocated(context: &mut CallContext, out_pointer: usize, format_pointer: usize, args: GuestVaList) {
+fn into_allocated(
+    context: &mut CallContext,
+    out_pointer: usize,
+    format_pointer: usize,
+    args: GuestVaList,
+) {
     if out_pointer == 0 {
         context.set_errno(super::abi_types::EFAULT);
         context.ret_i32(-1);
         return;
     }
     write_value::<usize>(out_pointer, 0);
-    let Some(text) = render(context, format_pointer, args) else { return };
+    let Some(text) = render(context, format_pointer, args) else {
+        return;
+    };
     let allocation = unsafe { libc::malloc(text.len() + 1) } as usize;
     if allocation == 0 {
         context.set_errno(super::abi_types::ENOMEM);
@@ -120,17 +164,29 @@ fn wide_format(pointer: usize) -> Vec<u8> {
         if code == 0 {
             break;
         }
-        out.extend(char::from_u32(code).unwrap_or('\u{fffd}').to_string().bytes());
+        out.extend(
+            char::from_u32(code)
+                .unwrap_or('\u{fffd}')
+                .to_string()
+                .bytes(),
+        );
         offset += 4;
     }
     out
 }
 
 fn wide_output(bytes: &[u8]) -> Vec<u32> {
-    String::from_utf8_lossy(bytes).chars().map(|character| character as u32).collect()
+    String::from_utf8_lossy(bytes)
+        .chars()
+        .map(|character| character as u32)
+        .collect()
 }
 
-fn render_wide(context: &mut CallContext, format_pointer: usize, mut args: GuestVaList) -> Option<Vec<u8>> {
+fn render_wide(
+    context: &mut CallContext,
+    format_pointer: usize,
+    mut args: GuestVaList,
+) -> Option<Vec<u8>> {
     let format = wide_format(format_pointer);
     match format_text(&format, &mut args) {
         Ok(text) => Some(text),
@@ -145,8 +201,15 @@ fn format_text(format: &[u8], args: &mut GuestVaList) -> Result<Vec<u8>, String>
     super::printf::format(format, args)
 }
 
-fn wide_into_stream(context: &mut CallContext, file: usize, format_pointer: usize, args: GuestVaList) {
-    let Some(text) = render_wide(context, format_pointer, args) else { return };
+fn wide_into_stream(
+    context: &mut CallContext,
+    file: usize,
+    format_pointer: usize,
+    args: GuestVaList,
+) {
+    let Some(text) = render_wide(context, format_pointer, args) else {
+        return;
+    };
     let stream = match stream::of(file) {
         Ok(stream) => stream,
         Err(errno) => {
@@ -168,8 +231,16 @@ fn wide_into_stream(context: &mut CallContext, file: usize, format_pointer: usiz
     }
 }
 
-fn wide_bounded(context: &mut CallContext, destination: usize, capacity: usize, format_pointer: usize, args: GuestVaList) {
-    let Some(text) = render_wide(context, format_pointer, args) else { return };
+fn wide_bounded(
+    context: &mut CallContext,
+    destination: usize,
+    capacity: usize,
+    format_pointer: usize,
+    args: GuestVaList,
+) {
+    let Some(text) = render_wide(context, format_pointer, args) else {
+        return;
+    };
     let units = wide_output(&text);
     if capacity == 0 {
         context.ret_i32(units.len() as i32);
@@ -191,7 +262,13 @@ fn register_formatted() {
     in_libc("snprintf", |context| {
         let regs = *context.regs();
         let args = GuestVaList::from_regs(&regs, 3, 0);
-        into_bounded(context, context.arg_ptr(0), context.arg_u64(1), context.arg_ptr(2), args);
+        into_bounded(
+            context,
+            context.arg_ptr(0),
+            context.arg_u64(1),
+            context.arg_ptr(2),
+            args,
+        );
     });
     in_libc("sprintf", |context| {
         let regs = *context.regs();
@@ -200,7 +277,13 @@ fn register_formatted() {
     });
     in_libc("vsnprintf", |context| {
         if let Some(args) = guest_list(context, 3) {
-            into_bounded(context, context.arg_ptr(0), context.arg_u64(1), context.arg_ptr(2), args);
+            into_bounded(
+                context,
+                context.arg_ptr(0),
+                context.arg_u64(1),
+                context.arg_ptr(2),
+                args,
+            );
         }
     });
     in_libc("vsprintf", |context| {
@@ -253,11 +336,23 @@ fn register_formatted() {
     in_libc("swprintf", |context| {
         let regs = *context.regs();
         let args = GuestVaList::from_regs(&regs, 3, 0);
-        wide_bounded(context, context.arg_ptr(0), context.arg_u64(1) as usize, context.arg_ptr(2), args);
+        wide_bounded(
+            context,
+            context.arg_ptr(0),
+            context.arg_u64(1) as usize,
+            context.arg_ptr(2),
+            args,
+        );
     });
     in_libc("vswprintf", |context| {
         if let Some(args) = guest_list(context, 3) {
-            wide_bounded(context, context.arg_ptr(0), context.arg_u64(1) as usize, context.arg_ptr(2), args);
+            wide_bounded(
+                context,
+                context.arg_ptr(0),
+                context.arg_u64(1) as usize,
+                context.arg_ptr(2),
+                args,
+            );
         }
     });
     in_libc("fwprintf", |context| {
@@ -283,15 +378,37 @@ fn register_formatted() {
         }
     });
     in_libc("__swprintf_chk", |context| {
-        check_access("swprintf", "write into", context.arg_u64(1) * 4, context.arg_u64(4) * 4);
+        check_access(
+            "swprintf",
+            "write into",
+            context.arg_u64(1) * 4,
+            context.arg_u64(4) * 4,
+        );
         let regs = *context.regs();
         let args = GuestVaList::from_regs(&regs, 5, 0);
-        wide_bounded(context, context.arg_ptr(0), context.arg_u64(1) as usize, context.arg_ptr(3), args);
+        wide_bounded(
+            context,
+            context.arg_ptr(0),
+            context.arg_u64(1) as usize,
+            context.arg_ptr(3),
+            args,
+        );
     });
     in_libc("__vswprintf_chk", |context| {
-        check_access("swprintf", "write into", context.arg_u64(1) * 4, context.arg_u64(4) * 4);
+        check_access(
+            "swprintf",
+            "write into",
+            context.arg_u64(1) * 4,
+            context.arg_u64(4) * 4,
+        );
         if let Some(args) = guest_list(context, 5) {
-            wide_bounded(context, context.arg_ptr(0), context.arg_u64(1) as usize, context.arg_ptr(3), args);
+            wide_bounded(
+                context,
+                context.arg_ptr(0),
+                context.arg_u64(1) as usize,
+                context.arg_ptr(3),
+                args,
+            );
         }
     });
     in_libc("__fprintf_chk", |context| {
@@ -316,26 +433,60 @@ fn register_formatted() {
 fn register_checked() {
     in_libc("__vsnprintf_chk", |context| {
         // cite: bionic fortify.cpp#__vsnprintf_chk
-        check_access("vsnprintf", "write into", context.arg_u64(1), context.arg_u64(3));
+        check_access(
+            "vsnprintf",
+            "write into",
+            context.arg_u64(1),
+            context.arg_u64(3),
+        );
         if let Some(args) = guest_list(context, 5) {
-            into_bounded(context, context.arg_ptr(0), context.arg_u64(1), context.arg_ptr(4), args);
+            into_bounded(
+                context,
+                context.arg_ptr(0),
+                context.arg_u64(1),
+                context.arg_ptr(4),
+                args,
+            );
         }
     });
     in_libc("__snprintf_chk", |context| {
-        check_access("vsnprintf", "write into", context.arg_u64(1), context.arg_u64(3));
+        check_access(
+            "vsnprintf",
+            "write into",
+            context.arg_u64(1),
+            context.arg_u64(3),
+        );
         let regs = *context.regs();
         let args = GuestVaList::from_regs(&regs, 5, 0);
-        into_bounded(context, context.arg_ptr(0), context.arg_u64(1), context.arg_ptr(4), args);
+        into_bounded(
+            context,
+            context.arg_ptr(0),
+            context.arg_u64(1),
+            context.arg_ptr(4),
+            args,
+        );
     });
     in_libc("__vsprintf_chk", |context| {
         if let Some(args) = guest_list(context, 4) {
-            checked_unbounded(context, context.arg_ptr(0), context.arg_u64(2), context.arg_ptr(3), args);
+            checked_unbounded(
+                context,
+                context.arg_ptr(0),
+                context.arg_u64(2),
+                context.arg_ptr(3),
+                args,
+            );
         }
     });
     in_libc("__sprintf_chk", |context| {
         let regs = *context.regs();
         let args = GuestVaList::from_regs(&regs, 4, 0);
-        checked_unbounded(context, context.arg_ptr(0), context.arg_u64(2), context.arg_ptr(3), args);
+        checked_unbounded(
+            context,
+            context.arg_ptr(0),
+            context.arg_u64(2),
+            context.arg_ptr(3),
+            args,
+        );
     });
 }
 

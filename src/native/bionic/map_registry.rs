@@ -30,8 +30,16 @@ fn trim_front(record: &MapRecord, advance: usize) -> MapRecord {
     trimmed
 }
 
-fn carve(map: &mut BTreeMap<usize, MapRecord>, start: usize, end: usize) -> Vec<(usize, MapRecord)> {
-    let overlapping: Vec<usize> = map.range(..end).filter(|(base, record)| **base + record.len > start).map(|(base, _)| *base).collect();
+fn carve(
+    map: &mut BTreeMap<usize, MapRecord>,
+    start: usize,
+    end: usize,
+) -> Vec<(usize, MapRecord)> {
+    let overlapping: Vec<usize> = map
+        .range(..end)
+        .filter(|(base, record)| **base + record.len > start)
+        .map(|(base, _)| *base)
+        .collect();
     let mut removed = Vec::new();
     for base in overlapping {
         let record = map.remove(&base).expect("listed record");
@@ -60,7 +68,11 @@ pub fn insert(start: usize, record: MapRecord) {
 }
 
 pub fn remove_range(start: usize, len: usize) {
-    carve(&mut REGISTRY.lock().expect("map registry"), start, start + len);
+    carve(
+        &mut REGISTRY.lock().expect("map registry"),
+        start,
+        start + len,
+    );
 }
 
 pub fn update_range(start: usize, len: usize, change: impl Fn(&mut MapRecord)) {
@@ -72,12 +84,23 @@ pub fn update_range(start: usize, len: usize, change: impl Fn(&mut MapRecord)) {
 }
 
 pub fn snapshot() -> Vec<(usize, MapRecord)> {
-    REGISTRY.lock().expect("map registry").iter().map(|(base, record)| (*base, record.clone())).collect()
+    REGISTRY
+        .lock()
+        .expect("map registry")
+        .iter()
+        .map(|(base, record)| (*base, record.clone()))
+        .collect()
 }
 
 pub fn covering(start: usize, len: usize) -> Vec<(usize, MapRecord)> {
     let end = start + len;
-    REGISTRY.lock().expect("map registry").range(..end).filter(|(base, record)| **base + record.len > start).map(|(base, record)| (*base, record.clone())).collect()
+    REGISTRY
+        .lock()
+        .expect("map registry")
+        .range(..end)
+        .filter(|(base, record)| **base + record.len > start)
+        .map(|(base, record)| (*base, record.clone()))
+        .collect()
 }
 
 pub fn find(address: usize) -> Option<(usize, MapRecord)> {

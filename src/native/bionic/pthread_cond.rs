@@ -24,7 +24,14 @@ fn wait_on(cond: usize, mutex: usize, realtime: bool, timeout: usize) -> i32 {
     let old = state.load(Ordering::Relaxed);
     waiters.fetch_add(1, Ordering::Relaxed);
     pthread_mutex::unlock(mutex);
-    let deadline = deadline_at(timeout, if realtime { CLOCK_REALTIME } else { CLOCK_MONOTONIC });
+    let deadline = deadline_at(
+        timeout,
+        if realtime {
+            CLOCK_REALTIME
+        } else {
+            CLOCK_MONOTONIC
+        },
+    );
     let outcome = futex::wait(cond, old, MATCH_ANY, deadline);
     waiters.fetch_sub(1, Ordering::Relaxed);
     pthread_mutex::lock(mutex);
@@ -60,7 +67,10 @@ fn register_attributes() {
         context.ret_i32(0);
     });
     in_libc("pthread_condattr_getpshared", |context| {
-        write_value::<i32>(context.arg_ptr(1), (attribute(context.arg_ptr(0)) & 1) as i32);
+        write_value::<i32>(
+            context.arg_ptr(1),
+            (attribute(context.arg_ptr(0)) & 1) as i32,
+        );
         context.ret_i32(0);
     });
     in_libc("pthread_condattr_setpshared", |context| {
@@ -73,7 +83,10 @@ fn register_attributes() {
         context.ret_i32(0);
     });
     in_libc("pthread_condattr_getclock", |context| {
-        write_value::<i32>(context.arg_ptr(1), ((attribute(context.arg_ptr(0)) & i64::from(COND_CLOCK_MASK)) >> 1) as i32);
+        write_value::<i32>(
+            context.arg_ptr(1),
+            ((attribute(context.arg_ptr(0)) & i64::from(COND_CLOCK_MASK)) >> 1) as i32,
+        );
         context.ret_i32(0);
     });
     in_libc("pthread_condattr_setclock", |context| {
@@ -92,7 +105,14 @@ pub fn register() {
     in_libc("pthread_cond_init", |context| {
         // cite: bionic pthread_cond.cpp#pthread_cond_init
         let (cond, attributes) = (context.arg_ptr(0), context.arg_ptr(1));
-        u32_at(cond).store(if attributes == 0 { 0 } else { (attribute(attributes) & 3) as u32 }, Ordering::Relaxed);
+        u32_at(cond).store(
+            if attributes == 0 {
+                0
+            } else {
+                (attribute(attributes) & 3) as u32
+            },
+            Ordering::Relaxed,
+        );
         u32_at(cond + 4).store(0, Ordering::Relaxed);
         context.ret_i32(0);
     });
@@ -101,21 +121,49 @@ pub fn register() {
         u32_at(context.arg_ptr(0)).store(COND_DESTROYED, Ordering::Relaxed);
         context.ret_i32(0);
     });
-    in_libc("pthread_cond_broadcast", |context| context.ret_i32(pulse(context.arg_ptr(0), i32::MAX)));
-    in_libc("pthread_cond_signal", |context| context.ret_i32(pulse(context.arg_ptr(0), 1)));
-    in_libc("pthread_cond_wait", |context| context.ret_i32(wait_on(context.arg_ptr(0), context.arg_ptr(1), false, 0)));
+    in_libc("pthread_cond_broadcast", |context| {
+        context.ret_i32(pulse(context.arg_ptr(0), i32::MAX))
+    });
+    in_libc("pthread_cond_signal", |context| {
+        context.ret_i32(pulse(context.arg_ptr(0), 1))
+    });
+    in_libc("pthread_cond_wait", |context| {
+        context.ret_i32(wait_on(context.arg_ptr(0), context.arg_ptr(1), false, 0))
+    });
     in_libc("pthread_cond_timedwait", |context| {
         // cite: bionic pthread_cond.cpp#pthread_cond_timedwait
         let cond = context.arg_ptr(0);
         let realtime = u32_at(cond).load(Ordering::Relaxed) & COND_CLOCK_MASK == 0;
-        context.ret_i32(wait_on(cond, context.arg_ptr(1), realtime, context.arg_ptr(2)));
+        context.ret_i32(wait_on(
+            cond,
+            context.arg_ptr(1),
+            realtime,
+            context.arg_ptr(2),
+        ));
     });
-    in_libc("pthread_cond_timedwait_monotonic_np", |context| context.ret_i32(wait_on(context.arg_ptr(0), context.arg_ptr(1), false, context.arg_ptr(2))));
+    in_libc("pthread_cond_timedwait_monotonic_np", |context| {
+        context.ret_i32(wait_on(
+            context.arg_ptr(0),
+            context.arg_ptr(1),
+            false,
+            context.arg_ptr(2),
+        ))
+    });
     in_libc("pthread_cond_clockwait", |context| {
         // cite: bionic pthread_cond.cpp#pthread_cond_clockwait
         let result = match context.arg_i32(2) {
-            CLOCK_MONOTONIC => wait_on(context.arg_ptr(0), context.arg_ptr(1), false, context.arg_ptr(3)),
-            CLOCK_REALTIME => wait_on(context.arg_ptr(0), context.arg_ptr(1), true, context.arg_ptr(3)),
+            CLOCK_MONOTONIC => wait_on(
+                context.arg_ptr(0),
+                context.arg_ptr(1),
+                false,
+                context.arg_ptr(3),
+            ),
+            CLOCK_REALTIME => wait_on(
+                context.arg_ptr(0),
+                context.arg_ptr(1),
+                true,
+                context.arg_ptr(3),
+            ),
             _ => EINVAL,
         };
         context.ret_i32(result);

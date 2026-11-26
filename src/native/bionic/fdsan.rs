@@ -1,12 +1,12 @@
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
+use super::super::host_log;
 use super::errno_map::linux_from_darwin;
 use super::export::in_libc;
 use super::fatal::fatal;
 use super::fd_table;
 use super::fs_result::{host_errno, linux_errno_of};
 use super::props;
-use super::super::host_log;
 
 pub const OWNER_FILE: u64 = 1;
 pub const OWNER_DIR: u64 = 2;
@@ -41,7 +41,10 @@ fn parse_property(value: &str) -> Option<i32> {
 }
 
 fn set_level_from_property(default_level: i32) -> i32 {
-    let level = props::get(PROPERTY).as_deref().and_then(parse_property).unwrap_or(default_level);
+    let level = props::get(PROPERTY)
+        .as_deref()
+        .and_then(parse_property)
+        .unwrap_or(default_level);
     LEVEL.swap(level, Ordering::SeqCst)
 }
 
@@ -51,7 +54,10 @@ pub fn create_owner_tag(owner_type: u64, tag: u64) -> u64 {
         return 0;
     }
     if owner_type & 0xff != owner_type {
-        fatal(None, &format!("invalid android_fdsan_owner_type value: {owner_type:x}"));
+        fatal(
+            None,
+            &format!("invalid android_fdsan_owner_type value: {owner_type:x}"),
+        );
     }
     (owner_type << 56) | (tag & ((1u64 << 56) - 1))
 }
@@ -96,7 +102,12 @@ fn report(message: String) {
         level => {
             host_log::line(&format!("fdsan: {message}"));
             if level == LEVEL_WARN_ONCE {
-                let _ = LEVEL.compare_exchange(LEVEL_WARN_ONCE, LEVEL_DISABLED, Ordering::SeqCst, Ordering::SeqCst);
+                let _ = LEVEL.compare_exchange(
+                    LEVEL_WARN_ONCE,
+                    LEVEL_DISABLED,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                );
             }
         }
     }
@@ -108,8 +119,14 @@ pub fn owner_tag(fd: i32) -> u64 {
 
 pub fn exchange_owner_tag(fd: i32, expected: u64, new: u64) {
     // cite: bionic fdsan.cpp#android_fdsan_exchange_owner_tag
-    let Some(entry) = fd_table::get(fd) else { return };
-    if let Err(actual) = entry.owner_tag.compare_exchange(expected, new, Ordering::SeqCst, Ordering::SeqCst) {
+    let Some(entry) = fd_table::get(fd) else {
+        return;
+    };
+    if let Err(actual) =
+        entry
+            .owner_tag
+            .compare_exchange(expected, new, Ordering::SeqCst, Ordering::SeqCst)
+    {
         let message = match (expected != 0, actual != 0) {
             (true, true) => format!("failed to exchange ownership of file descriptor: fd {fd} is owned by {}, was expected to be owned by {}", describe(actual), describe(expected)),
             (true, false) => format!("failed to exchange ownership of file descriptor: fd {fd} is unowned, was expected to be owned by {}", describe(expected)),
@@ -128,7 +145,12 @@ pub fn close_with_tag(fd: i32, expected: u64) -> i64 {
         }
         return -i64::from(EBADF);
     };
-    if let Err(actual) = entry.owner_tag.compare_exchange(expected, 0, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst) {
+    if let Err(actual) = entry.owner_tag.compare_exchange(
+        expected,
+        0,
+        std::sync::atomic::Ordering::SeqCst,
+        std::sync::atomic::Ordering::SeqCst,
+    ) {
         let message = match (expected != 0, actual != 0) {
             (true, true) => format!("attempted to close file descriptor {fd}, expected to be owned by {}, actually owned by {}", describe(expected), describe(actual)),
             (true, false) => format!("attempted to close file descriptor {fd}, expected to be owned by {}, actually unowned", describe(expected)),
@@ -152,11 +174,21 @@ pub fn close_with_tag(fd: i32, expected: u64) -> i64 {
 }
 
 pub fn register() {
-    in_libc("android_fdsan_create_owner_tag", |context| context.ret_u64(create_owner_tag(context.arg_u64(0), context.arg_u64(1))));
-    in_libc("android_fdsan_get_owner_tag", |context| context.ret_u64(owner_tag(context.arg_i32(0))));
-    in_libc("android_fdsan_get_tag_type", |context| context.ret_ptr(super::guest_mem::intern(tag_type(context.arg_u64(0)))));
-    in_libc("android_fdsan_get_tag_value", |context| context.ret_u64(tag_value(context.arg_u64(0))));
-    in_libc("android_fdsan_exchange_owner_tag", |context| exchange_owner_tag(context.arg_i32(0), context.arg_u64(1), context.arg_u64(2)));
+    in_libc("android_fdsan_create_owner_tag", |context| {
+        context.ret_u64(create_owner_tag(context.arg_u64(0), context.arg_u64(1)))
+    });
+    in_libc("android_fdsan_get_owner_tag", |context| {
+        context.ret_u64(owner_tag(context.arg_i32(0)))
+    });
+    in_libc("android_fdsan_get_tag_type", |context| {
+        context.ret_ptr(super::guest_mem::intern(tag_type(context.arg_u64(0))))
+    });
+    in_libc("android_fdsan_get_tag_value", |context| {
+        context.ret_u64(tag_value(context.arg_u64(0)))
+    });
+    in_libc("android_fdsan_exchange_owner_tag", |context| {
+        exchange_owner_tag(context.arg_i32(0), context.arg_u64(1), context.arg_u64(2))
+    });
     in_libc("android_fdsan_close_with_tag", |context| {
         let result = close_with_tag(context.arg_i32(0), context.arg_u64(1));
         super::fs_result::finish_int(context, result);
@@ -174,7 +206,10 @@ pub fn register() {
         context.ret_i32(set_level_from_property(context.arg_i32(0)));
     });
     in_libc("android_fdsan_get_fd_table", |context| {
-        super::fs_result::missing("android_fdsan_get_fd_table", "the fd table is private to the winedroid shim");
+        super::fs_result::missing(
+            "android_fdsan_get_fd_table",
+            "the fd table is private to the winedroid shim",
+        );
         context.ret_ptr(0);
     });
     in_libc("android_fdtrack_get_enabled", |context| context.ret_i32(0));

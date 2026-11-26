@@ -53,7 +53,14 @@ fn error(code: i32) -> i64 {
     -i64::from(code)
 }
 
-pub fn create(fd: i32, readable: bool, writable: bool, buffering: i32, standard: bool, file_flags: i32) -> Arc<Stream> {
+pub fn create(
+    fd: i32,
+    readable: bool,
+    writable: bool,
+    buffering: i32,
+    standard: bool,
+    file_flags: i32,
+) -> Arc<Stream> {
     let capacity = match buffering {
         IONBF => 1,
         _ => BUFSIZ,
@@ -67,21 +74,40 @@ pub fn create(fd: i32, readable: bool, writable: bool, buffering: i32, standard:
         error: AtomicBool::new(false),
         buffering: AtomicI32::new(buffering),
         file_flags: AtomicI32::new(file_flags),
-        buffers: Mutex::new(Buffers { read: Vec::new(), read_position: 0, write: Vec::new(), pushback: Vec::new(), capacity, guest_buffer: 0 }),
+        buffers: Mutex::new(Buffers {
+            read: Vec::new(),
+            read_position: 0,
+            write: Vec::new(),
+            pushback: Vec::new(),
+            capacity,
+            guest_buffer: 0,
+        }),
     });
     let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
-    streams().lock().expect("stdio streams").insert(id, stream.clone());
+    streams()
+        .lock()
+        .expect("stdio streams")
+        .insert(id, stream.clone());
     stream
 }
 
 pub fn attach(file: usize, stream: &Arc<Stream>) {
     // cite: bionic local.h#__sFILE
     let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
-    streams().lock().expect("stdio streams").insert(id, stream.clone());
-    write_value::<i32>(file + FLAGS_OFFSET, stream.file_flags.load(Ordering::SeqCst));
+    streams()
+        .lock()
+        .expect("stdio streams")
+        .insert(id, stream.clone());
+    write_value::<i32>(
+        file + FLAGS_OFFSET,
+        stream.file_flags.load(Ordering::SeqCst),
+    );
     write_value::<i32>(file + FD_OFFSET, stream.fd);
     write_value::<usize>(file + BUFFER_BASE_OFFSET, 0);
-    write_value::<usize>(file + BUFFER_SIZE_OFFSET, stream.buffers.lock().expect("stdio buffer").capacity);
+    write_value::<usize>(
+        file + BUFFER_SIZE_OFFSET,
+        stream.buffers.lock().expect("stdio buffer").capacity,
+    );
     write_value::<i32>(file + BLOCKSIZE_OFFSET, 4096);
     write_value::<u64>(file + COOKIE_OFFSET, id);
 }
@@ -102,7 +128,12 @@ pub fn of(file: usize) -> Result<Arc<Stream>, i32> {
     if id == 0 {
         return Err(EINVAL);
     }
-    streams().lock().expect("stdio streams").get(&id).cloned().ok_or(EBADF)
+    streams()
+        .lock()
+        .expect("stdio streams")
+        .get(&id)
+        .cloned()
+        .ok_or(EBADF)
 }
 
 pub fn detach(file: usize) {
@@ -116,12 +147,19 @@ pub fn detach(file: usize) {
 }
 
 pub fn all() -> Vec<Arc<Stream>> {
-    streams().lock().expect("stdio streams").values().cloned().collect()
+    streams()
+        .lock()
+        .expect("stdio streams")
+        .values()
+        .cloned()
+        .collect()
 }
 
 pub fn mode_of(mode: &[u8]) -> Result<(i32, bool, bool), i32> {
     // cite: bionic stdio.cpp#fopen
-    let Some(first) = mode.first() else { return Err(EINVAL) };
+    let Some(first) = mode.first() else {
+        return Err(EINVAL);
+    };
     let (mut access, mut readable, mut writable) = match first {
         b'r' => (open::RDONLY, true, false),
         b'w' => (open::WRONLY | open::CREAT | open::TRUNC, false, true),
@@ -210,7 +248,10 @@ pub fn read_into(stream: &Stream, target: usize, count: usize) -> Result<usize, 
         }
         if buffers.read_position < buffers.read.len() {
             let available = (buffers.read.len() - buffers.read_position).min(count - done);
-            super::guest_mem::write_bytes(target + done, &buffers.read[buffers.read_position..buffers.read_position + available]);
+            super::guest_mem::write_bytes(
+                target + done,
+                &buffers.read[buffers.read_position..buffers.read_position + available],
+            );
             buffers.read_position += available;
             done += available;
             continue;
@@ -220,7 +261,11 @@ pub fn read_into(stream: &Stream, target: usize, count: usize) -> Result<usize, 
             let result = super::fs_io::read_fd(stream.fd, target + done, wanted);
             if result < 0 {
                 stream.error.store(true, Ordering::SeqCst);
-                return if done > 0 { Ok(done) } else { Err((-result) as i32) };
+                return if done > 0 {
+                    Ok(done)
+                } else {
+                    Err((-result) as i32)
+                };
             }
             if result == 0 {
                 stream.eof.store(true, Ordering::SeqCst);
@@ -254,7 +299,11 @@ fn flush_buffer(stream: &Stream, buffers: &mut Buffers) -> Result<(), i32> {
     }
     let mut done = 0usize;
     while done < buffers.write.len() {
-        match raw_write(stream, buffers.write.as_ptr() as usize + done, buffers.write.len() - done) {
+        match raw_write(
+            stream,
+            buffers.write.as_ptr() as usize + done,
+            buffers.write.len() - done,
+        ) {
             Ok(0) => return Err(super::abi_types::EIO),
             Ok(written) => done += written,
             Err(errno) => return Err(errno),
@@ -332,7 +381,8 @@ pub fn seek(stream: &Stream, offset: i64, whence: i32) -> Result<i64, i32> {
 pub fn tell(stream: &Stream) -> Result<i64, i32> {
     let buffers = stream.buffers.lock().expect("stdio buffer");
     let pending_write = buffers.write.len() as i64;
-    let unread = (buffers.read.len() - buffers.read_position) as i64 + buffers.pushback.len() as i64;
+    let unread =
+        (buffers.read.len() - buffers.read_position) as i64 + buffers.pushback.len() as i64;
     drop(buffers);
     let position = super::fs_io::lseek_fd(stream.fd, 0, super::linux_abi::seek::CUR);
     if position < 0 {
@@ -386,9 +436,15 @@ pub fn set_buffer(file: usize, buffer: usize, mode: i32, size: usize) -> i64 {
         IOLBF => flags::SLBF,
         _ => 0,
     };
-    let access_flags = (if stream.readable { flags::SRD } else { 0 }) | (if stream.writable { flags::SWR } else { 0 });
-    stream.file_flags.store(file_flags | access_flags, Ordering::SeqCst);
-    write_value::<i32>(file + FLAGS_OFFSET, stream.file_flags.load(Ordering::SeqCst));
+    let access_flags = (if stream.readable { flags::SRD } else { 0 })
+        | (if stream.writable { flags::SWR } else { 0 });
+    stream
+        .file_flags
+        .store(file_flags | access_flags, Ordering::SeqCst);
+    write_value::<i32>(
+        file + FLAGS_OFFSET,
+        stream.file_flags.load(Ordering::SeqCst),
+    );
     0
 }
 

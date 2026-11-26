@@ -17,11 +17,11 @@ use crate::dex::{
 #[cfg(all(feature = "jit", not(target_family = "wasm")))]
 use crate::dex_interpreter::DexFrame;
 use crate::dex_interpreter::{
-    self, DexArrayLength, DexArrayRead, DexArrayWrite, DexCheckCastResult, DexClassAccess, DexNewInstanceResult,
+    self, DexArrayLength, DexArrayRead, DexArrayWrite, DexCheckCastResult, DexClassAccess,
     DexExecutionResult, DexFieldAccess, DexFieldWrite, DexFilledNewArray, DexGeneratedException,
     DexInstanceOf, DexInvocation, DexInvocationFrame, DexInvocationHandler, DexInvocationRegisters,
-    DexInvocationResult, DexInvokeKind, DexNewArray, DexNewInstance, DexObjectRef,
-    DexParkedExecution, DexParkedStep, DexPendingResult, DexStaticFieldAccess,
+    DexInvocationResult, DexInvokeKind, DexNewArray, DexNewInstance, DexNewInstanceResult,
+    DexObjectRef, DexParkedExecution, DexParkedStep, DexPendingResult, DexStaticFieldAccess,
     DexStaticFieldReadResult, DexStaticFieldWrite, DexStaticFieldWriteResult, DexStringAccess,
     DexTypeCheck, DexValue,
 };
@@ -34,6 +34,8 @@ use crate::trace;
 
 mod android;
 mod bootstrap;
+mod bootstrap_application_info_fields;
+mod bootstrap_context_fields;
 mod bootstrap_fields;
 mod builtins;
 mod collections;
@@ -45,7 +47,10 @@ mod host_actions;
 mod invocation;
 mod java_big_decimal;
 mod java_primitives;
+mod java_regex_engine;
 mod java_text;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+mod jni;
 mod method_filters;
 mod missing_support;
 mod model;
@@ -65,6 +70,7 @@ use heap::*;
 use helpers::*;
 use java_big_decimal::*;
 use java_primitives::*;
+use java_regex_engine::*;
 use java_text::*;
 use method_filters::*;
 pub use model::*;
@@ -77,6 +83,8 @@ use vm::*;
 const MAX_INVOCATION_DEPTH: usize = 512;
 const DEX_ACC_STATIC: u32 = 0x0008;
 const DEX_ACC_VOLATILE: u32 = 0x0040;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+const DEX_ACC_NATIVE: u32 = 0x0100;
 const JAVA_ACC_PUBLIC: u32 = 0x0001;
 const JAVA_ACC_PRIVATE: u32 = 0x0002;
 const JAVA_ACC_PROTECTED: u32 = 0x0004;
@@ -423,6 +431,9 @@ struct DexProgram {
     activity_themes: HashMap<String, u32>,
     application_theme: Option<u32>,
     activity_labels: HashMap<String, u32>,
+    manifest_providers: Vec<manifest::Provider>,
+    manifest_version_code: Option<String>,
+    manifest_version_name: Option<String>,
     application_label: Option<u32>,
     apk_path: Option<PathBuf>,
     #[cfg(test)]
@@ -438,6 +449,8 @@ struct DexProgram {
     sqlite_guest_database_paths:
         RefCell<HashMap<String, crate::guest_filesystem::ResolvedGuestPath>>,
     sqlite_sessions: RefCell<HashMap<SqliteSessionKey, RuntimeSqliteSession>>,
+    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+    jni: jni::JniState,
     #[cfg(all(feature = "jit", not(target_family = "wasm")))]
     jit_cache: RefCell<crate::jit::JitCache>,
 }
@@ -665,6 +678,9 @@ impl DexProgram {
             activity_themes: HashMap::new(),
             application_theme: None,
             activity_labels: HashMap::new(),
+            manifest_providers: Vec::new(),
+            manifest_version_code: None,
+            manifest_version_name: None,
             application_label: None,
             apk_path,
             #[cfg(test)]
@@ -682,6 +698,8 @@ impl DexProgram {
             runtime: RefCell::new(DexRuntimeState::new()),
             sqlite_guest_database_paths: RefCell::new(HashMap::new()),
             sqlite_sessions: RefCell::new(HashMap::new()),
+            #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+            jni: jni::JniState::default(),
         };
 
         program.apply_configured_frame_interval();
@@ -1581,6 +1599,9 @@ impl DexProgram {
         self.activity_themes = context.activity_themes;
         self.application_theme = context.application_theme;
         self.activity_labels = context.activity_labels;
+        self.manifest_providers = context.manifest_providers;
+        self.manifest_version_code = context.manifest_version_code;
+        self.manifest_version_name = context.manifest_version_name;
         self.application_label = context.application_label;
         self.target_sdk_version = context.target_sdk_version;
         self.default_private_storage = context.default_private_storage;
@@ -2149,6 +2170,14 @@ impl DexProgram {
                 return Ok(result);
             }
 
+            #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+            if resolved.encoded_method.access_flags & DEX_ACC_NATIVE != 0 {
+                return self.execute_registered_native(
+                    resolved,
+                    initial_arguments.unwrap_or(&[]),
+                    depth,
+                );
+            }
             return self.missing_code_method(&resolved.method);
         }
 
@@ -2270,6 +2299,17 @@ impl DexProgram {
             )));
         }
         if resolved.encoded_method.code_offset == 0 {
+            #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+            if resolved.encoded_method.access_flags & DEX_ACC_NATIVE != 0 {
+                let arguments = (0..invocation.argument_count())
+                    .map(|index| {
+                        invocation
+                            .read_argument(index)?
+                            .ok_or_else(|| WinedroidError::new("missing JNI invocation argument"))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                return self.execute_registered_native(resolved, &arguments, depth);
+            }
             return self.missing_code_method(&resolved.method);
         }
 
@@ -2541,7 +2581,14 @@ impl DexProgram {
                 );
                 {
                     let _span = trace::span("runtime", "dispatch Handler.post callback");
-                    self.dispatch_runnable(&post.runnable, "Handler.post", depth + 1)?;
+                    match self.handler_looper_thread(&post.handler_key) {
+                        Some(thread) => self.with_current_guest_thread(thread, || {
+                            self.dispatch_runnable(&post.runnable, "Handler.post", depth + 1)
+                        })?,
+                        None => {
+                            self.dispatch_runnable(&post.runnable, "Handler.post", depth + 1)?
+                        }
+                    }
                 }
                 dispatched += 1;
             }
@@ -2717,6 +2764,10 @@ impl DexProgram {
             return self.finish_started_thread(thread, result, &class_descriptor);
         }
 
+        if self.value_matches_type(thread, "Landroid/os/HandlerThread;") {
+            return self.run_handler_thread(thread, depth);
+        }
+
         if let Some(target) = self.thread_target(thread) {
             if target != DexValue::Null {
                 let Some(target_descriptor) = value_class_descriptor(&target).map(str::to_owned)
@@ -2875,8 +2926,18 @@ impl DexProgram {
     }
 
     fn dispatch_runnable(&self, runnable: &DexValue, context: &str, depth: usize) -> Result<()> {
+        if value_class_descriptor(runnable) == Some("Landroid/os/Message;") {
+            return self.dispatch_handler_message(runnable, depth);
+        }
+
         // cite: libcore FutureTask.java#run
-        if value_class_descriptor(runnable) == Some("Ljava/util/concurrent/FutureTask;") {
+        if matches!(
+            value_class_descriptor(runnable),
+            Some(
+                "Ljava/util/concurrent/FutureTask;"
+                    | "Ljava/util/concurrent/ScheduledThreadPoolExecutor$ScheduledFutureTask;"
+            )
+        ) {
             return self.future_task_run(runnable, depth);
         }
 
@@ -4169,7 +4230,12 @@ impl DexProgram {
 
     // cite: frameworks-base Uri.java#getScheme, getQuery, getFragment, getHost, getPath
     fn uri_component(&self, invocation: &DexInvocation, component: &str) -> Option<DexValue> {
-        let text = self.uri_text(invocation.arguments.first()?)?;
+        self.uri_value_component(invocation.arguments.first()?, component)
+    }
+
+    // cite: frameworks-base Uri.java#getScheme, getQuery, getFragment, getHost, getPath
+    fn uri_value_component(&self, uri: &DexValue, component: &str) -> Option<DexValue> {
+        let text = self.uri_text(uri)?;
         let (without_fragment, fragment) = match text.split_once('#') {
             Some((rest, fragment)) => (rest, Some(fragment)),
             None => (text.as_str(), None),
@@ -10206,6 +10272,19 @@ fn invoke_frame_runtime_contract(
         }
     }
 
+    if method.class_descriptor == "Ljava/util/Random;"
+        && method.name == "nextFloat"
+        && method.proto.descriptor_is("()F")
+    {
+        // cite: libcore Random.java#nextFloat, next
+        let Some(value) = handler.program.random_next_float(invocation)? else {
+            return Ok(None);
+        };
+        return Ok(Some(DexInvocationResult::RawValue(
+            DexPendingResult::from_value(DexValue::Float(value)),
+        )));
+    }
+
     if method.class_descriptor == "Ljava/util/ArrayDeque;" {
         if method.name == "offer" && method.proto.descriptor_is("(Ljava/lang/Object;)Z") {
             // cite: libcore ArrayDeque.java#offer, offerLast, addLast
@@ -10281,6 +10360,36 @@ impl DexInvocationHandler for DexRunInvocationHandler<'_> {
         let method_index = invocation.method_index();
         let result = self.invoke_supported_from_frame(invocation);
         self.finish_invocation(method_index, result)
+    }
+
+    fn null_receiver_message(&mut self, method_index: u32, kind: DexInvokeKind) -> Option<String> {
+        // cite: art common_throws.cc#ThrowNullPointerExceptionForMethodAccessImpl
+        // cite: art dex_file.cc#AppendPrettyMethod
+        let method = self
+            .program
+            .method_id(self.current_dex_file_index, method_index)
+            .ok()?;
+        let kind = match kind {
+            DexInvokeKind::Virtual => "virtual",
+            DexInvokeKind::Super => "super",
+            DexInvokeKind::Direct => "direct",
+            DexInvokeKind::Static => "static",
+            DexInvokeKind::Interface => "interface",
+        };
+        let parameters = method
+            .proto
+            .parameters
+            .iter()
+            .map(|parameter| descriptor_to_pretty_name(parameter))
+            .collect::<Option<Vec<_>>>()?
+            .join(", ");
+
+        Some(format!(
+            "Attempt to invoke {kind} method '{} {}.{}({parameters})' on a null object reference",
+            descriptor_to_pretty_name(&method.proto.return_type)?,
+            descriptor_to_pretty_name(&method.class_descriptor)?,
+            method.name,
+        ))
     }
 
     fn invoke(&mut self, invocation: DexInvocation) -> Result<DexInvocationResult> {
@@ -10725,7 +10834,13 @@ fn tree_set_add_value_method(
         .arguments
         .first()
         .and_then(value_class_descriptor)
-        .map(|descriptor| program.descriptor_matches_type(descriptor, "Ljava/util/TreeSet;"))
+        .map(|descriptor| {
+            program.descriptor_matches_type(descriptor, "Ljava/util/TreeSet;")
+                || program.descriptor_matches_type(
+                    descriptor,
+                    "Ljava/util/concurrent/ConcurrentSkipListSet;",
+                )
+        })
         .unwrap_or(false)
 }
 
@@ -17221,8 +17336,9 @@ fn require_void_application_result(
         DexExecutionResult::Parked(execution) => {
             program.discard_parked_execution(execution);
         }
-        DexExecutionResult::Int(_) | DexExecutionResult::Value(_) | DexExecutionResult::Throw(_) => {
-        }
+        DexExecutionResult::Int(_)
+        | DexExecutionResult::Value(_)
+        | DexExecutionResult::Throw(_) => {}
     }
 
     Err(WinedroidError::new(format!(
@@ -17725,6 +17841,9 @@ struct ApkManifestContext {
     activity_themes: HashMap<String, u32>,
     application_theme: Option<u32>,
     activity_labels: HashMap<String, u32>,
+    manifest_providers: Vec<manifest::Provider>,
+    manifest_version_code: Option<String>,
+    manifest_version_name: Option<String>,
     application_label: Option<u32>,
 }
 
@@ -17773,6 +17892,9 @@ impl ApkManifestContext {
             activity_themes,
             application_theme: manifest.application_theme,
             activity_labels,
+            manifest_providers: manifest.providers,
+            manifest_version_code: manifest.version_code,
+            manifest_version_name: manifest.version_name,
             application_label: manifest.application_label,
         })
     }

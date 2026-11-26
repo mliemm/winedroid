@@ -98,7 +98,14 @@ fn timespec_after(clock: i32, milliseconds: i64) -> usize {
 }
 
 fn lock_pi_syscall(cell: &AtomicU32, operation: i32, timeout: usize) -> i64 {
-    futex_syscall([cell as *const AtomicU32 as u64, (operation | FUTEX_PRIVATE_FLAG) as u64, 0, timeout as u64, 0, 0])
+    futex_syscall([
+        cell as *const AtomicU32 as u64,
+        (operation | FUTEX_PRIVATE_FLAG) as u64,
+        0,
+        timeout as u64,
+        0,
+        0,
+    ])
 }
 
 fn times_out_after_the_deadline(operation: i32, clock: i32) -> bool {

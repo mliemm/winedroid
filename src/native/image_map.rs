@@ -30,9 +30,14 @@ impl MappedImage {
         let reads: usize = image
             .loads()
             .filter(|load| load.flags & PF_X != 0)
-            .map(|load| count_thread_pointer_reads(&data[load.offset as usize..(load.offset + load.filesz) as usize]))
+            .map(|load| {
+                count_thread_pointer_reads(
+                    &data[load.offset as usize..(load.offset + load.filesz) as usize],
+                )
+            })
             .sum();
-        let layout = ImageLayout::plan(image, host_page_size())?.with_veneers((reads * VENEER_BYTES) as u64);
+        let layout =
+            ImageLayout::plan(image, host_page_size())?.with_veneers((reads * VENEER_BYTES) as u64);
         let region = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
@@ -49,7 +54,11 @@ impl MappedImage {
                 layout.region_len
             )));
         }
-        let mapped = Self { region: region as *mut u8, layout, veneer_used: AtomicU64::new(0) };
+        let mapped = Self {
+            region: region as *mut u8,
+            layout,
+            veneer_used: AtomicU64::new(0),
+        };
         for load in image.loads() {
             let source = &data[load.offset as usize..(load.offset + load.filesz) as usize];
             let target = mapped.bytes_mut(load.vaddr, load.filesz)?;
@@ -87,7 +96,10 @@ impl MappedImage {
     }
 
     pub fn contains_vaddr(&self, vaddr: u64, len: u64) -> bool {
-        vaddr >= self.layout.lo && vaddr.checked_add(len).is_some_and(|end| end <= self.layout.hi)
+        vaddr >= self.layout.lo
+            && vaddr
+                .checked_add(len)
+                .is_some_and(|end| end <= self.layout.hi)
     }
 
     pub fn bytes(&self, vaddr: u64, len: u64) -> Result<&[u8]> {
@@ -111,18 +123,23 @@ impl MappedImage {
     }
 
     pub fn read_u64(&self, vaddr: u64) -> Result<u64> {
-        Ok(u64::from_le_bytes(self.bytes(vaddr, 8)?.try_into().expect("8 bytes")))
+        Ok(u64::from_le_bytes(
+            self.bytes(vaddr, 8)?.try_into().expect("8 bytes"),
+        ))
     }
 
     pub fn write_u64(&self, vaddr: u64, value: u64) -> Result<()> {
-        self.bytes_mut(vaddr, 8)?.copy_from_slice(&value.to_le_bytes());
+        self.bytes_mut(vaddr, 8)?
+            .copy_from_slice(&value.to_le_bytes());
         Ok(())
     }
 
     pub fn cstr(&self, vaddr: u64, limit: u64) -> Result<&[u8]> {
         let bytes = self.bytes(vaddr, limit)?;
         let end = bytes.iter().position(|byte| *byte == 0).ok_or_else(|| {
-            WinedroidError::new(format!("string at {vaddr:#x} is not terminated inside {limit} bytes"))
+            WinedroidError::new(format!(
+                "string at {vaddr:#x} is not terminated inside {limit} bytes"
+            ))
         })?;
         Ok(&bytes[..end])
     }
@@ -132,7 +149,12 @@ impl MappedImage {
         for range in self.layout.page_protections(image)? {
             self.protect(range)?;
             if range.prot & libc::PROT_EXEC != 0 {
-                unsafe { sys_icache_invalidate((self.region as usize + range.start as usize) as *mut _, range.len as usize) };
+                unsafe {
+                    sys_icache_invalidate(
+                        (self.region as usize + range.start as usize) as *mut _,
+                        range.len as usize,
+                    )
+                };
             }
         }
         Ok(())
@@ -140,14 +162,23 @@ impl MappedImage {
 
     pub fn protect_relro(&self, image: &ElfImage) -> Result<()> {
         // cite: bionic linker_phdr.cpp#phdr_table_protect_gnu_relro
-        match image.relro().and_then(|relro| self.layout.relro_pages(relro)) {
+        match image
+            .relro()
+            .and_then(|relro| self.layout.relro_pages(relro))
+        {
             Some(range) => self.protect(range),
             None => Ok(()),
         }
     }
 
     fn protect(&self, range: PageRange) -> Result<()> {
-        let status = unsafe { libc::mprotect((self.region as usize + range.start as usize) as *mut _, range.len as usize, range.prot) };
+        let status = unsafe {
+            libc::mprotect(
+                (self.region as usize + range.start as usize) as *mut _,
+                range.len as usize,
+                range.prot,
+            )
+        };
         if status != 0 {
             return Err(WinedroidError::new(format!(
                 "mprotect({:#x}, {:#x}, {}) failed: {}",

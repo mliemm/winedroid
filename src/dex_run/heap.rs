@@ -230,6 +230,34 @@ impl DexProgram {
         field: &DexFieldId,
     ) -> Option<DexValue> {
         if field.class_descriptor == "Landroid/content/pm/ApplicationInfo;"
+            && field.type_descriptor == "Ljava/lang/String;"
+            && matches!(object, DexValue::Reference(name) if name.as_ref() == "Landroid/content/pm/ApplicationInfo;.bootstrap")
+        {
+            if let Some((apk, package)) = self
+                .apk_path
+                .as_deref()
+                .zip(self.package_name.as_deref())
+                .filter(|(apk, _)| apk.ends_with("source.apk"))
+            {
+                // cite: frameworks-base ApplicationInfo.java#sourceDir, publicSourceDir, nativeLibraryDir, primaryCpuAbi
+                let value = match field.name.as_str() {
+                    "sourceDir" | "publicSourceDir" => {
+                        Some(crate::guest_app_paths::base_apk(package))
+                    }
+                    "nativeLibraryDir" if apk.parent()?.join("native/arm64-v8a").is_dir() => {
+                        Some(crate::guest_app_paths::native_library_dir(package))
+                    }
+                    "primaryCpuAbi" if apk.parent()?.join("native/arm64-v8a").is_dir() => {
+                        Some("arm64-v8a".to_owned())
+                    }
+                    _ => None,
+                };
+                if let Some(path) = value {
+                    return Some(DexValue::String(Rc::from(path)));
+                }
+            }
+        }
+        if field.class_descriptor == "Landroid/content/pm/ApplicationInfo;"
             && field.name == "targetSdkVersion"
             && field.type_descriptor == "I"
         {

@@ -12,7 +12,9 @@ use super::elf_image::ElfImage;
 use super::guest_call::GuestProcessArgs;
 use super::image_map::MappedImage;
 use super::library_search::{expand_runpath, open_library};
-use super::link_resolution::{LinkResolution, LoadReport, MissingDependency, SystemLibraryProvider};
+use super::link_resolution::{
+    LinkResolution, LoadReport, MissingDependency, SystemLibraryProvider,
+};
 use super::module::{GuestImage, ModuleId, State, RTLD_FLAGS_MASK, RTLD_NOLOAD};
 use super::relocate::{relocate_all, RelocationContext};
 use super::symbol_table::SymbolTable;
@@ -49,11 +51,15 @@ fn carries_own_unwinder(symbols: &SymbolTable, image: &MappedImage) -> bool {
     let defines = |name: &str| symbols.lookup(image, name).ok().flatten().is_some();
     let imports = |wanted: &str| {
         (1..symbols.count()).any(|index| {
-            let Ok(symbol) = symbols.symbol(image, index) else { return false };
-            symbol.shndx == super::symbol_table::SHN_UNDEF && symbols.name_bytes(image, &symbol).ok() == Some(wanted.as_bytes())
+            let Ok(symbol) = symbols.symbol(image, index) else {
+                return false;
+            };
+            symbol.shndx == super::symbol_table::SHN_UNDEF
+                && symbols.name_bytes(image, &symbol).ok() == Some(wanted.as_bytes())
         })
     };
-    (defines("__gxx_personality_v0") || defines("__gcc_personality_v0")) && !imports("_Unwind_GetIP")
+    (defines("__gxx_personality_v0") || defines("__gcc_personality_v0"))
+        && !imports("_Unwind_GetIP")
 }
 
 impl Loader {
@@ -90,11 +96,19 @@ impl Loader {
         set_dl_error("dlopen failed: ", result)
     }
 
-    fn dlopen_locked(&self, guard: &Guard, name: Option<&str>, flags: i32, _caller: Option<usize>) -> Result<u64> {
+    fn dlopen_locked(
+        &self,
+        guard: &Guard,
+        name: Option<&str>,
+        flags: i32,
+        _caller: Option<usize>,
+    ) -> Result<u64> {
         // cite: bionic linker.cpp#do_dlopen, find_library
         // cite: bionic linker_soinfo.cpp#increment_ref_count
         if flags & !RTLD_FLAGS_MASK != 0 {
-            return Err(WinedroidError::new(format!("invalid flags to dlopen: {flags:x}")));
+            return Err(WinedroidError::new(format!(
+                "invalid flags to dlopen: {flags:x}"
+            )));
         }
         let Some(name) = name else {
             return Ok(MAIN_HANDLE);
@@ -122,31 +136,56 @@ impl Loader {
         result
     }
 
-    fn find_libraries_inner(&self, guard: &Guard, name: &str, flags: i32, created: &mut Vec<ModuleId>) -> Result<ModuleId> {
+    fn find_libraries_inner(
+        &self,
+        guard: &Guard,
+        name: &str,
+        flags: i32,
+        created: &mut Vec<ModuleId>,
+    ) -> Result<ModuleId> {
         // cite: bionic linker.cpp#find_libraries
-        let mut tasks = vec![Task { name: name.to_string(), needed_by: None }];
+        let mut tasks = vec![Task {
+            name: name.to_string(),
+            needed_by: None,
+        }];
         let mut found: Vec<Option<ModuleId>> = Vec::new();
         let mut index = 0;
         while index < tasks.len() {
             let task = tasks[index].clone();
             let loaded = self.find_or_load(guard, &task, flags, created)?;
             match loaded {
-                None if index == 0 => return Err(WinedroidError::new(format!("library \"{}\" not found", task.name))),
+                None if index == 0 => {
+                    return Err(WinedroidError::new(format!(
+                        "library \"{}\" not found",
+                        task.name
+                    )))
+                }
                 None => {
-                    let needed_by = guard.borrow().module(task.needed_by.expect("dependency task")).path.clone();
+                    let needed_by = guard
+                        .borrow()
+                        .module(task.needed_by.expect("dependency task"))
+                        .path
+                        .clone();
                     if self.strict {
                         return Err(WinedroidError::new(format!(
                             "library \"{}\" not found: needed by {needed_by} in namespace clns-1",
                             task.name
                         )));
                     }
-                    let message = format!("library \"{}\" not found: needed by {needed_by}", task.name);
-                    crate::missing::record_from_error_message(&format!("{message}; next missing primitive: library \"{}\" not found", task.name));
+                    let message =
+                        format!("library \"{}\" not found: needed by {needed_by}", task.name);
+                    crate::missing::record_from_error_message(&format!(
+                        "{message}; next missing primitive: library \"{}\" not found",
+                        task.name
+                    ));
                     self.report
                         .lock()
                         .expect("load report")
                         .missing_dependencies
-                        .push(MissingDependency { library: task.name.clone(), needed_by });
+                        .push(MissingDependency {
+                            library: task.name.clone(),
+                            needed_by,
+                        });
                     found.push(None);
                 }
                 Some((id, newly_loaded)) => {
@@ -156,7 +195,10 @@ impl Loader {
                     }
                     if newly_loaded {
                         if let Some(guest) = state.module(id).guest.clone() {
-                            tasks.extend(guest.dynamic.needed.iter().map(|needed| Task { name: needed.clone(), needed_by: Some(id) }));
+                            tasks.extend(guest.dynamic.needed.iter().map(|needed| Task {
+                                name: needed.clone(),
+                                needed_by: Some(id),
+                            }));
                         }
                     }
                     found.push(Some(id));
@@ -183,7 +225,13 @@ impl Loader {
         Ok(root)
     }
 
-    fn find_or_load(&self, guard: &Guard, task: &Task, flags: i32, created: &mut Vec<ModuleId>) -> Result<Option<(ModuleId, bool)>> {
+    fn find_or_load(
+        &self,
+        guard: &Guard,
+        task: &Task,
+        flags: i32,
+        created: &mut Vec<ModuleId>,
+    ) -> Result<Option<(ModuleId, bool)>> {
         // cite: bionic linker.cpp#find_library_internal, load_library
         if let Some(id) = guard.borrow().find_by_soname(&task.name) {
             return Ok(Some((id, false)));
@@ -204,7 +252,10 @@ impl Loader {
         let Some(opened) = open_library(&task.name, &self.library_dirs, &runpath) else {
             let basename = task.name.rsplit('/').next().unwrap_or(&task.name);
             if task.name.contains('/') && is_system_soname(basename) {
-                return Ok(guard.borrow().find_by_soname(basename).map(|id| (id, false)));
+                return Ok(guard
+                    .borrow()
+                    .find_by_soname(basename)
+                    .map(|id| (id, false)));
             }
             return Ok(None);
         };
@@ -212,7 +263,10 @@ impl Loader {
             return Ok(Some((id, false)));
         }
         if flags & RTLD_NOLOAD != 0 {
-            return Err(WinedroidError::new(format!("library \"{}\" wasn't loaded and RTLD_NOLOAD prevented it", task.name)));
+            return Err(WinedroidError::new(format!(
+                "library \"{}\" wasn't loaded and RTLD_NOLOAD prevented it",
+                task.name
+            )));
         }
         let path = opened.path.to_string_lossy().into_owned();
         let data = fs::read(&opened.path)?;
@@ -220,7 +274,13 @@ impl Loader {
         let mut state = guard.borrow_mut();
         let soname = guest.dynamic.soname.clone().unwrap_or_default();
         let flags_1 = guest.dynamic.flags_1;
-        let id = state.allocate(path, soname, flags & RTLD_FLAGS_MASK, Some(opened.identity), Some(Arc::new(guest)));
+        let id = state.allocate(
+            path,
+            soname,
+            flags & RTLD_FLAGS_MASK,
+            Some(opened.identity),
+            Some(Arc::new(guest)),
+        );
         state.set_dt_flags_1(id, flags_1);
         created.push(id);
         Ok(Some((id, true)))
@@ -231,14 +291,22 @@ impl Loader {
         let elf = ElfImage::parse(path, data)?;
         let mapped = MappedImage::map(path, data, &elf)?;
         let dynamic_header = elf.dynamic();
-        let dynamic = DynamicInfo::read(path, &mapped, dynamic_header.vaddr, dynamic_header.filesz)?;
+        let dynamic =
+            DynamicInfo::read(path, &mapped, dynamic_header.vaddr, dynamic_header.filesz)?;
         let symbols = SymbolTable::new(path, &mapped, &dynamic)?;
         let tls_module = elf.tls().map_or(0, |segment| {
             let init_address = mapped.address(segment.init_vaddr);
             tls_modules::register(segment, init_address)
         });
         let foreign_unwinder = carries_own_unwinder(&symbols, &mapped);
-        Ok(GuestImage { elf, mapped, dynamic, symbols, tls_module, foreign_unwinder })
+        Ok(GuestImage {
+            elf,
+            mapped,
+            dynamic,
+            symbols,
+            tls_module,
+            foreign_unwinder,
+        })
     }
 
     fn record_patch(&self, path: &str, counts: PatchCounts) {
@@ -248,7 +316,11 @@ impl Loader {
         crate::missing::record_from_error_message(&format!(
             "guest code writes x18 in {path}; next missing primitive: guest write to x18"
         ));
-        self.report.lock().expect("load report").x18_writes.push((path.to_string(), counts.x18_writes));
+        self.report
+            .lock()
+            .expect("load report")
+            .x18_writes
+            .push((path.to_string(), counts.x18_writes));
     }
 
     fn link_group(&self, guard: &Guard, root: ModuleId) -> Result<()> {
@@ -269,7 +341,13 @@ impl Loader {
             let mut descriptors = Vec::new();
             {
                 let state = guard.borrow();
-                let resolution = LinkResolution { state: &state, provider: &*self.provider, importer: *id, group: &group, report: &self.report };
+                let resolution = LinkResolution {
+                    state: &state,
+                    provider: &*self.provider,
+                    importer: *id,
+                    group: &group,
+                    report: &self.report,
+                };
                 let mut context = RelocationContext {
                     name: &path,
                     image: &guest.mapped,

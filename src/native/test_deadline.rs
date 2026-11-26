@@ -59,16 +59,29 @@ mod tests {
         });
         release.store(true, Ordering::SeqCst);
 
-        let message = *outcome.expect_err("a stuck body must fail").downcast::<String>().unwrap();
-        assert!(message.contains("stuck_body did not finish within"), "{message}");
+        let message = *outcome
+            .expect_err("a stuck body must fail")
+            .downcast::<String>()
+            .unwrap();
+        assert!(
+            message.contains("stuck_body did not finish within"),
+            "{message}"
+        );
     }
 
     #[test]
     fn a_panic_inside_the_body_reaches_the_test_with_its_own_message() {
         // cite: libcore FutureTask.java#report
-        let outcome = std::panic::catch_unwind(|| run_within("panicking_body", Duration::from_secs(5), || panic!("the oracle disagreed")));
+        let outcome = std::panic::catch_unwind(|| {
+            run_within("panicking_body", Duration::from_secs(5), || {
+                panic!("the oracle disagreed")
+            })
+        });
 
-        let message = *outcome.expect_err("the panic must propagate").downcast::<&str>().unwrap();
+        let message = *outcome
+            .expect_err("the panic must propagate")
+            .downcast::<&str>()
+            .unwrap();
         assert_eq!(message, "the oracle disagreed");
     }
 
@@ -78,7 +91,9 @@ mod tests {
         let finished = Arc::new(AtomicBool::new(false));
         let mark = finished.clone();
 
-        run_within("quick_body", Duration::from_secs(5), move || mark.store(true, Ordering::SeqCst));
+        run_within("quick_body", Duration::from_secs(5), move || {
+            mark.store(true, Ordering::SeqCst)
+        });
 
         assert!(finished.load(Ordering::SeqCst));
     }

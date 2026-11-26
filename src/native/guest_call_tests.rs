@@ -13,17 +13,30 @@ extern "C" {
 
 const RETURN_X8: [u32; 2] = [0xaa0803e0, 0xd65f03c0];
 const CLOBBER_CALLEE_SAVED_THEN_CALL_X0: [u32; 20] = [
-    0xaa0003e9, 0xd2800233, 0xd2800254, 0xd2800275, 0xd2800296, 0xd28002b7, 0xd28002d8, 0xd28002f9, 0xd280031a, 0xd280033b, 0xd280035c, 0x1e6e1008,
-    0x1e6e1009, 0x1e6e100a, 0x1e6e100b, 0x1e6e100c, 0x1e6e100d, 0x1e6e100e, 0x1e6e100f, 0xd63f0120,
+    0xaa0003e9, 0xd2800233, 0xd2800254, 0xd2800275, 0xd2800296, 0xd28002b7, 0xd28002d8, 0xd28002f9,
+    0xd280031a, 0xd280033b, 0xd280035c, 0x1e6e1008, 0x1e6e1009, 0x1e6e100a, 0x1e6e100b, 0x1e6e100c,
+    0x1e6e100d, 0x1e6e100e, 0x1e6e100f, 0xd63f0120,
 ];
 
 fn executable(words: &[u32]) -> usize {
     let length = 16384;
-    let region = unsafe { libc::mmap(std::ptr::null_mut(), length, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANON, -1, 0) };
+    let region = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            length,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANON,
+            -1,
+            0,
+        )
+    };
     assert_ne!(region, libc::MAP_FAILED);
     unsafe {
         std::ptr::copy_nonoverlapping(words.as_ptr(), region as *mut u32, words.len());
-        assert_eq!(libc::mprotect(region, length, libc::PROT_READ | libc::PROT_EXEC), 0);
+        assert_eq!(
+            libc::mprotect(region, length, libc::PROT_READ | libc::PROT_EXEC),
+            0
+        );
         sys_icache_invalidate(region, length);
     }
     region as usize
@@ -46,7 +59,11 @@ fn a_host_to_guest_call_passes_the_sret_destination_in_x8() {
     let code = executable(&RETURN_X8);
     let mut destination = [0u64; 3];
 
-    let returned = CallBuilder::new(code).sret(destination.as_mut_ptr() as *mut u8).invoke().unwrap().u64();
+    let returned = CallBuilder::new(code)
+        .sret(destination.as_mut_ptr() as *mut u8)
+        .invoke()
+        .unwrap()
+        .u64();
 
     assert_eq!(returned, destination.as_mut_ptr() as u64);
 }
@@ -105,7 +122,9 @@ fn register_inner_then_fail() -> usize {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         register_handler("fx_inner_then_fail", |context| {
-            assert!(CallBuilder::new(INNER_CODE.load(Ordering::SeqCst)).invoke().is_ok());
+            assert!(CallBuilder::new(INNER_CODE.load(Ordering::SeqCst))
+                .invoke()
+                .is_ok());
             DEPTH_AFTER_INNER.store(active_depth(), Ordering::SeqCst);
             context.fail("outer call failed after its inner call returned");
         });
@@ -121,16 +140,23 @@ fn a_failure_after_a_completed_inner_call_unwinds_the_outer_call_not_the_finishe
     let signal = terminating_signal_of_child(|| {
         let error = CallBuilder::new(stub).invoke().unwrap_err().to_string();
         let unwound_to_outer = error.contains("outer call failed after its inner call returned");
-        if !(unwound_to_outer && DEPTH_AFTER_INNER.load(Ordering::SeqCst) == 1 && active_depth() == 0) {
+        if !(unwound_to_outer
+            && DEPTH_AFTER_INNER.load(Ordering::SeqCst) == 1
+            && active_depth() == 0)
+        {
             std::process::abort();
         }
     });
 
-    assert_eq!(signal, None, "the finished inner call must leave the active stack before the outer failure unwinds");
+    assert_eq!(
+        signal, None,
+        "the finished inner call must leave the active stack before the outer failure unwinds"
+    );
 }
 
 #[test]
-fn a_missing_import_reached_without_an_active_guest_call_aborts_and_names_library_symbol_and_thread() {
+fn a_missing_import_reached_without_an_active_guest_call_aborts_and_names_library_symbol_and_thread(
+) {
     let address = register_missing("/guest/libhost_thread.so", "fx_missing_without_active_call");
 
     let (signal, stderr) = std::thread::Builder::new()
@@ -147,7 +173,10 @@ fn a_missing_import_reached_without_an_active_guest_call_aborts_and_names_librar
 
     assert_eq!(signal, Some(libc::SIGABRT));
     assert!(stderr.contains("FIXME: native import not implemented: /guest/libhost_thread.so fx_missing_without_active_call"), "{stderr}");
-    assert!(stderr.contains("no active guest call on thread native-missing-probe"), "{stderr}");
+    assert!(
+        stderr.contains("no active guest call on thread native-missing-probe"),
+        "{stderr}"
+    );
 }
 
 thread_local! {
@@ -167,13 +196,17 @@ fn register_three_levels() -> usize {
         });
         register_handler("fx_level_b", |context| {
             note_depth("b");
-            let failed = CallBuilder::new(handler_address("fx_level_c").unwrap()).invoke().is_err();
+            let failed = CallBuilder::new(handler_address("fx_level_c").unwrap())
+                .invoke()
+                .is_err();
             note_depth("b after c");
             context.ret_i32(i32::from(failed));
         });
         register_handler("fx_level_a", |context| {
             note_depth("a");
-            let inner = CallBuilder::new(handler_address("fx_level_b").unwrap()).invoke().map(|result| result.i32());
+            let inner = CallBuilder::new(handler_address("fx_level_b").unwrap())
+                .invoke()
+                .map(|result| result.i32());
             note_depth("a after b");
             context.ret_i32(inner.unwrap_or(-1));
         });
@@ -182,14 +215,27 @@ fn register_three_levels() -> usize {
 }
 
 #[test]
-fn a_failure_three_calls_deep_unwinds_only_the_innermost_call_and_the_active_stack_follows_each_level() {
+fn a_failure_three_calls_deep_unwinds_only_the_innermost_call_and_the_active_stack_follows_each_level(
+) {
     let top = register_three_levels();
     DEPTHS.with(|depths| depths.borrow_mut().clear());
 
     let result = CallBuilder::new(top).invoke().unwrap().i32();
 
-    assert_eq!(result, 1, "level b saw its inner call fail and level a saw level b succeed");
+    assert_eq!(
+        result, 1,
+        "level b saw its inner call fail and level a saw level b succeed"
+    );
     let depths = DEPTHS.with(|depths| std::mem::take(&mut *depths.borrow_mut()));
-    assert_eq!(depths, [("a", 1), ("b", 2), ("c", 3), ("b after c", 2), ("a after b", 1)]);
+    assert_eq!(
+        depths,
+        [
+            ("a", 1),
+            ("b", 2),
+            ("c", 3),
+            ("b after c", 2),
+            ("a after b", 1)
+        ]
+    );
     assert_eq!(active_depth(), 0);
 }

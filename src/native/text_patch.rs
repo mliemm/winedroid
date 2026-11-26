@@ -36,7 +36,10 @@ fn writes_x18(word: u32) -> bool {
 
 pub fn count_thread_pointer_reads(code: &[u8]) -> usize {
     code.chunks_exact(4)
-        .filter(|chunk| u32::from_le_bytes((*chunk).try_into().expect("4 bytes")) & REGISTER_MASK == MRS_TPIDR_EL0)
+        .filter(|chunk| {
+            u32::from_le_bytes((*chunk).try_into().expect("4 bytes")) & REGISTER_MASK
+                == MRS_TPIDR_EL0
+        })
         .count()
 }
 
@@ -182,8 +185,13 @@ impl ImagePatcher for TextPatcher {
                 None => vec![segment],
             };
             for (start, end) in spans {
-                let mut redirect = |site: usize, register: u32| redirect_site(image, site, register, bias);
-                let counts = patch_words(image.bytes_mut(start, (end - start) & !3)?, image.address(start), &mut redirect)?;
+                let mut redirect =
+                    |site: usize, register: u32| redirect_site(image, site, register, bias);
+                let counts = patch_words(
+                    image.bytes_mut(start, (end - start) & !3)?,
+                    image.address(start),
+                    &mut redirect,
+                )?;
                 total.thread_pointer_reads += counts.thread_pointer_reads;
                 total.shadow_stack_ops += counts.shadow_stack_ops;
                 total.x18_writes += counts.x18_writes;
@@ -220,7 +228,10 @@ mod tests {
 
         assert_eq!(counts.thread_pointer_reads, 3);
         assert_eq!(seen, vec![(0x1000, 8), (0x1004, 0), (0x100c, 30)]);
-        assert_eq!(code, words(&[0xD53BD068, 0xD53BD060, 0xD503201F, 0xD53BD07E]));
+        assert_eq!(
+            code,
+            words(&[0xD53BD068, 0xD53BD060, 0xD503201F, 0xD53BD07E])
+        );
     }
 
     #[test]

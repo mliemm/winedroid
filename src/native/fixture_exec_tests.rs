@@ -23,7 +23,10 @@ impl Image {
             .join(name);
         let data = fs::read(&path).unwrap();
         let elf = FixtureElf::parse(&data);
-        assert!(elf.relocations.is_empty(), "{variant}/{name} needs relocations, raw mapping is invalid");
+        assert!(
+            elf.relocations.is_empty(),
+            "{variant}/{name} needs relocations, raw mapping is invalid"
+        );
         let end = elf
             .segments
             .iter()
@@ -44,11 +47,22 @@ impl Image {
         };
         assert_ne!(base, libc::MAP_FAILED);
         let base = base as *mut u8;
-        for segment in elf.segments.iter().filter(|segment| segment.kind == PT_LOAD) {
+        for segment in elf
+            .segments
+            .iter()
+            .filter(|segment| segment.kind == PT_LOAD)
+        {
             let source = &data[segment.offset as usize..(segment.offset + segment.filesz) as usize];
-            unsafe { std::ptr::copy_nonoverlapping(source.as_ptr(), base.add(segment.vaddr as usize), source.len()) };
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    source.as_ptr(),
+                    base.add(segment.vaddr as usize),
+                    source.len(),
+                )
+            };
         }
-        let status = unsafe { libc::mprotect(base as *mut _, length, libc::PROT_READ | libc::PROT_EXEC) };
+        let status =
+            unsafe { libc::mprotect(base as *mut _, length, libc::PROT_READ | libc::PROT_EXEC) };
         assert_eq!(status, 0);
         unsafe { sys_icache_invalidate(base as *mut _, length) };
         Self { base, length, elf }
@@ -69,7 +83,8 @@ impl Drop for Image {
 fn fixture_source_fx_add_binary_adds_its_arguments_and_exports_the_data_value() {
     for variant in ["16k", "4k"] {
         let image = Image::map(variant, "libfx_add.so");
-        let add: extern "C" fn(i32, i32) -> i32 = unsafe { std::mem::transmute(image.address("add")) };
+        let add: extern "C" fn(i32, i32) -> i32 =
+            unsafe { std::mem::transmute(image.address("add")) };
         let value = unsafe { *(image.address("fx_data_value") as *const i32) };
 
         assert_eq!(add(2, 3), 5, "{variant}");

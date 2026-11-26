@@ -72,7 +72,9 @@ fn is_space(character: i32) -> bool {
 
 fn registered(names: &[&str], predicate: fn(i32) -> i32) {
     for name in names {
-        in_libc(name, move |context| context.ret_i32(predicate(context.arg_i32(0))));
+        in_libc(name, move |context| {
+            context.ret_i32(predicate(context.arg_i32(0)))
+        });
     }
 }
 
@@ -97,17 +99,25 @@ fn upper(character: i32) -> i32 {
 }
 
 const CLASSES: [(&str, fn(i32) -> i32); 12] = [
-    ("alnum", |c| i32::from(flags_of(c) & (UPPER | LOWER | DIGIT))),
+    ("alnum", |c| {
+        i32::from(flags_of(c) & (UPPER | LOWER | DIGIT))
+    }),
     ("alpha", |c| flag(is_alpha(c))),
-    ("blank", |c| flag(c == i32::from(b' ') || c == i32::from(b'\t'))),
+    ("blank", |c| {
+        flag(c == i32::from(b' ') || c == i32::from(b'\t'))
+    }),
     ("cntrl", |c| flag((c as u32) < 32 || c == 127)),
     ("digit", |c| flag(is_digit(c))),
     ("graph", |c| flag(is_graph(c))),
-    ("lower", |c| flag(((c.wrapping_sub(i32::from(b'a'))) as u32) < 26)),
+    ("lower", |c| {
+        flag(((c.wrapping_sub(i32::from(b'a'))) as u32) < 26)
+    }),
     ("print", |c| flag((c.wrapping_sub(32) as u32) < 95)),
     ("punct", |c| i32::from(flags_of(c) & PUNCT)),
     ("space", |c| flag(is_space(c))),
-    ("upper", |c| flag(((c.wrapping_sub(i32::from(b'A'))) as u32) < 26)),
+    ("upper", |c| {
+        flag(((c.wrapping_sub(i32::from(b'A'))) as u32) < 26)
+    }),
     ("xdigit", |c| flag(is_hex(c))),
 ];
 
@@ -121,7 +131,10 @@ pub fn wide_class_member(class: u64, character: i32) -> i32 {
 
 pub fn wide_class_of(name: &[u8]) -> u64 {
     // cite: bionic wctype.cpp#wctype
-    CLASSES.iter().position(|(candidate, _)| candidate.as_bytes() == name).map_or(0, |index| index as u64 + 1)
+    CLASSES
+        .iter()
+        .position(|(candidate, _)| candidate.as_bytes() == name)
+        .map_or(0, |index| index as u64 + 1)
 }
 
 pub fn wide_lower(character: u32) -> u32 {
@@ -139,8 +152,12 @@ pub fn register() {
     write_value::<usize>(cell, table());
     for (name, predicate) in CLASSES {
         for prefix in ["is", "isw"] {
-            in_libc(&format!("{prefix}{name}"), move |context| context.ret_i32(predicate(context.arg_i32(0))));
-            in_libc(&format!("{prefix}{name}_l"), move |context| context.ret_i32(predicate(context.arg_i32(0))));
+            in_libc(&format!("{prefix}{name}"), move |context| {
+                context.ret_i32(predicate(context.arg_i32(0)))
+            });
+            in_libc(&format!("{prefix}{name}_l"), move |context| {
+                context.ret_i32(predicate(context.arg_i32(0)))
+            });
         }
     }
     registered(&["isascii"], |c| flag((c as u32) < 0x80));

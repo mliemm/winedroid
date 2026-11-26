@@ -22,6 +22,10 @@ impl DexProgram {
             return Some(result);
         }
 
+        if let Some(result) = self.invoke_java_nio_builtin(method, invocation) {
+            return Some(result);
+        }
+
         None
     }
 }

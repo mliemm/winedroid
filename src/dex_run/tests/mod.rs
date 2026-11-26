@@ -4,13 +4,18 @@ mod missing_support;
 use std::path::{Path, PathBuf};
 
 mod activity_window;
+mod android_content_provider;
 mod android_content_resources;
 mod android_content_storage;
 mod android_context_services;
 mod android_graphics;
+mod android_handler_message;
 mod android_layout_menu;
+mod android_lru_cache;
 mod android_platform_misc;
 mod android_text_image;
+mod android_uri_builder;
+mod android_uri_matcher;
 mod android_view_core;
 mod android_widget_adapters;
 mod androidx_lifecycle_work;

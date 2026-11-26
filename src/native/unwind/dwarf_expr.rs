@@ -36,14 +36,19 @@ pub trait AddressReader {
 
 fn push(stack: &mut Vec<u64>, value: u64) -> Result<(), String> {
     if stack.len() >= DEPTH_LIMIT {
-        return Err("DWARF expression stack overflow; next missing primitive: DWARF expression depth".to_string());
+        return Err(
+            "DWARF expression stack overflow; next missing primitive: DWARF expression depth"
+                .to_string(),
+        );
     }
     stack.push(value);
     Ok(())
 }
 
 fn pop(stack: &mut Vec<u64>) -> Result<u64, String> {
-    stack.pop().ok_or_else(|| "DWARF expression stack underflow; next missing primitive: DWARF expression".to_string())
+    stack.pop().ok_or_else(|| {
+        "DWARF expression stack underflow; next missing primitive: DWARF expression".to_string()
+    })
 }
 
 fn read_uleb(memory: &Memory, at: &mut usize) -> Result<u64, String> {
@@ -87,7 +92,12 @@ fn read_sleb(memory: &Memory, at: &mut usize) -> Result<i64, String> {
     }
 }
 
-pub fn evaluate(reader: &dyn AddressReader, memory: &Memory, expression: (usize, usize), regs: &UnwindRegs) -> Result<u64, String> {
+pub fn evaluate(
+    reader: &dyn AddressReader,
+    memory: &Memory,
+    expression: (usize, usize),
+    regs: &UnwindRegs,
+) -> Result<u64, String> {
     let mut stack: Vec<u64> = Vec::new();
     let mut at = expression.0;
     let end = expression.0 + expression.1;

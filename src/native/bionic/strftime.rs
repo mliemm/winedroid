@@ -5,8 +5,29 @@ use super::guest_mem::{cstr_bytes, read_value, write_cstr_truncated, write_value
 use super::mbstate;
 use super::tz_state::mktime_copy;
 
-const WEEKDAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const WEEKDAYS: [&str; 7] = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+];
+const MONTHS: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
 const TIME_C: &[u8] = b"%a %b %e %H:%M:%S %Y";
 const TIME_X: &[u8] = b"%m/%d/%y";
 const TIME_BIG_X: &[u8] = b"%H:%M:%S";
@@ -27,7 +48,11 @@ pub fn read_full_tm(address: usize) -> Tm {
         parts: read_tm(address),
         is_dst: read_value::<i32>(address + 32),
         offset: read_value::<i64>(address + TM_GMTOFF_OFFSET),
-        zone: if zone_pointer == 0 { Vec::new() } else { cstr_bytes(zone_pointer).to_vec() },
+        zone: if zone_pointer == 0 {
+            Vec::new()
+        } else {
+            cstr_bytes(zone_pointer).to_vec()
+        },
         address,
     }
 }
@@ -143,7 +168,9 @@ fn emit(format: &[u8], tm: &Tm, out: &mut Vec<u8>) {
         }
         let mut modifier = 0u8;
         loop {
-            let Some(&conversion) = format.get(index) else { return };
+            let Some(&conversion) = format.get(index) else {
+                return;
+            };
             index += 1;
             match conversion {
                 b'E' | b'O' => continue,
@@ -161,9 +188,22 @@ fn emit(format: &[u8], tm: &Tm, out: &mut Vec<u8>) {
 
 fn conversion_text(conversion: u8, tm: &Tm, out: &mut Vec<u8>, modifier: u8) {
     let parts = &tm.parts;
-    let hour12 = if parts.hour % 12 != 0 { parts.hour % 12 } else { 12 };
+    let hour12 = if parts.hour % 12 != 0 {
+        parts.hour % 12
+    } else {
+        12
+    };
     let name = |table: &[&str], index: i32, short: bool| -> Vec<u8> {
-        usize::try_from(index).ok().and_then(|position| table.get(position)).map_or(b"?".to_vec(), |text| if short { text.as_bytes()[..3].to_vec() } else { text.as_bytes().to_vec() })
+        usize::try_from(index)
+            .ok()
+            .and_then(|position| table.get(position))
+            .map_or(b"?".to_vec(), |text| {
+                if short {
+                    text.as_bytes()[..3].to_vec()
+                } else {
+                    text.as_bytes().to_vec()
+                }
+            })
     };
     match conversion {
         b'A' => add(out, &name(&WEEKDAYS, parts.weekday, false), modifier),
@@ -184,7 +224,11 @@ fn conversion_text(conversion: u8, tm: &Tm, out: &mut Vec<u8>, modifier: u8) {
         b'M' => numeric(out, i64::from(parts.minute), modifier, (b'0', 2)),
         b'm' => numeric(out, i64::from(parts.month) + 1, modifier, (b'0', 2)),
         b'n' => add(out, b"\n", modifier),
-        b'P' => add(out, if parts.hour >= 12 { b"PM" } else { b"AM" }, FORCE_LOWER),
+        b'P' => add(
+            out,
+            if parts.hour >= 12 { b"PM" } else { b"AM" },
+            FORCE_LOWER,
+        ),
         b'p' => add(out, if parts.hour >= 12 { b"PM" } else { b"AM" }, modifier),
         b'R' => emit(b"%H:%M", tm, out),
         b'r' => emit(b"%I:%M:%S %p", tm, out),
@@ -195,11 +239,38 @@ fn conversion_text(conversion: u8, tm: &Tm, out: &mut Vec<u8>, modifier: u8) {
         }
         b'T' => emit(b"%H:%M:%S", tm, out),
         b't' => add(out, b"\t", modifier),
-        b'U' => numeric(out, i64::from((parts.yearday + 7 - parts.weekday) / 7), modifier, (b'0', 2)),
-        b'u' => convert(out, if parts.weekday == 0 { 7 } else { i64::from(parts.weekday) }, b' ', 0),
+        b'U' => numeric(
+            out,
+            i64::from((parts.yearday + 7 - parts.weekday) / 7),
+            modifier,
+            (b'0', 2),
+        ),
+        b'u' => convert(
+            out,
+            if parts.weekday == 0 {
+                7
+            } else {
+                i64::from(parts.weekday)
+            },
+            b' ',
+            0,
+        ),
         b'V' | b'G' | b'g' => iso_week(tm, conversion, out, modifier),
         b'v' => emit(b"%e-%b-%Y", tm, out),
-        b'W' => numeric(out, i64::from((parts.yearday + 7 - if parts.weekday != 0 { parts.weekday - 1 } else { 6 }) / 7), modifier, (b'0', 2)),
+        b'W' => numeric(
+            out,
+            i64::from(
+                (parts.yearday + 7
+                    - if parts.weekday != 0 {
+                        parts.weekday - 1
+                    } else {
+                        6
+                    })
+                    / 7,
+            ),
+            modifier,
+            (b'0', 2),
+        ),
         b'w' => convert(out, i64::from(parts.weekday), b' ', 0),
         b'X' => emit(TIME_BIG_X, tm, out),
         b'x' => emit(TIME_X, tm, out),
@@ -207,10 +278,16 @@ fn conversion_text(conversion: u8, tm: &Tm, out: &mut Vec<u8>, modifier: u8) {
         b'Y' => year_text(out, i64::from(parts.year), 1900, true, true, modifier),
         b'Z' => add(out, &safe_zone(tm), modifier),
         b'z' => {
-            let negative = tm.offset < 0 || (tm.offset == 0 && safe_zone(tm).first() == Some(&b'-'));
+            let negative =
+                tm.offset < 0 || (tm.offset == 0 && safe_zone(tm).first() == Some(&b'-'));
             add(out, if negative { b"-" } else { b"+" }, modifier);
             let minutes = tm.offset.abs() / 60;
-            numeric(out, (minutes / 60) * 100 + minutes % 60, modifier, (b'0', 4));
+            numeric(
+                out,
+                (minutes / 60) * 100 + minutes % 60,
+                modifier,
+                (b'0', 4),
+            );
         }
         b'+' => emit(TIME_DATE, tm, out),
         other => out.push(other),
@@ -291,7 +368,12 @@ fn utf8_to_wide(bytes: &[u8]) -> Result<Vec<u32>, String> {
 
 fn wcsftime(context: &mut super::super::bridge::CallContext) {
     // cite: bionic wcsftime.c#wcsftime
-    let (buffer, capacity, format_pointer, tm_pointer) = (context.arg_ptr(0), context.arg_u64(1) as usize, context.arg_ptr(2), context.arg_ptr(3));
+    let (buffer, capacity, format_pointer, tm_pointer) = (
+        context.arg_ptr(0),
+        context.arg_u64(1) as usize,
+        context.arg_ptr(2),
+        context.arg_ptr(3),
+    );
     let tm = read_full_tm(tm_pointer);
     let format_bytes = if format_pointer == 0 {
         b"%c".to_vec()

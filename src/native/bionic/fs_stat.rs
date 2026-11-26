@@ -7,7 +7,9 @@ use super::fs_result::{finish_int, from_host};
 use super::guest_mem::write_bytes;
 use super::guest_paths::{self, Access, Resolved};
 use super::linux_abi::{at, stat as layout};
-use super::stat_convert::{self, from_host as stat_from_host, path_hash, virtual_node, S_IFCHR, S_IFDIR, S_IFLNK, S_IFREG};
+use super::stat_convert::{
+    self, from_host as stat_from_host, path_hash, virtual_node, S_IFCHR, S_IFDIR, S_IFLNK, S_IFREG,
+};
 use super::synthetic_node::Synthetic;
 
 const EACCES: i32 = 13;
@@ -27,27 +29,51 @@ pub struct StatResult {
 }
 
 fn from_host_stat(host: &libc::stat, synthetic: Option<fd_table::SyntheticStat>) -> StatResult {
-    StatResult { bytes: stat_from_host(host, synthetic), birth: (host.st_birthtime, host.st_birthtime_nsec) }
+    StatResult {
+        bytes: stat_from_host(host, synthetic),
+        birth: (host.st_birthtime, host.st_birthtime_nsec),
+    }
 }
 
 fn synthetic_result(bytes: [u8; layout::SIZE]) -> StatResult {
-    let birth = (i64::from_le_bytes(bytes[88..96].try_into().expect("8 bytes")), 0);
+    let birth = (
+        i64::from_le_bytes(bytes[88..96].try_into().expect("8 bytes")),
+        0,
+    );
     StatResult { bytes, birth }
 }
 
 pub fn stat_resolved(resolved: &Resolved) -> Result<StatResult, i32> {
     match resolved {
         Resolved::Host(reference) => Ok(from_host_stat(&reference.stat()?, None)),
-        Resolved::Device(device) => Ok(synthetic_result(virtual_node(S_IFCHR | 0o666, 0, path_hash(device.name), (0, 5), device.rdev))),
+        Resolved::Device(device) => Ok(synthetic_result(virtual_node(
+            S_IFCHR | 0o666,
+            0,
+            path_hash(device.name),
+            (0, 5),
+            device.rdev,
+        ))),
         Resolved::Synthetic(node, path) => {
             let (mode, device) = match node {
                 Synthetic::File { device, .. } => (S_IFREG | 0o444, *device),
                 Synthetic::Dir { device, .. } => (S_IFDIR | 0o555, *device),
                 Synthetic::Link { device, .. } => (S_IFLNK | 0o777, *device),
             };
-            Ok(synthetic_result(virtual_node(mode, 0, path_hash(path), device, (0, 0))))
+            Ok(synthetic_result(virtual_node(
+                mode,
+                0,
+                path_hash(path),
+                device,
+                (0, 0),
+            )))
         }
-        Resolved::Virtual(directory) => Ok(synthetic_result(virtual_node(S_IFDIR | directory.mode, directory.owner, path_hash(&directory.guest_path), (0, 1), (0, 0)))),
+        Resolved::Virtual(directory) => Ok(synthetic_result(virtual_node(
+            S_IFDIR | directory.mode,
+            directory.owner,
+            path_hash(&directory.guest_path),
+            (0, 1),
+            (0, 0),
+        ))),
     }
 }
 
@@ -68,7 +94,11 @@ pub fn stat_at(dirfd: i32, path: &[u8], flags: i32) -> Result<StatResult, i32> {
     if path.is_empty() && flags & at::EMPTY_PATH != 0 {
         return stat_fd(dirfd);
     }
-    let resolved = if flags & at::SYMLINK_NOFOLLOW != 0 { guest_paths::resolve(dirfd, path, Access::Read)? } else { guest_paths::resolve_follow(dirfd, path, Access::Read)? };
+    let resolved = if flags & at::SYMLINK_NOFOLLOW != 0 {
+        guest_paths::resolve(dirfd, path, Access::Read)?
+    } else {
+        guest_paths::resolve_follow(dirfd, path, Access::Read)?
+    };
     stat_resolved(&resolved)
 }
 
@@ -91,10 +121,13 @@ fn decode_device(device: u64) -> (u32, u32) {
 fn statx_bytes(result: &StatResult) -> [u8; STATX_SIZE] {
     // cite: bionic stat.h#statx
     let stat = &result.bytes;
-    let word = |offset: usize| u64::from_le_bytes(stat[offset..offset + 8].try_into().expect("8 bytes"));
-    let half = |offset: usize| u32::from_le_bytes(stat[offset..offset + 4].try_into().expect("4 bytes"));
+    let word =
+        |offset: usize| u64::from_le_bytes(stat[offset..offset + 8].try_into().expect("8 bytes"));
+    let half =
+        |offset: usize| u32::from_le_bytes(stat[offset..offset + 4].try_into().expect("4 bytes"));
     let mut out = [0u8; STATX_SIZE];
-    let mut put = |offset: usize, bytes: &[u8]| out[offset..offset + bytes.len()].copy_from_slice(bytes);
+    let mut put =
+        |offset: usize, bytes: &[u8]| out[offset..offset + bytes.len()].copy_from_slice(bytes);
     put(0, &(STATX_BASIC_STATS | STATX_BTIME).to_le_bytes());
     put(4, &half(layout::ST_BLKSIZE).to_le_bytes());
     put(16, &half(layout::ST_NLINK).to_le_bytes());
@@ -104,7 +137,11 @@ fn statx_bytes(result: &StatResult) -> [u8; STATX_SIZE] {
     put(32, &word(layout::ST_INO).to_le_bytes());
     put(40, &word(layout::ST_SIZE).to_le_bytes());
     put(48, &word(layout::ST_BLOCKS).to_le_bytes());
-    for (target, source) in [(64, layout::ST_ATIME), (96, layout::ST_CTIME), (112, layout::ST_MTIME)] {
+    for (target, source) in [
+        (64, layout::ST_ATIME),
+        (96, layout::ST_CTIME),
+        (112, layout::ST_MTIME),
+    ] {
         put(target, &word(source).to_le_bytes());
         put(target + 8, &(word(source + 8) as u32).to_le_bytes());
     }
@@ -141,8 +178,12 @@ fn host_filesystem_stats(resolved: &Resolved) -> Result<libc::statfs, i32> {
 
 fn filesystem_kind(resolved: &Resolved) -> Option<i64> {
     match resolved {
-        Resolved::Synthetic(node, _) if node.device() == super::synthetic_node::PROC_DEVICE => Some(0x9fa0),
-        Resolved::Synthetic(node, _) if node.device() == super::synthetic_node::SYS_DEVICE => Some(0x62656572),
+        Resolved::Synthetic(node, _) if node.device() == super::synthetic_node::PROC_DEVICE => {
+            Some(0x9fa0)
+        }
+        Resolved::Synthetic(node, _) if node.device() == super::synthetic_node::SYS_DEVICE => {
+            Some(0x62656572)
+        }
         Resolved::Synthetic(..) | Resolved::Device(_) | Resolved::Virtual(_) => Some(0x01021994),
         Resolved::Host(_) => None,
     }
@@ -161,9 +202,11 @@ fn statfs_of(resolved: &Resolved) -> Result<[u8; 120], i32> {
 
 fn statvfs_of(statfs: &[u8; 120]) -> [u8; 112] {
     // cite: bionic sys_statvfs.cpp#__bionic_statfs_to_statvfs
-    let word = |offset: usize| u64::from_le_bytes(statfs[offset..offset + 8].try_into().expect("8 bytes"));
+    let word =
+        |offset: usize| u64::from_le_bytes(statfs[offset..offset + 8].try_into().expect("8 bytes"));
     let mut out = [0u8; 112];
-    let mut put = |offset: usize, value: u64| out[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    let mut put =
+        |offset: usize, value: u64| out[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
     put(0, word(8));
     put(8, word(72));
     put(16, word(16));
@@ -172,7 +215,11 @@ fn statvfs_of(statfs: &[u8; 120]) -> [u8; 112] {
     put(40, word(40));
     put(48, word(48));
     put(56, word(48));
-    let fsid = u64::from(u32::from_le_bytes(statfs[56..60].try_into().expect("4 bytes"))) | u64::from(u32::from_le_bytes(statfs[60..64].try_into().expect("4 bytes"))) << 32;
+    let fsid = u64::from(u32::from_le_bytes(
+        statfs[56..60].try_into().expect("4 bytes"),
+    )) | u64::from(u32::from_le_bytes(
+        statfs[60..64].try_into().expect("4 bytes"),
+    )) << 32;
     put(64, fsid);
     put(72, word(80));
     put(80, word(64));
@@ -209,7 +256,15 @@ pub fn access_at(dirfd: i32, path: &[u8], mode: i32, flags: i32) -> i64 {
             if wants_write && reference.read_only {
                 return error(EROFS);
             }
-            if unsafe { libc::faccessat(reference.dir_fd(), reference.name().as_ptr(), mode, libc::AT_EACCESS) } < 0 {
+            if unsafe {
+                libc::faccessat(
+                    reference.dir_fd(),
+                    reference.name().as_ptr(),
+                    mode,
+                    libc::AT_EACCESS,
+                )
+            } < 0
+            {
                 from_host()
             } else {
                 0
@@ -286,7 +341,9 @@ pub fn register() {
     });
     for name in ["statfs", "statfs64"] {
         in_libc(name, |context| match path_argument(context.arg_ptr(0)) {
-            Ok(path) => match guest_paths::resolve_follow(at::FDCWD, path, Access::Read).and_then(|resolved| statfs_of(&resolved)) {
+            Ok(path) => match guest_paths::resolve_follow(at::FDCWD, path, Access::Read)
+                .and_then(|resolved| statfs_of(&resolved))
+            {
                 Ok(bytes) => {
                     write_bytes(context.arg_ptr(1), &bytes);
                     context.ret_i32(0);
@@ -307,7 +364,9 @@ pub fn register() {
     }
     for name in ["statvfs", "statvfs64"] {
         in_libc(name, |context| match path_argument(context.arg_ptr(0)) {
-            Ok(path) => match guest_paths::resolve_follow(at::FDCWD, path, Access::Read).and_then(|resolved| statfs_of(&resolved)) {
+            Ok(path) => match guest_paths::resolve_follow(at::FDCWD, path, Access::Read)
+                .and_then(|resolved| statfs_of(&resolved))
+            {
                 Ok(bytes) => {
                     write_bytes(context.arg_ptr(1), &statvfs_of(&bytes));
                     context.ret_i32(0);
@@ -326,18 +385,27 @@ pub fn register() {
             Err(errno) => finish_int(context, error(errno)),
         });
     }
-    in_libc("access", |context| match path_argument(context.arg_ptr(0)) {
-        Ok(path) => {
-            let result = access_at(at::FDCWD, path, context.arg_i32(1), 0);
-            finish_int(context, result);
+    in_libc("access", |context| {
+        match path_argument(context.arg_ptr(0)) {
+            Ok(path) => {
+                let result = access_at(at::FDCWD, path, context.arg_i32(1), 0);
+                finish_int(context, result);
+            }
+            Err(errno) => finish_int(context, error(errno)),
         }
-        Err(errno) => finish_int(context, error(errno)),
     });
-    in_libc("faccessat", |context| match path_argument(context.arg_ptr(1)) {
-        Ok(path) => {
-            let result = access_at(context.arg_i32(0), path, context.arg_i32(2), context.arg_i32(3));
-            finish_int(context, result);
+    in_libc("faccessat", |context| {
+        match path_argument(context.arg_ptr(1)) {
+            Ok(path) => {
+                let result = access_at(
+                    context.arg_i32(0),
+                    path,
+                    context.arg_i32(2),
+                    context.arg_i32(3),
+                );
+                finish_int(context, result);
+            }
+            Err(errno) => finish_int(context, error(errno)),
         }
-        Err(errno) => finish_int(context, error(errno)),
     });
 }

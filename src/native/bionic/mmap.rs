@@ -11,8 +11,27 @@ const ENODEV: i32 = 19;
 const EACCES: i32 = 13;
 const EEXIST: i32 = 17;
 
-const KNOWN_PROT: i32 = mman::PROT_READ | mman::PROT_WRITE | mman::PROT_EXEC | mman::PROT_SEM | mman::PROT_BTI | mman::PROT_MTE;
-const KNOWN_MAP: i32 = mman::MAP_SHARED | mman::MAP_PRIVATE | mman::MAP_FIXED | mman::MAP_ANONYMOUS | mman::MAP_GROWSDOWN | mman::MAP_DENYWRITE | mman::MAP_EXECUTABLE | mman::MAP_LOCKED | mman::MAP_NORESERVE | mman::MAP_POPULATE | mman::MAP_NONBLOCK | mman::MAP_STACK | mman::MAP_HUGETLB | mman::MAP_SYNC | mman::MAP_FIXED_NOREPLACE;
+const KNOWN_PROT: i32 = mman::PROT_READ
+    | mman::PROT_WRITE
+    | mman::PROT_EXEC
+    | mman::PROT_SEM
+    | mman::PROT_BTI
+    | mman::PROT_MTE;
+const KNOWN_MAP: i32 = mman::MAP_SHARED
+    | mman::MAP_PRIVATE
+    | mman::MAP_FIXED
+    | mman::MAP_ANONYMOUS
+    | mman::MAP_GROWSDOWN
+    | mman::MAP_DENYWRITE
+    | mman::MAP_EXECUTABLE
+    | mman::MAP_LOCKED
+    | mman::MAP_NORESERVE
+    | mman::MAP_POPULATE
+    | mman::MAP_NONBLOCK
+    | mman::MAP_STACK
+    | mman::MAP_HUGETLB
+    | mman::MAP_SYNC
+    | mman::MAP_FIXED_NOREPLACE;
 
 fn error(code: i32) -> i64 {
     -i64::from(code)
@@ -60,7 +79,16 @@ fn backing_of(fd: i32) -> Result<(i32, FileBacking, bool), i32> {
         return Err((-from_host()) as i32);
     }
     let device = linux_device(stat.st_dev);
-    Ok((fd, FileBacking { guest_path: entry.guest_path.clone(), offset: 0, device, inode: stat.st_ino }, writable))
+    Ok((
+        fd,
+        FileBacking {
+            guest_path: entry.guest_path.clone(),
+            offset: 0,
+            device,
+            inode: stat.st_ino,
+        },
+        writable,
+    ))
 }
 
 pub fn map(address: usize, length: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> i64 {
@@ -72,7 +100,10 @@ pub fn map(address: usize, length: usize, prot: i32, flags: i32, fd: i32, offset
         return error(EINVAL);
     }
     let Some(host_flags) = host_map_flags(flags) else {
-        missing("mmap", &format!("flag set {flags:#x} has no host equivalent"));
+        missing(
+            "mmap",
+            &format!("flag set {flags:#x} has no host equivalent"),
+        );
         return error(EINVAL);
     };
     let anonymous = flags & mman::MAP_ANONYMOUS != 0;
@@ -91,12 +122,26 @@ pub fn map(address: usize, length: usize, prot: i32, flags: i32, fd: i32, offset
     if !anonymous && prot & mman::PROT_WRITE != 0 && flags & mman::MAP_SHARED != 0 && !writable {
         return error(EACCES);
     }
-    if flags & mman::MAP_FIXED_NOREPLACE != 0 && !map_registry::covering(address, length).is_empty() {
+    if flags & mman::MAP_FIXED_NOREPLACE != 0 && !map_registry::covering(address, length).is_empty()
+    {
         return error(EEXIST);
     }
     let executable = prot & mman::PROT_EXEC != 0;
-    let host_prot = if executable { (prot_to_host(prot) & !libc::PROT_EXEC) | libc::PROT_READ | libc::PROT_WRITE } else { prot_to_host(prot) };
-    let mapped = unsafe { libc::mmap(address as *mut libc::c_void, length, host_prot, host_flags, host_fd, host_offset) };
+    let host_prot = if executable {
+        (prot_to_host(prot) & !libc::PROT_EXEC) | libc::PROT_READ | libc::PROT_WRITE
+    } else {
+        prot_to_host(prot)
+    };
+    let mapped = unsafe {
+        libc::mmap(
+            address as *mut libc::c_void,
+            length,
+            host_prot,
+            host_flags,
+            host_fd,
+            host_offset,
+        )
+    };
     if mapped == libc::MAP_FAILED {
         return from_host();
     }
@@ -108,7 +153,17 @@ pub fn map(address: usize, length: usize, prot: i32, flags: i32, fd: i32, offset
     if let Some(file) = backing.as_mut() {
         file.offset = offset as u64;
     }
-    map_registry::insert(mapped as usize, MapRecord { len: length, prot: prot_to_host(prot), shared: flags & mman::MAP_TYPE != mman::MAP_PRIVATE, no_reserve: flags & mman::MAP_NORESERVE != 0, file: backing, name: None });
+    map_registry::insert(
+        mapped as usize,
+        MapRecord {
+            len: length,
+            prot: prot_to_host(prot),
+            shared: flags & mman::MAP_TYPE != mman::MAP_PRIVATE,
+            no_reserve: flags & mman::MAP_NORESERVE != 0,
+            file: backing,
+            name: None,
+        },
+    );
     mapped as i64
 }
 
@@ -129,7 +184,10 @@ fn host_prot(prot: i32) -> Option<i32> {
         return None;
     }
     if prot & (mman::PROT_SEM | mman::PROT_BTI | mman::PROT_MTE) != 0 {
-        missing("mprotect", "PROT_SEM, PROT_BTI and PROT_MTE have no host equivalent");
+        missing(
+            "mprotect",
+            "PROT_SEM, PROT_BTI and PROT_MTE have no host equivalent",
+        );
     }
     Some(prot_to_host(prot))
 }
@@ -139,7 +197,9 @@ pub fn protect(address: usize, length: usize, prot: i32) -> i64 {
     if address % PAGE_SIZE != 0 || length == 0 {
         return error(EINVAL);
     }
-    let Some(host) = host_prot(prot) else { return error(EINVAL) };
+    let Some(host) = host_prot(prot) else {
+        return error(EINVAL);
+    };
     if unsafe { libc::mprotect(address as *mut libc::c_void, length, host) } < 0 {
         return from_host();
     }
@@ -166,7 +226,10 @@ pub fn advise(address: usize, length: usize, advice: i32) -> i64 {
         return error(EINVAL);
     }
     let Some(host) = advice_to_host(advice) else {
-        missing("madvise", &format!("advice {advice} has no host equivalent"));
+        missing(
+            "madvise",
+            &format!("advice {advice} has no host equivalent"),
+        );
         return error(EINVAL);
     };
     if unsafe { libc::madvise(address as *mut libc::c_void, length, host) } < 0 {
@@ -180,18 +243,34 @@ fn page_round(length: usize) -> usize {
 }
 
 fn copy_region(source: usize, old_size: usize, new_size: usize) -> i64 {
-    let replacement = unsafe { libc::mmap(std::ptr::null_mut(), new_size, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANON, -1, 0) };
+    let replacement = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            new_size,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANON,
+            -1,
+            0,
+        )
+    };
     if replacement == libc::MAP_FAILED {
         return from_host();
     }
     unsafe { std::ptr::copy_nonoverlapping(source as *const u8, replacement as *mut u8, old_size) };
     let record = map_registry::find(source).map(|(base, record)| {
         let mut shifted = record;
-        shifted.file.as_mut().into_iter().for_each(|file| file.offset += (source - base) as u64);
+        shifted
+            .file
+            .as_mut()
+            .into_iter()
+            .for_each(|file| file.offset += (source - base) as u64);
         shifted
     });
     if record.as_ref().is_some_and(|record| record.file.is_some()) {
-        missing("mremap", "growing a file backed mapping has no host equivalent");
+        missing(
+            "mremap",
+            "growing a file backed mapping has no host equivalent",
+        );
         return error(ENOMEM);
     }
     unsafe { libc::munmap(source as *mut libc::c_void, old_size) };
@@ -230,7 +309,9 @@ pub fn remap(old_address: usize, old_size: usize, new_size: usize, flags: i32) -
             return from_host();
         }
         map_registry::remove_range(target, old_size - new_size);
-        map_registry::update_range(old_address, new_size, |record| record.len = record.len.min(new_size));
+        map_registry::update_range(old_address, new_size, |record| {
+            record.len = record.len.min(new_size)
+        });
         return old_address as i64;
     }
     copy_region(old_address, old_size, new_size)
@@ -242,7 +323,11 @@ pub fn sync(address: usize, length: usize, flags: i32) -> i64 {
         return error(EINVAL);
     }
     let mut host = 0;
-    for (from, to) in [(mman::MS_ASYNC, libc::MS_ASYNC), (mman::MS_INVALIDATE, libc::MS_INVALIDATE), (mman::MS_SYNC, libc::MS_SYNC)] {
+    for (from, to) in [
+        (mman::MS_ASYNC, libc::MS_ASYNC),
+        (mman::MS_INVALIDATE, libc::MS_INVALIDATE),
+        (mman::MS_SYNC, libc::MS_SYNC),
+    ] {
         if flags & from != 0 {
             host |= to;
         }
@@ -258,7 +343,13 @@ pub fn sync(address: usize, length: usize, flags: i32) -> i64 {
 }
 
 fn lock_range(address: usize, length: usize, unlock: bool) -> i64 {
-    let result = unsafe { if unlock { libc::munlock(address as *mut libc::c_void, length) } else { libc::mlock(address as *const libc::c_void, length) } };
+    let result = unsafe {
+        if unlock {
+            libc::munlock(address as *mut libc::c_void, length)
+        } else {
+            libc::mlock(address as *const libc::c_void, length)
+        }
+    };
     if result < 0 {
         from_host()
     } else {
@@ -274,7 +365,13 @@ fn lock_all(flags: i32, unlock: bool) -> i64 {
         missing("mlockall", "MCL_ONFAULT has no host equivalent");
         return error(EINVAL);
     }
-    let result = unsafe { if unlock { libc::munlockall() } else { libc::mlockall(flags) } };
+    let result = unsafe {
+        if unlock {
+            libc::munlockall()
+        } else {
+            libc::mlockall(flags)
+        }
+    };
     if result < 0 {
         from_host()
     } else {
@@ -289,7 +386,14 @@ fn mincore(address: usize, length: usize, vector: usize) -> i64 {
     }
     let pages = length.div_ceil(PAGE_SIZE);
     let mut bytes = vec![0u8; pages];
-    if unsafe { libc::mincore(address as *mut libc::c_void, length, bytes.as_mut_ptr() as *mut libc::c_char) } < 0 {
+    if unsafe {
+        libc::mincore(
+            address as *mut libc::c_void,
+            length,
+            bytes.as_mut_ptr() as *mut libc::c_char,
+        )
+    } < 0
+    {
         return from_host();
     }
     super::guest_mem::write_bytes(vector, &bytes);
@@ -299,7 +403,14 @@ fn mincore(address: usize, length: usize, vector: usize) -> i64 {
 pub fn register() {
     for name in ["mmap", "mmap64"] {
         in_libc(name, |context| {
-            let result = map(context.arg_ptr(0), context.arg_u64(1) as usize, context.arg_i32(2), context.arg_i32(3), context.arg_i32(4), context.arg_u64(5) as i64);
+            let result = map(
+                context.arg_ptr(0),
+                context.arg_u64(1) as usize,
+                context.arg_i32(2),
+                context.arg_i32(3),
+                context.arg_i32(4),
+                context.arg_u64(5) as i64,
+            );
             if result < 0 {
                 finish_long(context, result);
             } else {
@@ -312,15 +423,28 @@ pub fn register() {
         finish_int(context, result);
     });
     in_libc("mprotect", |context| {
-        let result = protect(context.arg_ptr(0), context.arg_u64(1) as usize, context.arg_i32(2));
+        let result = protect(
+            context.arg_ptr(0),
+            context.arg_u64(1) as usize,
+            context.arg_i32(2),
+        );
         finish_int(context, result);
     });
     in_libc("madvise", |context| {
-        let result = advise(context.arg_ptr(0), context.arg_u64(1) as usize, context.arg_i32(2));
+        let result = advise(
+            context.arg_ptr(0),
+            context.arg_u64(1) as usize,
+            context.arg_i32(2),
+        );
         finish_int(context, result);
     });
     in_libc("mremap", |context| {
-        let result = remap(context.arg_ptr(0), context.arg_u64(1) as usize, context.arg_u64(2) as usize, context.arg_i32(3));
+        let result = remap(
+            context.arg_ptr(0),
+            context.arg_u64(1) as usize,
+            context.arg_u64(2) as usize,
+            context.arg_i32(3),
+        );
         if result < 0 {
             finish_long(context, result);
         } else {
@@ -328,7 +452,11 @@ pub fn register() {
         }
     });
     in_libc("msync", |context| {
-        let result = sync(context.arg_ptr(0), context.arg_u64(1) as usize, context.arg_i32(2));
+        let result = sync(
+            context.arg_ptr(0),
+            context.arg_u64(1) as usize,
+            context.arg_i32(2),
+        );
         finish_int(context, result);
     });
     in_libc("mlock", |context| {
@@ -348,7 +476,11 @@ pub fn register() {
         finish_int(context, result);
     });
     in_libc("mincore", |context| {
-        let result = mincore(context.arg_ptr(0), context.arg_u64(1) as usize, context.arg_ptr(2));
+        let result = mincore(
+            context.arg_ptr(0),
+            context.arg_u64(1) as usize,
+            context.arg_ptr(2),
+        );
         finish_int(context, result);
     });
 }

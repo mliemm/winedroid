@@ -44,11 +44,7 @@ fn builtin_collections_synchronized_map_returns_same_map_reference() {
 fn builtin_collections_synchronized_set_and_list_return_backing_view_per_libcore_collections() {
     let program = DexProgram::new(Vec::new());
     for (name, interface, backing) in [
-        (
-            "synchronizedSet",
-            "Ljava/util/Set;",
-            "Ljava/util/HashSet;",
-        ),
+        ("synchronizedSet", "Ljava/util/Set;", "Ljava/util/HashSet;"),
         (
             "synchronizedList",
             "Ljava/util/List;",
@@ -998,4 +994,164 @@ fn builtin_collections_empty_map_returns_empty_map() {
         program.invoke_builtin_method(&map_size, Some(&test_invocation(vec![map]))),
         Some(DexExecutionResult::Int(0))
     );
+}
+
+fn array_map_method(
+    name: &str,
+    shorty: &str,
+    return_type: &str,
+    parameters: &[&str],
+) -> DexMethodId {
+    DexMethodId {
+        class_descriptor: "Landroid/util/ArrayMap;".to_owned(),
+        name: name.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: shorty.to_owned(),
+            return_type: return_type.to_owned(),
+            parameters: parameters.iter().map(|text| (*text).to_owned()).collect(),
+        },
+    }
+}
+
+// cite: frameworks-base ArrayMap.java#ArrayMap, put, get, containsKey, size
+#[test]
+fn android_array_map_capacity_constructor_then_put_get_follows_array_map_java() {
+    let program = DexProgram::new(Vec::new());
+    let map = program.allocate_object("Landroid/util/ArrayMap;".to_owned());
+    let init = array_map_method("<init>", "VI", "V", &["I"]);
+    let put = array_map_method(
+        "put",
+        "LLL",
+        "Ljava/lang/Object;",
+        &["Ljava/lang/Object;", "Ljava/lang/Object;"],
+    );
+    let get = array_map_method("get", "LL", "Ljava/lang/Object;", &["Ljava/lang/Object;"]);
+    let size = array_map_method("size", "I", "I", &[]);
+    let key = DexValue::String(std::rc::Rc::from("key"));
+    let value = DexValue::String(std::rc::Rc::from("value"));
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &init,
+            Some(&test_invocation(vec![map.clone(), DexValue::Int(5)]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &put,
+            Some(&test_invocation(vec![
+                map.clone(),
+                key.clone(),
+                value.clone()
+            ]))
+        ),
+        Some(DexExecutionResult::Value(DexValue::Null))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&get, Some(&test_invocation(vec![map.clone(), key]))),
+        Some(DexExecutionResult::Value(value))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&size, Some(&test_invocation(vec![map]))),
+        Some(DexExecutionResult::Int(1))
+    );
+    let default_map = program.allocate_object("Landroid/util/ArrayMap;".to_owned());
+    assert_eq!(
+        program.invoke_builtin_method(
+            &array_map_method("<init>", "V", "V", &[]),
+            Some(&test_invocation(vec![default_map]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+}
+
+#[test]
+fn libcore_abstract_map_simple_entry_stores_key_and_value_from_both_constructors() {
+    // cite: libcore AbstractMap.java#SimpleEntry
+    let program = DexProgram::new(Vec::new());
+    let entry_class = "Ljava/util/AbstractMap$SimpleEntry;";
+    let key = DexValue::String(std::rc::Rc::from("key"));
+    let value = DexValue::String(std::rc::Rc::from("value"));
+    let call = |class: &str,
+                name: &str,
+                descriptor_return: &str,
+                parameters: &[&str],
+                arguments: Vec<DexValue>| {
+        program.invoke_builtin_method(
+            &builtin_method(class, name, descriptor_return, parameters),
+            Some(&test_invocation(arguments)),
+        )
+    };
+
+    let entry = program.allocate_object(entry_class.to_owned());
+    assert_eq!(
+        call(
+            entry_class,
+            "<init>",
+            "V",
+            &["Ljava/lang/Object;", "Ljava/lang/Object;"],
+            vec![entry.clone(), key.clone(), value.clone()]
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    for class in [entry_class, "Ljava/util/Map$Entry;"] {
+        assert_eq!(
+            call(
+                class,
+                "getKey",
+                "Ljava/lang/Object;",
+                &[],
+                vec![entry.clone()]
+            ),
+            Some(DexExecutionResult::Value(key.clone()))
+        );
+        assert_eq!(
+            call(
+                class,
+                "getValue",
+                "Ljava/lang/Object;",
+                &[],
+                vec![entry.clone()]
+            ),
+            Some(DexExecutionResult::Value(value.clone()))
+        );
+    }
+
+    let copy = program.allocate_object(entry_class.to_owned());
+    assert_eq!(
+        call(
+            entry_class,
+            "<init>",
+            "V",
+            &["Ljava/util/Map$Entry;"],
+            vec![copy.clone(), entry]
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        call(
+            entry_class,
+            "getValue",
+            "Ljava/lang/Object;",
+            &[],
+            vec![copy]
+        ),
+        Some(DexExecutionResult::Value(value))
+    );
+}
+
+#[test]
+fn libcore_abstract_map_simple_entry_copy_constructor_rejects_null() {
+    // cite: libcore AbstractMap.java#SimpleEntry
+    let program = DexProgram::new(Vec::new());
+    let entry_class = "Ljava/util/AbstractMap$SimpleEntry;";
+    let entry = program.allocate_object(entry_class.to_owned());
+    let result = program.invoke_builtin_method(
+        &builtin_method(entry_class, "<init>", "V", &["Ljava/util/Map$Entry;"]),
+        Some(&test_invocation(vec![entry, DexValue::Null])),
+    );
+
+    let exception = thrown_exception(result);
+    assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
 }

@@ -81,7 +81,10 @@ bounded_test! {
 static EXIT_DESTRUCTOR_VALUES: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
 
 extern "C" fn record_destructor_value(value: usize) {
-    EXIT_DESTRUCTOR_VALUES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(value);
+    EXIT_DESTRUCTOR_VALUES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(value);
 }
 
 bounded_test! {

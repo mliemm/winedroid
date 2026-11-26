@@ -21,6 +21,7 @@ pub struct AndroidManifest {
     pub uses_sdk_declared: bool,
     pub permissions: Vec<UsesPermission>,
     pub activities: Vec<Activity>,
+    pub providers: Vec<Provider>,
     pub application_label: Option<u32>,
     pub request_legacy_external_storage: Option<bool>,
     pub default_to_device_protected_storage: Option<bool>,
@@ -165,6 +166,21 @@ impl Activity {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Provider {
+    pub name: String,
+    pub authority: String,
+    pub exported: Option<bool>,
+    pub enabled: Option<bool>,
+}
+
+impl Provider {
+    pub fn is_enabled(&self) -> bool {
+        // cite: frameworks-base PackageParser.java#enabledRes
+        self.enabled.unwrap_or(true)
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ActivityBuilder {
     name: String,
@@ -298,6 +314,11 @@ fn handle_start_element(
         {
             *current_activity = read_activity(manifest, element);
         }
+        "provider"
+            if *application_is_primary && path_is(element_stack, &["manifest", "application"]) =>
+        {
+            read_provider(manifest, element)?;
+        }
         "intent-filter"
             if current_activity.is_some()
                 && (path_is(element_stack, &["manifest", "application", "activity"])
@@ -429,6 +450,33 @@ fn read_activity(manifest: &AndroidManifest, element: &XmlStartElement) -> Optio
         label: reference_attribute(element, "label"),
         theme: reference_attribute(element, "theme"),
     })
+}
+
+fn read_provider(manifest: &mut AndroidManifest, element: &XmlStartElement) -> Result<()> {
+    // cite: frameworks-base PackageParser.java#parseProvider
+    let Some(name) = text_attribute(element, "name") else {
+        return Err(WinedroidError::new(
+            "manifest <provider> does not include a name attribute",
+        ));
+    };
+    let Some(authority) = non_resource_string_attribute(element, "authorities") else {
+        return Err(WinedroidError::new(
+            "manifest <provider> does not include authorities attribute",
+        ));
+    };
+    if authority.is_empty() {
+        return Err(WinedroidError::new(
+            "manifest <provider> has empty authorities attribute",
+        ));
+    }
+    manifest.providers.push(Provider {
+        name: resolve_component_name(manifest.package_name.as_deref(), &name),
+        authority,
+        exported: strict_bool_attribute(element, "exported")?,
+        enabled: strict_bool_attribute(element, "enabled")?,
+    });
+
+    Ok(())
 }
 
 fn reference_attribute(element: &XmlStartElement, name: &str) -> Option<u32> {
@@ -1149,6 +1197,78 @@ mod tests {
         assert!(!target_29.requests_legacy_external_storage().unwrap());
         assert_eq!(explicit.request_legacy_external_storage, Some(true));
         assert!(explicit.requests_legacy_external_storage().unwrap());
+    }
+
+    #[test]
+    fn package_parser_reads_application_providers_per_parse_provider() {
+        // cite: frameworks-base PackageParser.java#parseProvider
+        let events = vec![
+            start(
+                "manifest",
+                vec![manifest_attr("package", "com.example.app")],
+            ),
+            start("application", Vec::new()),
+            start(
+                "provider",
+                vec![
+                    text_attr("name", ".Share"),
+                    text_attr("authorities", "com.example.app.share"),
+                    bool_attr("exported", false),
+                ],
+            ),
+            end("provider"),
+            start(
+                "provider",
+                vec![
+                    text_attr("name", "other.Files"),
+                    text_attr("authorities", "a.b;c.d"),
+                    bool_attr("enabled", false),
+                ],
+            ),
+            end("provider"),
+            end("application"),
+            end("manifest"),
+        ];
+
+        let manifest = parse_events(&events).expect("manifest should parse");
+
+        assert_eq!(
+            manifest.providers,
+            vec![
+                Provider {
+                    name: "com.example.app.Share".to_owned(),
+                    authority: "com.example.app.share".to_owned(),
+                    exported: Some(false),
+                    enabled: None,
+                },
+                Provider {
+                    name: "other.Files".to_owned(),
+                    authority: "a.b;c.d".to_owned(),
+                    exported: None,
+                    enabled: Some(false),
+                },
+            ]
+        );
+        assert!(manifest.providers[0].is_enabled());
+        assert!(!manifest.providers[1].is_enabled());
+    }
+
+    #[test]
+    fn package_parser_rejects_provider_without_authorities() {
+        // cite: frameworks-base PackageParser.java#parseProvider
+        let events = vec![
+            start(
+                "manifest",
+                vec![manifest_attr("package", "com.example.app")],
+            ),
+            start("application", Vec::new()),
+            start("provider", vec![text_attr("name", ".Share")]),
+            end("provider"),
+            end("application"),
+            end("manifest"),
+        ];
+
+        assert!(parse_events(&events).is_err());
     }
 
     fn launcher_alias(name: &str, target: &str, enabled: Option<bool>) -> Vec<XmlEvent> {

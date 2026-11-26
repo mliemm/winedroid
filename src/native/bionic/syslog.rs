@@ -1,11 +1,11 @@
 use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 
+use super::super::bridge::CallContext;
 use super::env::program_name;
 use super::export::in_libc;
 use super::guest_mem::cstr_bytes;
 use super::log_sink::{emit, LogRecord};
 use super::printf::format;
-use super::super::bridge::CallContext;
 
 const LOG_PRIMASK: i32 = 7;
 const LOG_ERR: i32 = 3;
@@ -27,7 +27,11 @@ fn emit_line(priority: i32, text: &[u8]) {
         return;
     }
     let stored = TAG.load(Ordering::SeqCst);
-    let tag = if stored == 0 { program_name() } else { String::from_utf8_lossy(cstr_bytes(stored)).into_owned() };
+    let tag = if stored == 0 {
+        program_name()
+    } else {
+        String::from_utf8_lossy(cstr_bytes(stored)).into_owned()
+    };
     let priority = priority & LOG_PRIMASK;
     let android = if priority <= LOG_ERR {
         ANDROID_LOG_ERROR
@@ -40,7 +44,14 @@ fn emit_line(priority: i32, text: &[u8]) {
     };
     let mut message = String::from_utf8_lossy(text).into_owned();
     message.truncate(LINE_LIMIT);
-    emit(LogRecord { buffer: 0, priority: android, tag, file: None, line: 0, message });
+    emit(LogRecord {
+        buffer: 0,
+        priority: android,
+        tag,
+        file: None,
+        line: 0,
+        message,
+    });
 }
 
 fn syslog(context: &mut CallContext) {

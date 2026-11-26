@@ -45,10 +45,9 @@ impl Sleb128<'_> {
         let mut value = 0u64;
         let mut shift = 0u32;
         loop {
-            let byte = *self
-                .bytes
-                .get(self.position)
-                .ok_or_else(|| WinedroidError::new("android relocation stream ends inside a value"))?;
+            let byte = *self.bytes.get(self.position).ok_or_else(|| {
+                WinedroidError::new("android relocation stream ends inside a value")
+            })?;
             self.position += 1;
             if shift < 64 {
                 value |= u64::from(byte & 0x7f) << shift;
@@ -71,16 +70,26 @@ pub fn decode_aps2(bytes: &[u8]) -> Result<Vec<Reloc>> {
     }
     let mut decoder = Sleb128 { bytes, position: 4 };
     let total = decoder.next()?;
-    let mut reloc = Reloc { offset: decoder.next()?, info: 0, addend: 0 };
+    let mut reloc = Reloc {
+        offset: decoder.next()?,
+        info: 0,
+        addend: 0,
+    };
     let mut relocs = Vec::new();
     let mut index = 0u64;
     while index < total {
         let group_size = decoder.next()?;
         let group_flags = decoder.next()?;
         if group_size > total - index {
-            return Err(WinedroidError::new("android relocation group exceeds the declared count"));
+            return Err(WinedroidError::new(
+                "android relocation group exceeds the declared count",
+            ));
         }
-        let offset_delta = if group_flags & GROUPED_BY_OFFSET_DELTA != 0 { decoder.next()? } else { 0 };
+        let offset_delta = if group_flags & GROUPED_BY_OFFSET_DELTA != 0 {
+            decoder.next()?
+        } else {
+            0
+        };
         if group_flags & GROUPED_BY_INFO != 0 {
             reloc.info = decoder.next()?;
         }
@@ -91,7 +100,14 @@ pub fn decode_aps2(bytes: &[u8]) -> Result<Vec<Reloc>> {
             reloc.addend = 0;
         }
         for _ in 0..group_size {
-            reloc.offset = reloc.offset.wrapping_add(if group_flags & GROUPED_BY_OFFSET_DELTA != 0 { offset_delta } else { decoder.next()? });
+            reloc.offset =
+                reloc
+                    .offset
+                    .wrapping_add(if group_flags & GROUPED_BY_OFFSET_DELTA != 0 {
+                        offset_delta
+                    } else {
+                        decoder.next()?
+                    });
             if group_flags & GROUPED_BY_INFO == 0 {
                 reloc.info = decoder.next()?;
             }
@@ -103,7 +119,9 @@ pub fn decode_aps2(bytes: &[u8]) -> Result<Vec<Reloc>> {
         index += group_size;
     }
     if decoder.position != bytes.len() {
-        return Err(WinedroidError::new("android relocation stream has trailing bytes"));
+        return Err(WinedroidError::new(
+            "android relocation stream has trailing bytes",
+        ));
     }
     Ok(relocs)
 }
@@ -112,7 +130,10 @@ pub fn decode_relr(bytes: &[u8]) -> Vec<u64> {
     // cite: bionic linker.cpp#relocate_relr
     let mut offsets = Vec::new();
     let mut base = 0u64;
-    for entry in bytes.chunks_exact(8).map(|chunk| u64::from_le_bytes(chunk.try_into().expect("8 bytes"))) {
+    for entry in bytes
+        .chunks_exact(8)
+        .map(|chunk| u64::from_le_bytes(chunk.try_into().expect("8 bytes")))
+    {
         if entry & 1 == 0 {
             offsets.push(entry);
             base = entry.wrapping_add(8);
@@ -151,9 +172,24 @@ mod tests {
 
     #[test]
     fn bionic_sleb128_decoder_round_trips_signed_and_64_bit_values() {
-        for value in [0i64, 1, -1, 63, 64, -64, -65, 0x3192d, i64::MAX, i64::MIN, -123456789012] {
+        for value in [
+            0i64,
+            1,
+            -1,
+            63,
+            64,
+            -64,
+            -65,
+            0x3192d,
+            i64::MAX,
+            i64::MIN,
+            -123456789012,
+        ] {
             let bytes = sleb(value);
-            let mut decoder = Sleb128 { bytes: &bytes, position: 0 };
+            let mut decoder = Sleb128 {
+                bytes: &bytes,
+                position: 0,
+            };
             assert_eq!(decoder.next().unwrap() as i64, value);
             assert_eq!(decoder.position, bytes.len());
         }
@@ -165,12 +201,34 @@ mod tests {
         for value in [5i64, 0x100] {
             stream.extend(sleb(value));
         }
-        for value in [2i64, 1 | 8, 1027, 0x10, 5, 0x20, 7, 3, 2 | 1 | 4 | 8, 8, 1025, 0x100] {
+        for value in [
+            2i64,
+            1 | 8,
+            1027,
+            0x10,
+            5,
+            0x20,
+            7,
+            3,
+            2 | 1 | 4 | 8,
+            8,
+            1025,
+            0x100,
+        ] {
             stream.extend(sleb(value));
         }
         let relocs = decode_aps2(&stream).unwrap();
-        let expected = [(0x110, 1027, 5), (0x130, 1027, 12), (0x138, 1025, 0x10c), (0x140, 1025, 0x10c), (0x148, 1025, 0x10c)];
-        let actual: Vec<_> = relocs.iter().map(|reloc| (reloc.offset, reloc.info, reloc.addend)).collect();
+        let expected = [
+            (0x110, 1027, 5),
+            (0x130, 1027, 12),
+            (0x138, 1025, 0x10c),
+            (0x140, 1025, 0x10c),
+            (0x148, 1025, 0x10c),
+        ];
+        let actual: Vec<_> = relocs
+            .iter()
+            .map(|reloc| (reloc.offset, reloc.info, reloc.addend))
+            .collect();
         assert_eq!(actual, expected);
     }
 
@@ -188,7 +246,10 @@ mod tests {
     #[test]
     fn bionic_relocate_relr_bitmap_advances_base_by_63_words() {
         let entries: [u64; 4] = [0x1000, 0b11, 0b11, 0x2000];
-        let bytes: Vec<u8> = entries.iter().flat_map(|entry| entry.to_le_bytes()).collect();
+        let bytes: Vec<u8> = entries
+            .iter()
+            .flat_map(|entry| entry.to_le_bytes())
+            .collect();
         assert_eq!(decode_relr(&bytes), vec![0x1000, 0x1008, 0x1200, 0x2000]);
     }
 }

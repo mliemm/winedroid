@@ -345,6 +345,44 @@ fn libcore_random_next_int_no_arg_uses_next_32_seed_sequence() {
     );
 }
 
+// cite: libcore Random.java#Random, nextFloat, next
+#[test]
+fn libcore_random_next_float_uses_next_24_seed_sequence() {
+    let program = DexProgram::new(Vec::new());
+    let constructor = DexMethodId {
+        class_descriptor: "Ljava/util/Random;".to_owned(),
+        name: "<init>".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VJ".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec!["J".to_owned()],
+        },
+    };
+    let next_float = DexMethodId {
+        class_descriptor: "Ljava/util/Random;".to_owned(),
+        name: "nextFloat".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "F".to_owned(),
+            return_type: "F".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let random = DexValue::Reference(std::rc::Rc::from("Ljava/util/Random;:float-seed-zero"));
+    let constructor_invocation = test_invocation(vec![random.clone(), DexValue::Long(0)]);
+    let invocation = test_invocation(vec![random]);
+
+    assert_eq!(
+        program.invoke_builtin_method(&constructor, Some(&constructor_invocation)),
+        Some(DexExecutionResult::Void)
+    );
+    let expected = ((-1155484576_i32 as u32) >> 8) as f32 / 16777216.0;
+    assert_eq!(
+        program.invoke_builtin_method(&next_float, Some(&invocation)),
+        Some(DexExecutionResult::Value(DexValue::Float(expected)))
+    );
+    assert!((0.0..1.0).contains(&expected));
+}
+
 // cite: libcore Pattern.java#quote
 #[test]
 fn pattern_quote_wraps_literal_and_escapes_embedded_terminator() {
@@ -475,5 +513,117 @@ fn builtin_matcher_matches_forces_lazy_optional_group_to_span_whole_input() {
     assert_eq!(
         program.invoke_builtin_method(&matches, Some(&test_invocation(vec![matcher]))),
         Some(DexExecutionResult::Int(1))
+    );
+}
+
+#[test]
+fn libcore_pattern_zero_width_lookahead_matches_and_splits() {
+    // cite: libcore Pattern.java#compile
+    // cite: libcore Matcher.java#matches, find
+    let program = DexProgram::new(Vec::new());
+    let compile = builtin_method(
+        "Ljava/util/regex/Pattern;",
+        "compile",
+        "Ljava/util/regex/Pattern;",
+        &["Ljava/lang/String;"],
+    );
+    let matcher_method = builtin_method(
+        "Ljava/util/regex/Pattern;",
+        "matcher",
+        "Ljava/util/regex/Matcher;",
+        &["Ljava/lang/CharSequence;"],
+    );
+    let matches = builtin_method("Ljava/util/regex/Matcher;", "matches", "Z", &[]);
+    let find = builtin_method("Ljava/util/regex/Matcher;", "find", "Z", &[]);
+    let text = |value: &str| DexValue::String(std::rc::Rc::from(value));
+    let Some(DexExecutionResult::Value(pattern)) = program.invoke_builtin_method(
+        &compile,
+        Some(&test_invocation(vec![text(
+            r"^(?=.{1,12}$)(?=.*@)[a-z]+@[a-z]+\.[a-z]{2,}$",
+        )])),
+    ) else {
+        panic!("a lookahead pattern should compile");
+    };
+    let outcome = |input: &str, method: &DexMethodId| {
+        let Some(DexExecutionResult::Value(matcher)) = program.invoke_builtin_method(
+            &matcher_method,
+            Some(&test_invocation(vec![pattern.clone(), text(input)])),
+        ) else {
+            panic!("Pattern.matcher should return a Matcher");
+        };
+
+        program.invoke_builtin_method(method, Some(&test_invocation(vec![matcher])))
+    };
+
+    assert_eq!(
+        outcome("ab@cd.com", &matches),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(
+        outcome("abcd.com", &matches),
+        Some(DexExecutionResult::Int(0))
+    );
+    assert_eq!(
+        outcome("abcdefghij@kl.com", &find),
+        Some(DexExecutionResult::Int(0))
+    );
+
+    let split = builtin_method(
+        "Ljava/lang/String;",
+        "split",
+        "[Ljava/lang/String;",
+        &["Ljava/lang/String;"],
+    );
+    let Some(DexExecutionResult::Value(parts)) = program.invoke_builtin_method(
+        &split,
+        Some(&test_invocation(vec![text("aXbXc"), text("(?<=X)")])),
+    ) else {
+        panic!("String.split with a lookbehind should run");
+    };
+    let read = |index| program.read_array_value(&parts, index);
+    assert_eq!(program.array_length(&parts), Some(3));
+    assert_eq!(read(0), Some(text("aX")));
+    assert_eq!(read(1), Some(text("bX")));
+    assert_eq!(read(2), Some(text("c")));
+}
+
+#[test]
+fn libcore_pattern_backtracking_engine_error_is_a_missing_primitive_not_no_match() {
+    // cite: libcore Pattern.java#compile
+    // cite: libcore Matcher.java#find
+    let program = DexProgram::new(Vec::new());
+    let compile = builtin_method(
+        "Ljava/util/regex/Pattern;",
+        "compile",
+        "Ljava/util/regex/Pattern;",
+        &["Ljava/lang/String;"],
+    );
+    let matcher_method = builtin_method(
+        "Ljava/util/regex/Pattern;",
+        "matcher",
+        "Ljava/util/regex/Matcher;",
+        &["Ljava/lang/CharSequence;"],
+    );
+    let find = builtin_method("Ljava/util/regex/Matcher;", "find", "Z", &[]);
+    let text = |value: &str| DexValue::String(std::rc::Rc::from(value));
+    let Some(DexExecutionResult::Value(pattern)) = program.invoke_builtin_method(
+        &compile,
+        Some(&test_invocation(vec![text(r"(?=a)(a+)+\1$")])),
+    ) else {
+        panic!("a lookahead pattern should compile");
+    };
+    let Some(DexExecutionResult::Value(matcher)) = program.invoke_builtin_method(
+        &matcher_method,
+        Some(&test_invocation(vec![
+            pattern,
+            text(&format!("{}b", "a".repeat(64))),
+        ])),
+    ) else {
+        panic!("Pattern.matcher should return a Matcher");
+    };
+
+    assert_eq!(
+        program.invoke_builtin_method(&find, Some(&test_invocation(vec![matcher]))),
+        None
     );
 }

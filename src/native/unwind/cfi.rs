@@ -57,11 +57,17 @@ pub struct RuleSet {
 
 impl RuleSet {
     fn new() -> Self {
-        Self { cfa: None, registers: vec![Rule::Undefined; DWARF_REGISTER_COUNT] }
+        Self {
+            cfa: None,
+            registers: vec![Rule::Undefined; DWARF_REGISTER_COUNT],
+        }
     }
 
     pub fn rule(&self, register: u32) -> Rule {
-        self.registers.get(register as usize).copied().unwrap_or(Rule::Undefined)
+        self.registers
+            .get(register as usize)
+            .copied()
+            .unwrap_or(Rule::Undefined)
     }
 
     fn set(&mut self, register: u32, rule: Rule) -> Result<(), String> {
@@ -88,7 +94,9 @@ struct Machine<'a> {
 fn read_block(memory: &Memory, at: &mut usize) -> Result<(usize, usize), String> {
     let length = read_uleb(memory, at)? as usize;
     let start = *at;
-    memory.bytes(start, length).map_err(|error| format!("{error}; next missing primitive: DWARF CFI expression"))?;
+    memory
+        .bytes(start, length)
+        .map_err(|error| format!("{error}; next missing primitive: DWARF CFI expression"))?;
     *at += length;
     Ok((start, length))
 }
@@ -136,7 +144,9 @@ fn read_sleb(memory: &Memory, at: &mut usize) -> Result<i64, String> {
 
 impl Machine<'_> {
     fn advance(&mut self, delta: u64) -> bool {
-        let next = self.location.wrapping_add(delta.wrapping_mul(self.code_align));
+        let next = self
+            .location
+            .wrapping_add(delta.wrapping_mul(self.code_align));
         if next > self.target {
             return false;
         }

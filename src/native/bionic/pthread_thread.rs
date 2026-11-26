@@ -1,7 +1,10 @@
 use std::sync::atomic::Ordering;
 
+use super::super::call_assign::CallBuilder;
 use super::super::futex::{self, MATCH_ANY};
-use super::super::pthread_internal::{PthreadInternal, JOIN_DETACHED, JOIN_EXITED_NOT_JOINED, JOIN_JOINED, JOIN_NOT_JOINED};
+use super::super::pthread_internal::{
+    PthreadInternal, JOIN_DETACHED, JOIN_EXITED_NOT_JOINED, JOIN_JOINED, JOIN_NOT_JOINED,
+};
 use super::super::thread_exit;
 use super::super::thread_list::{self, find};
 use super::super::thread_start;
@@ -12,7 +15,6 @@ use super::guest_mem::{cstr_bytes, read_value, write_value};
 use super::pthread_attr::{ATTR_SIZE, FLAG_DETACHED};
 use super::pthread_mutex::EDEADLK;
 use super::pthread_sched;
-use super::super::call_assign::CallBuilder;
 
 const ESRCH: i32 = 3;
 const NAME_LIMIT: usize = 16;
@@ -26,7 +28,9 @@ fn join(thread: usize, result: usize) -> i32 {
     if thread == current_thread::record() {
         return EDEADLK;
     }
-    let Some(record) = find(thread, "pthread_join") else { return ESRCH };
+    let Some(record) = find(thread, "pthread_join") else {
+        return ESRCH;
+    };
     let state = thread_exit::join_state(record);
     let mut old = JOIN_NOT_JOINED;
     while old == JOIN_NOT_JOINED || old == JOIN_EXITED_NOT_JOINED {
@@ -55,7 +59,9 @@ fn join(thread: usize, result: usize) -> i32 {
 
 fn detach(thread: usize) -> i32 {
     // cite: bionic pthread_detach.cpp#pthread_detach
-    let Some(record) = find(thread, "pthread_detach") else { return ESRCH };
+    let Some(record) = find(thread, "pthread_detach") else {
+        return ESRCH;
+    };
     let state = thread_exit::join_state(record);
     let mut old = JOIN_NOT_JOINED;
     while old == JOIN_NOT_JOINED {
@@ -66,7 +72,9 @@ fn detach(thread: usize) -> i32 {
     }
     match old {
         JOIN_NOT_JOINED => {
-            if let Some(host) = thread_list::host_of(record).filter(|_| thread_list::was_created_by_guest(record)) {
+            if let Some(host) =
+                thread_list::host_of(record).filter(|_| thread_list::was_created_by_guest(record))
+            {
                 unsafe { libc::pthread_detach(host) };
             }
             0
@@ -97,15 +105,34 @@ fn host_of(thread: usize, caller: &str) -> Result<(usize, libc::pthread_t), i32>
 }
 
 pub fn register() {
-    in_libc("pthread_create", |context| context.ret_i32(thread_start::create(context.arg_ptr(0), context.arg_ptr(1), context.arg_ptr(2), context.arg_ptr(3))));
-    in_libc("pthread_join", |context| context.ret_i32(join(context.arg_ptr(0), context.arg_ptr(1))));
-    in_libc("pthread_detach", |context| context.ret_i32(detach(context.arg_ptr(0))));
+    in_libc("pthread_create", |context| {
+        context.ret_i32(thread_start::create(
+            context.arg_ptr(0),
+            context.arg_ptr(1),
+            context.arg_ptr(2),
+            context.arg_ptr(3),
+        ))
+    });
+    in_libc("pthread_join", |context| {
+        context.ret_i32(join(context.arg_ptr(0), context.arg_ptr(1)))
+    });
+    in_libc("pthread_detach", |context| {
+        context.ret_i32(detach(context.arg_ptr(0)))
+    });
     in_libc("pthread_exit", exit_current);
     in_libc("pthread_getattr_np", |context| {
         // cite: bionic pthread_attr.cpp#pthread_getattr_np
-        let Some(record) = find(context.arg_ptr(0), "pthread_getattr_np") else { return context.ret_i32(ESRCH) };
+        let Some(record) = find(context.arg_ptr(0), "pthread_getattr_np") else {
+            return context.ret_i32(ESRCH);
+        };
         let attr = context.arg_ptr(1);
-        unsafe { std::ptr::copy_nonoverlapping(&raw const (*record_of(record)).attr as *const u8, attr as *mut u8, ATTR_SIZE) };
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                &raw const (*record_of(record)).attr as *const u8,
+                attr as *mut u8,
+                ATTR_SIZE,
+            )
+        };
         if thread_exit::join_state(record).load(Ordering::SeqCst) == JOIN_DETACHED {
             write_value::<u32>(attr, read_value::<u32>(attr) | FLAG_DETACHED);
         }
@@ -113,12 +140,14 @@ pub fn register() {
     });
     in_libc("pthread_gettid_np", |context| {
         // cite: bionic pthread_gettid_np.cpp#pthread_gettid_np
-        let tid = find(context.arg_ptr(0), "pthread_gettid_np").map_or(-1, |record| unsafe { (*record_of(record)).tid });
+        let tid = find(context.arg_ptr(0), "pthread_gettid_np")
+            .map_or(-1, |record| unsafe { (*record_of(record)).tid });
         context.ret_i32(tid);
     });
     in_libc("__pthread_cleanup_push", |context| {
         // cite: bionic pthread_exit.cpp#__pthread_cleanup_push
-        let (frame, routine, argument) = (context.arg_ptr(0), context.arg_u64(1), context.arg_u64(2));
+        let (frame, routine, argument) =
+            (context.arg_ptr(0), context.arg_u64(1), context.arg_u64(2));
         let record = record_of(current_thread::record());
         write_value::<u64>(frame, unsafe { (*record).cleanup_stack });
         write_value::<u64>(frame + 8, routine);
@@ -143,7 +172,9 @@ pub fn register() {
         if name.len() >= NAME_LIMIT {
             return context.ret_i32(ERANGE);
         }
-        let Some(record) = find(context.arg_ptr(0), "pthread_setname_np") else { return context.ret_i32(ESRCH) };
+        let Some(record) = find(context.arg_ptr(0), "pthread_setname_np") else {
+            return context.ret_i32(ESRCH);
+        };
         thread_list::set_name(record, name);
         if record == current_thread::record() {
             let mut text = name.to_vec();
@@ -157,20 +188,25 @@ pub fn register() {
         if context.arg_u64(2) < NAME_LIMIT as u64 {
             return context.ret_i32(ERANGE);
         }
-        let Some(record) = find(context.arg_ptr(0), "pthread_getname_np") else { return context.ret_i32(ESRCH) };
+        let Some(record) = find(context.arg_ptr(0), "pthread_getname_np") else {
+            return context.ret_i32(ESRCH);
+        };
         super::guest_mem::write_bytes(context.arg_ptr(1), &thread_list::name_of(record));
         context.ret_i32(0);
     });
     in_libc("pthread_getcpuclockid", |context| {
         // cite: bionic pthread_getcpuclockid.cpp#pthread_getcpuclockid
-        let Some(record) = find(context.arg_ptr(0), "pthread_getcpuclockid") else { return context.ret_i32(ESRCH) };
+        let Some(record) = find(context.arg_ptr(0), "pthread_getcpuclockid") else {
+            return context.ret_i32(ESRCH);
+        };
         let tid = unsafe { (*record_of(record)).tid };
         write_value::<i32>(context.arg_ptr(1), ((!tid) << 3) | 2 | 4);
         context.ret_i32(0);
     });
     in_libc("pthread_getschedparam", |context| {
         // cite: bionic pthread_getschedparam.cpp#pthread_getschedparam
-        let outcome = host_of(context.arg_ptr(0), "pthread_getschedparam").and_then(|(_, host)| pthread_sched::get_host(host));
+        let outcome = host_of(context.arg_ptr(0), "pthread_getschedparam")
+            .and_then(|(_, host)| pthread_sched::get_host(host));
         match outcome {
             Ok((policy, priority)) => {
                 write_value::<i32>(context.arg_ptr(1), policy);
@@ -183,7 +219,8 @@ pub fn register() {
     in_libc("pthread_setschedparam", |context| {
         // cite: bionic pthread_setschedparam.cpp#pthread_setschedparam
         let priority = read_value::<i32>(context.arg_ptr(2));
-        let outcome = host_of(context.arg_ptr(0), "pthread_setschedparam").and_then(|(_, host)| pthread_sched::set_host(host, context.arg_i32(1), priority));
+        let outcome = host_of(context.arg_ptr(0), "pthread_setschedparam")
+            .and_then(|(_, host)| pthread_sched::set_host(host, context.arg_i32(1), priority));
         context.ret_i32(outcome.err().unwrap_or(0));
     });
     in_libc("pthread_setschedprio", |context| {
@@ -195,20 +232,26 @@ pub fn register() {
         });
         context.ret_i32(outcome.err().unwrap_or(0));
     });
-    in_libc("sched_get_priority_max", |context| match pthread_sched::priority_limit(context.arg_i32(0), true) {
-        Some(value) => context.ret_i32(value),
-        None => {
-            context.set_errno(EINVAL);
-            context.ret_i32(-1);
-        }
-    });
-    in_libc("sched_get_priority_min", |context| match pthread_sched::priority_limit(context.arg_i32(0), false) {
-        Some(value) => context.ret_i32(value),
-        None => {
-            context.set_errno(EINVAL);
-            context.ret_i32(-1);
-        }
-    });
+    in_libc(
+        "sched_get_priority_max",
+        |context| match pthread_sched::priority_limit(context.arg_i32(0), true) {
+            Some(value) => context.ret_i32(value),
+            None => {
+                context.set_errno(EINVAL);
+                context.ret_i32(-1);
+            }
+        },
+    );
+    in_libc(
+        "sched_get_priority_min",
+        |context| match pthread_sched::priority_limit(context.arg_i32(0), false) {
+            Some(value) => context.ret_i32(value),
+            None => {
+                context.set_errno(EINVAL);
+                context.ret_i32(-1);
+            }
+        },
+    );
     in_libc("sched_yield", |context| {
         unsafe { libc::sched_yield() };
         context.ret_i32(0);

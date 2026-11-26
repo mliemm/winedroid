@@ -39,7 +39,10 @@ pub fn register() {
             return context.ret_i32(EINVAL);
         }
         let attribute = context.arg_ptr(0);
-        write_value::<i64>(attribute, (attribute_get(attribute) & !ATTR_TYPE_MASK) | kind);
+        write_value::<i64>(
+            attribute,
+            (attribute_get(attribute) & !ATTR_TYPE_MASK) | kind,
+        );
         context.ret_i32(0);
     });
     in_libc("pthread_mutexattr_setpshared", |context| {
@@ -52,7 +55,10 @@ pub fn register() {
         context.ret_i32(0);
     });
     in_libc("pthread_mutexattr_getpshared", |context| {
-        write_value::<i32>(context.arg_ptr(1), i32::from(attribute_get(context.arg_ptr(0)) & ATTR_SHARED_MASK != 0));
+        write_value::<i32>(
+            context.arg_ptr(1),
+            i32::from(attribute_get(context.arg_ptr(0)) & ATTR_SHARED_MASK != 0),
+        );
         context.ret_i32(0);
     });
     in_libc("pthread_mutexattr_setprotocol", |context| {
@@ -61,11 +67,18 @@ pub fn register() {
             return context.ret_i32(EINVAL);
         }
         let attribute = context.arg_ptr(0);
-        write_value::<i64>(attribute, (attribute_get(attribute) & !ATTR_PROTOCOL_MASK) | (protocol << ATTR_PROTOCOL_SHIFT));
+        write_value::<i64>(
+            attribute,
+            (attribute_get(attribute) & !ATTR_PROTOCOL_MASK) | (protocol << ATTR_PROTOCOL_SHIFT),
+        );
         context.ret_i32(0);
     });
     in_libc("pthread_mutexattr_getprotocol", |context| {
-        write_value::<i32>(context.arg_ptr(1), ((attribute_get(context.arg_ptr(0)) & ATTR_PROTOCOL_MASK) >> ATTR_PROTOCOL_SHIFT) as i32);
+        write_value::<i32>(
+            context.arg_ptr(1),
+            ((attribute_get(context.arg_ptr(0)) & ATTR_PROTOCOL_MASK) >> ATTR_PROTOCOL_SHIFT)
+                as i32,
+        );
         context.ret_i32(0);
     });
 }

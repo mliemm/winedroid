@@ -180,14 +180,16 @@ fn read_native_libraries(apk: &mut ApkArchive, entries: &[ApkEntry]) -> Result<V
             let _span = trace::stat_span("perf", "inspect read native library");
             apk.read_required_file(&entry.name)?
         };
-        let elf = {
+        let image = {
             let _span = trace::stat_span("perf", "inspect parse native ELF");
-            elf::parse_elf(&data).map_err(|error| {
-                WinedroidError::with_source(
-                    format!("failed to parse native ELF library `{}`", entry.name),
-                    error,
-                )
-            })?
+            inspect_native_image(&entry.name, &data)?
+        };
+        let Some(elf) = image else {
+            trace::event(
+                "inspect",
+                format!("non-ELF payload remains in APK: {}", entry.name),
+            );
+            continue;
         };
 
         libraries.push(native_library(entry, native_library_path, elf));
@@ -200,6 +202,18 @@ fn read_native_libraries(apk: &mut ApkArchive, entries: &[ApkEntry]) -> Result<V
     });
 
     Ok(libraries)
+}
+
+fn inspect_native_image(name: &str, data: &[u8]) -> Result<Option<ElfSummary>> {
+    if !elf::has_magic(data) {
+        return Ok(None);
+    }
+    elf::parse_elf(data).map(Some).map_err(|error| {
+        WinedroidError::with_source(
+            format!("failed to parse native ELF library `{name}`"),
+            error,
+        )
+    })
 }
 
 fn dex_file_summary(entry: &ApkEntry, dex: DexSummary) -> DexFileSummary {
@@ -769,6 +783,14 @@ mod tests {
         assert!(!dex::is_dex_file("classes.dex.backup"));
         assert!(!dex::is_dex_file("assets/classes.dex"));
         assert!(!dex::is_dex_file("classesx.dex"));
+    }
+
+    #[test]
+    fn native_inventory_ignores_payloads_and_reports_truncated_elf_images() {
+        let name = "lib/arm64-v8a/libexample.so";
+        assert!(inspect_native_image(name, b"data").unwrap().is_none());
+        let error = inspect_native_image(name, b"\x7fELF").unwrap_err();
+        assert!(error.to_string().contains(name));
     }
 
     #[test]

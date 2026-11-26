@@ -5,7 +5,11 @@ use super::guest_thread::attach_current;
 use super::link_resolution::{ImportKind, SystemLibraryProvider};
 use super::loader_test_support::{child_exit_code, child_outcome};
 
-extern "C" fn exit_with_seventy_seven(_: libc::c_int, _: *mut libc::siginfo_t, _: *mut libc::c_void) {
+extern "C" fn exit_with_seventy_seven(
+    _: libc::c_int,
+    _: *mut libc::siginfo_t,
+    _: *mut libc::c_void,
+) {
     unsafe { libc::_exit(77) };
 }
 
@@ -32,8 +36,14 @@ fn reading_an_unresolved_data_import_logs_the_library_and_symbol_then_aborts() {
     });
 
     assert_eq!(signal, Some(libc::SIGABRT));
-    assert!(stderr.contains("FIXME: native data import not implemented: "), "{stderr}");
-    assert!(stderr.contains("libfx_bridge.so fx_missing_object"), "{stderr}");
+    assert!(
+        stderr.contains("FIXME: native data import not implemented: "),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("libfx_bridge.so fx_missing_object"),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -47,9 +57,17 @@ fn a_fault_inside_a_later_data_slot_names_that_symbol_by_its_offset() {
     let (first_signal, first_stderr) = child_outcome(|| touch(first));
 
     assert_eq!(signal, Some(libc::SIGABRT));
-    assert!(stderr.contains("/guest/libz.so fx_data_slot_second") && !stderr.contains("fx_data_slot_first"), "{stderr}");
+    assert!(
+        stderr.contains("/guest/libz.so fx_data_slot_second")
+            && !stderr.contains("fx_data_slot_first"),
+        "{stderr}"
+    );
     assert_eq!(first_signal, Some(libc::SIGABRT));
-    assert!(first_stderr.contains("fx_data_slot_first") && !first_stderr.contains("fx_data_slot_second"), "{first_stderr}");
+    assert!(
+        first_stderr.contains("fx_data_slot_first")
+            && !first_stderr.contains("fx_data_slot_second"),
+        "{first_stderr}"
+    );
 }
 
 #[test]
@@ -58,8 +76,16 @@ fn a_fault_outside_every_unresolved_data_slot_goes_to_the_previous_handler() {
 
     for signal in [libc::SIGSEGV, libc::SIGBUS] {
         let code = child_exit_code(|| {
-            set_action(libc::SIGSEGV, exit_with_seventy_seven as *const () as usize, libc::SA_SIGINFO);
-            set_action(libc::SIGBUS, exit_with_seventy_seven as *const () as usize, libc::SA_SIGINFO);
+            set_action(
+                libc::SIGSEGV,
+                exit_with_seventy_seven as *const () as usize,
+                libc::SA_SIGINFO,
+            );
+            set_action(
+                libc::SIGBUS,
+                exit_with_seventy_seven as *const () as usize,
+                libc::SA_SIGINFO,
+            );
             install();
             unsafe { libc::raise(signal) };
             touch(8);
@@ -69,7 +95,8 @@ fn a_fault_outside_every_unresolved_data_slot_goes_to_the_previous_handler() {
 }
 
 #[test]
-fn a_fault_outside_every_slot_with_the_default_action_underneath_still_kills_the_process_with_that_signal() {
+fn a_fault_outside_every_slot_with_the_default_action_underneath_still_kills_the_process_with_that_signal(
+) {
     BridgeProvider.unresolved("/guest/libz.so", "fx_data_slot_default", ImportKind::Data);
 
     let (signal, stderr) = child_outcome(|| {
@@ -79,7 +106,10 @@ fn a_fault_outside_every_slot_with_the_default_action_underneath_still_kills_the
         touch(8);
     });
 
-    assert!(matches!(signal, Some(libc::SIGSEGV) | Some(libc::SIGBUS)), "{signal:?}");
+    assert!(
+        matches!(signal, Some(libc::SIGSEGV) | Some(libc::SIGBUS)),
+        "{signal:?}"
+    );
     assert!(!stderr.contains("FIXME"), "{stderr}");
 }
 
@@ -100,7 +130,15 @@ fn a_thread_without_an_alternate_signal_stack_gets_one_when_it_enters_guest_code
     let mut result: *mut libc::c_void = std::ptr::null_mut();
 
     unsafe {
-        assert_eq!(libc::pthread_create(&mut thread, std::ptr::null(), attach_on_bare_thread, std::ptr::null_mut()), 0);
+        assert_eq!(
+            libc::pthread_create(
+                &mut thread,
+                std::ptr::null(),
+                attach_on_bare_thread,
+                std::ptr::null_mut()
+            ),
+            0
+        );
         assert_eq!(libc::pthread_join(thread, &mut result), 0);
     }
 

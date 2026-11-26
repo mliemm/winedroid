@@ -38,11 +38,17 @@ const MAPPED: [(i32, i32); 29] = [
 
 pub fn linux_to_darwin(signal: i32) -> Option<i32> {
     // cite: bionic signal.h#SIGUSR1, SIGBUS, SIGCHLD, SIGSTOP, SIGTSTP, SIGCONT, SIGURG, SIGIO, SIGSYS
-    MAPPED.iter().find(|(linux, _)| *linux == signal).map(|(_, darwin)| *darwin)
+    MAPPED
+        .iter()
+        .find(|(linux, _)| *linux == signal)
+        .map(|(_, darwin)| *darwin)
 }
 
 pub fn darwin_to_linux(signal: i32) -> Option<i32> {
-    MAPPED.iter().find(|(_, darwin)| *darwin == signal).map(|(linux, _)| *linux)
+    MAPPED
+        .iter()
+        .find(|(_, darwin)| *darwin == signal)
+        .map(|(linux, _)| *linux)
 }
 
 pub fn is_valid(signal: i32) -> bool {
@@ -62,11 +68,17 @@ pub fn bit(signal: i32) -> u64 {
 }
 
 pub fn to_darwin_mask(linux: u64) -> u32 {
-    MAPPED.iter().filter(|(signal, _)| linux & bit(*signal) != 0).fold(0, |mask, (_, darwin)| mask | 1u32 << (darwin - 1))
+    MAPPED
+        .iter()
+        .filter(|(signal, _)| linux & bit(*signal) != 0)
+        .fold(0, |mask, (_, darwin)| mask | 1u32 << (darwin - 1))
 }
 
 pub fn to_linux_mask(darwin: u32) -> u64 {
-    MAPPED.iter().filter(|(_, signal)| darwin & (1u32 << (signal - 1)) != 0).fold(0, |mask, (linux, _)| mask | bit(*linux))
+    MAPPED
+        .iter()
+        .filter(|(_, signal)| darwin & (1u32 << (signal - 1)) != 0)
+        .fold(0, |mask, (linux, _)| mask | bit(*linux))
 }
 
 pub fn filter_reserved(set: u64, how: i32) -> u64 {
@@ -128,7 +140,10 @@ mod tests {
         // cite: bionic SigSetConverter.h#SigSetConverter
         let linux = bit(7) | bit(10) | bit(16) | bit(40);
 
-        assert_eq!(to_darwin_mask(linux), (1 << (libc::SIGBUS - 1)) | (1 << (libc::SIGUSR1 - 1)));
+        assert_eq!(
+            to_darwin_mask(linux),
+            (1 << (libc::SIGBUS - 1)) | (1 << (libc::SIGUSR1 - 1))
+        );
         assert_eq!(to_linux_mask(to_darwin_mask(linux)), bit(7) | bit(10));
     }
 

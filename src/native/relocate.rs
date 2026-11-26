@@ -76,7 +76,10 @@ fn decode_aps2_table(image: &MappedImage, table: &Table) -> Result<Vec<Reloc>> {
 }
 
 fn is_tls(kind: u32) -> bool {
-    matches!(kind, R_AARCH64_TLS_DTPMOD64 | R_AARCH64_TLS_DTPREL64 | R_AARCH64_TLS_TPREL64 | R_AARCH64_TLSDESC)
+    matches!(
+        kind,
+        R_AARCH64_TLS_DTPMOD64 | R_AARCH64_TLS_DTPREL64 | R_AARCH64_TLS_TPREL64 | R_AARCH64_TLSDESC
+    )
 }
 
 fn apply(context: &mut RelocationContext, reloc: &Reloc) -> Result<()> {
@@ -123,7 +126,12 @@ fn apply(context: &mut RelocationContext, reloc: &Reloc) -> Result<()> {
     }
 }
 
-fn apply_tls(context: &mut RelocationContext, reloc: &Reloc, name: &str, sym: Option<&Sym>) -> Result<()> {
+fn apply_tls(
+    context: &mut RelocationContext,
+    reloc: &Reloc,
+    name: &str,
+    sym: Option<&Sym>,
+) -> Result<()> {
     // cite: bionic linker_relocate.cpp#process_relocation_impl, is_tls_reloc
     let image = context.image;
     let kind = reloc.kind();
@@ -168,7 +176,10 @@ fn apply_tls(context: &mut RelocationContext, reloc: &Reloc, name: &str, sym: Op
                 tls_module = Some(resolved.tls_module);
                 sym_addr = resolved.value;
             } else if entry.bind() != STB_WEAK {
-                return Err(WinedroidError::new(format!("cannot locate TLS symbol \"{name}\" referenced by \"{}\"...", context.name)));
+                return Err(WinedroidError::new(format!(
+                    "cannot locate TLS symbol \"{name}\" referenced by \"{}\"...",
+                    context.name
+                )));
             }
         }
     }

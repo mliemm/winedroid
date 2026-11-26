@@ -145,6 +145,16 @@ impl DexRunInvocationHandler<'_> {
             });
         }
 
+        if method.class_descriptor == "Landroid/os/HandlerThread;"
+            && method.name == "getLooper"
+            && proto_descriptor == "()Landroid/os/Looper;"
+        {
+            let looper = self
+                .program
+                .handler_thread_looper(&invocation, self.depth)?;
+            return Ok(DexInvocationResult::Value(looper));
+        }
+
         if method.class_descriptor == "Landroid/util/Xml;"
             && method.name == "parse"
             && proto_descriptor
@@ -249,6 +259,12 @@ impl DexRunInvocationHandler<'_> {
         }
 
         if tree_set_add_value_method(self.program, &method, &invocation) {
+            if self.program.sorted_set_add_rejects_null(&invocation) {
+                return Ok(DexInvocationResult::Throw(
+                    self.program
+                        .allocate_object("Ljava/lang/NullPointerException;".to_owned()),
+                ));
+            }
             let added = self.program.tree_set_add_value(&invocation, self.depth)?;
             return Ok(DexInvocationResult::Value(DexValue::Int(added)));
         }
@@ -698,6 +714,34 @@ impl DexRunInvocationHandler<'_> {
             {
                 return Ok(DexInvocationResult::Value(value));
             }
+        }
+
+        if let Some(result) =
+            self.program
+                .invoke_lru_cache_method(&method, &invocation, self.depth + 1)?
+        {
+            return Ok(invocation_result_from_execution(result));
+        }
+
+        if let Some(result) = self
+            .program
+            .invoke_uri_builder_method(&method, &invocation)?
+        {
+            return Ok(invocation_result_from_execution(result));
+        }
+
+        if let Some(result) = self
+            .program
+            .invoke_uri_matcher_method(&method, &invocation)?
+        {
+            return Ok(invocation_result_from_execution(result));
+        }
+
+        if let Some(result) =
+            self.program
+                .invoke_content_provider_method(&method, &invocation, self.depth + 1)?
+        {
+            return Ok(invocation_result_from_execution(result));
         }
 
         Err(WinedroidError::new(format!(

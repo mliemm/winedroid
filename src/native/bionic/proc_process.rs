@@ -1,13 +1,16 @@
+use super::super::guest_thread;
 use super::super::signal_numbers::{bit, SIGNAL_COUNT};
 use super::super::signal_state;
 use super::super::thread_list;
-use super::super::guest_thread;
+use super::abi_types::PAGE_SIZE;
 use super::fd_table::{self, FdKind};
 use super::guest_process;
 use super::host_stats::{self, TICKS_PER_SECOND};
-use super::sysinfo::{auxiliary, AT_CLKTCK, AT_EGID, AT_EUID, AT_FLAGS, AT_GID, AT_HWCAP, AT_HWCAP2, AT_PAGESZ, AT_PLATFORM, AT_RANDOM, AT_SECURE, AT_UID};
+use super::sysinfo::{
+    auxiliary, AT_CLKTCK, AT_EGID, AT_EUID, AT_FLAGS, AT_GID, AT_HWCAP, AT_HWCAP2, AT_PAGESZ,
+    AT_PLATFORM, AT_RANDOM, AT_SECURE, AT_UID,
+};
 use crate::native::guest_context;
-use super::abi_types::PAGE_SIZE;
 
 pub fn pid() -> i32 {
     unsafe { libc::getpid() }
@@ -15,25 +18,38 @@ pub fn pid() -> i32 {
 
 fn comm_of(record: usize) -> String {
     let bytes = thread_list::name_of(record);
-    let end = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
     String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
 pub fn primary_record() -> Option<usize> {
-    guest_thread::live_records().into_iter().map(|(record, _)| record).find(|record| guest_thread::is_primary(*record as *mut _))
+    guest_thread::live_records()
+        .into_iter()
+        .map(|(record, _)| record)
+        .find(|record| guest_thread::is_primary(*record as *mut _))
 }
 
 pub fn thread_comm(tid: i32) -> Option<String> {
-    let record = guest_thread::live_records().into_iter().find(|(_, live)| *live == tid)?.0;
+    let record = guest_thread::live_records()
+        .into_iter()
+        .find(|(_, live)| *live == tid)?
+        .0;
     Some(comm_of(record))
 }
 
 pub fn process_comm() -> String {
-    primary_record().map(comm_of).unwrap_or_else(|| "app_process64".to_string())
+    primary_record()
+        .map(comm_of)
+        .unwrap_or_else(|| "app_process64".to_string())
 }
 
 pub fn cmdline() -> Vec<u8> {
-    let package = guest_context::current().map(|context| context.package.clone()).unwrap_or_default();
+    let package = guest_context::current()
+        .map(|context| context.package.clone())
+        .unwrap_or_default();
     let mut bytes = package.into_bytes();
     bytes.push(0);
     bytes
@@ -103,8 +119,14 @@ pub fn status(thread: Option<i32>) -> Vec<u8> {
     }
     line("NoNewPrivs", "0".to_string());
     line("Seccomp", "0".to_string());
-    line("voluntary_ctxt_switches", task.voluntary_switches.to_string());
-    line("nonvoluntary_ctxt_switches", task.involuntary_switches.to_string());
+    line(
+        "voluntary_ctxt_switches",
+        task.voluntary_switches.to_string(),
+    );
+    line(
+        "nonvoluntary_ctxt_switches",
+        task.involuntary_switches.to_string(),
+    );
     text.into_bytes()
 }
 
@@ -145,12 +167,30 @@ pub fn stat(thread: Option<i32>) -> Vec<u8> {
 pub fn statm() -> Vec<u8> {
     let task = host_stats::task();
     let page = PAGE_SIZE as u64;
-    format!("{} {} 0 0 0 0 0\n", task.virtual_size / page, task.resident_size / page).into_bytes()
+    format!(
+        "{} {} 0 0 0 0 0\n",
+        task.virtual_size / page,
+        task.resident_size / page
+    )
+    .into_bytes()
 }
 
 pub fn auxv() -> Vec<u8> {
     let mut bytes = Vec::new();
-    for kind in [AT_PAGESZ, AT_CLKTCK, AT_HWCAP, AT_HWCAP2, AT_FLAGS, AT_UID, AT_EUID, AT_GID, AT_EGID, AT_SECURE, AT_RANDOM, AT_PLATFORM] {
+    for kind in [
+        AT_PAGESZ,
+        AT_CLKTCK,
+        AT_HWCAP,
+        AT_HWCAP2,
+        AT_FLAGS,
+        AT_UID,
+        AT_EUID,
+        AT_GID,
+        AT_EGID,
+        AT_SECURE,
+        AT_RANDOM,
+        AT_PLATFORM,
+    ] {
         if let Some(value) = auxiliary(kind) {
             bytes.extend_from_slice(&kind.to_le_bytes());
             bytes.extend_from_slice(&value.to_le_bytes());
@@ -162,7 +202,11 @@ pub fn auxv() -> Vec<u8> {
 
 pub fn fd_entries() -> Vec<(String, u8)> {
     let mut entries = vec![(".".to_string(), 4), ("..".to_string(), 4)];
-    entries.extend(fd_table::list().into_iter().map(|fd| (fd.to_string(), super::linux_abi::misc::DT_LNK)));
+    entries.extend(
+        fd_table::list()
+            .into_iter()
+            .map(|fd| (fd.to_string(), super::linux_abi::misc::DT_LNK)),
+    );
     entries
 }
 
@@ -185,8 +229,14 @@ pub fn fd_link(fd: i32) -> Option<String> {
 
 pub fn task_entries() -> Vec<(String, u8)> {
     let mut entries = vec![(".".to_string(), 4), ("..".to_string(), 4)];
-    let mut tids: Vec<i32> = guest_thread::live_records().into_iter().map(|(_, tid)| tid).collect();
+    let mut tids: Vec<i32> = guest_thread::live_records()
+        .into_iter()
+        .map(|(_, tid)| tid)
+        .collect();
     tids.sort_unstable();
-    entries.extend(tids.into_iter().map(|tid| (tid.to_string(), super::linux_abi::misc::DT_DIR)));
+    entries.extend(
+        tids.into_iter()
+            .map(|tid| (tid.to_string(), super::linux_abi::misc::DT_DIR)),
+    );
     entries
 }

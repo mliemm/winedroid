@@ -216,6 +216,13 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Ljava/lang/System;"
+            && method.name == "load"
+            && method.proto.descriptor_is("(Ljava/lang/String;)V")
+        {
+            return self.system_load(invocation?);
+        }
+
+        if method.class_descriptor == "Ljava/lang/System;"
             && method.name == "loadLibrary"
             && method.proto.descriptor_is("(Ljava/lang/String;)V")
         {
@@ -1643,6 +1650,18 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Landroid/os/SystemClock;"
+            && method.name == "elapsedRealtimeNanos"
+            && method.proto.descriptor_is("()J")
+        {
+            // cite: frameworks-base SystemClock.java#elapsedRealtimeNanos, elapsedRealtime
+            let millis = self.runtime.borrow().main_thread_uptime_millis;
+
+            return Some(DexExecutionResult::Value(DexValue::Long(
+                millis.saturating_mul(1_000_000),
+            )));
+        }
+
+        if method.class_descriptor == "Landroid/os/SystemClock;"
             && method.name == "uptimeMillis"
             && method.proto.descriptor_is("()J")
         {
@@ -1739,9 +1758,60 @@ impl DexProgram {
                 .proto
                 .descriptor_is("()Ljava/lang/Thread$UncaughtExceptionHandler;")
         {
+            // cite: libcore Thread.java#getDefaultUncaughtExceptionHandler, defaultUncaughtExceptionHandler
+            let stored = self
+                .runtime
+                .borrow()
+                .default_uncaught_exception_handler
+                .clone();
+
             return Some(DexExecutionResult::Value(
-                thread_uncaught_exception_handler(),
+                stored.unwrap_or_else(thread_uncaught_exception_handler),
             ));
+        }
+
+        if method.class_descriptor == "Ljava/lang/Thread;"
+            && method.name == "setDefaultUncaughtExceptionHandler"
+            && method
+                .proto
+                .descriptor_is("(Ljava/lang/Thread$UncaughtExceptionHandler;)V")
+        {
+            // cite: libcore Thread.java#setDefaultUncaughtExceptionHandler, defaultUncaughtExceptionHandler
+            let invocation = invocation?;
+            let [handler] = invocation.arguments.as_slice() else {
+                return None;
+            };
+            if !matches!(handler, DexValue::Null | DexValue::Int(0))
+                && !dex_value_is_object_like(handler)
+            {
+                return None;
+            }
+            let stored = match handler {
+                DexValue::Int(0) => DexValue::Null,
+                other => other.clone(),
+            };
+            self.runtime.borrow_mut().default_uncaught_exception_handler = Some(stored);
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        // cite: libcore Throwable.java#getMessage, detailMessage
+        if method.class_descriptor == "Ljava/lang/Throwable;"
+            && method.name == "getMessage"
+            && method.proto.descriptor_is("()Ljava/lang/String;")
+        {
+            let invocation = invocation?;
+            let [throwable] = invocation.arguments.as_slice() else {
+                return None;
+            };
+            let message = match self
+                .read_stored_instance_field(throwable, &throwable_detail_message_field())
+            {
+                Some(message @ DexValue::String(_)) => message,
+                _ => DexValue::Null,
+            };
+
+            return Some(DexExecutionResult::Value(message));
         }
 
         // cite: libcore Throwable.java#getStackTrace
@@ -1807,6 +1877,39 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        // cite: frameworks-base HandlerThread.java#HandlerThread, mPriority
+        if method.class_descriptor == "Landroid/os/HandlerThread;"
+            && method.name == "<init>"
+            && method.proto.descriptor_is("(Ljava/lang/String;I)V")
+        {
+            let invocation = invocation?;
+            self.initialize_handler_thread_with_priority(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.class_descriptor == "Landroid/os/HandlerThread;"
+            && method.name == "getThreadId"
+            && method.proto.descriptor_is("()I")
+        {
+            let invocation = invocation?;
+            let [thread] = invocation.arguments.as_slice() else {
+                return None;
+            };
+
+            return Some(DexExecutionResult::Int(
+                self.handler_thread_thread_id(thread)?,
+            ));
+        }
+
+        // cite: frameworks-base HandlerThread.java#onLooperPrepared
+        if method.class_descriptor == "Landroid/os/HandlerThread;"
+            && method.name == "onLooperPrepared"
+            && method.proto.descriptor_is("()V")
+        {
+            return Some(DexExecutionResult::Void);
+        }
+
         if method.class_descriptor == "Ljava/lang/Thread;"
             && method.name == "start"
             && method.proto.descriptor_is("()V")
@@ -1848,6 +1951,16 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Ljava/lang/Thread;"
+            && method.name == "getName"
+            && method.proto.descriptor_is("()Ljava/lang/String;")
+        {
+            let invocation = invocation?;
+            let name = self.thread_get_name(invocation)?;
+
+            return Some(DexExecutionResult::Value(name));
+        }
+
+        if method.class_descriptor == "Ljava/lang/Thread;"
             && method.name == "getId"
             && method.proto.descriptor_is("()J")
         {
@@ -1877,6 +1990,18 @@ impl DexProgram {
         {
             let invocation = invocation?;
             self.initialize_handler(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.class_descriptor == "Landroid/os/Handler;"
+            && method.name == "<init>"
+            && method
+                .proto
+                .descriptor_is("(Landroid/os/Looper;Landroid/os/Handler$Callback;)V")
+        {
+            let invocation = invocation?;
+            self.initialize_handler_with_callback(invocation)?;
 
             return Some(DexExecutionResult::Void);
         }
@@ -1924,6 +2049,33 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Landroid/os/Handler;"
+            && method.name == "sendMessage"
+            && method.proto.descriptor_is("(Landroid/os/Message;)Z")
+        {
+            let invocation = invocation?;
+
+            return self.handler_send_message(invocation);
+        }
+
+        if method.class_descriptor == "Landroid/os/Handler;"
+            && method.name == "sendMessageDelayed"
+            && method.proto.descriptor_is("(Landroid/os/Message;J)Z")
+        {
+            let invocation = invocation?;
+
+            return self.handler_send_message_delayed(invocation);
+        }
+
+        if method.class_descriptor == "Landroid/os/Handler;"
+            && method.name == "sendEmptyMessageDelayed"
+            && method.proto.descriptor_is("(IJ)Z")
+        {
+            let invocation = invocation?;
+
+            return self.handler_send_empty_message_delayed(invocation);
+        }
+
+        if method.class_descriptor == "Landroid/os/Handler;"
             && method.name == "postAtFrontOfQueue"
             && method.proto.descriptor_is("(Ljava/lang/Runnable;)Z")
         {
@@ -1944,10 +2096,27 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Landroid/os/Handler;"
+            && method.name == "removeMessages"
+            && (method.proto.descriptor_is("(I)V")
+                || method.proto.descriptor_is("(ILjava/lang/Object;)V"))
+        {
+            let invocation = invocation?;
+            self.handler_remove_messages(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.class_descriptor == "Landroid/os/Handler;"
             && method.name == "obtainMessage"
-            && method
-                .proto
-                .descriptor_is("(ILjava/lang/Object;)Landroid/os/Message;")
+            && [
+                "()Landroid/os/Message;",
+                "(I)Landroid/os/Message;",
+                "(ILjava/lang/Object;)Landroid/os/Message;",
+                "(III)Landroid/os/Message;",
+                "(IIILjava/lang/Object;)Landroid/os/Message;",
+            ]
+            .iter()
+            .any(|descriptor| method.proto.descriptor_is(descriptor))
         {
             let invocation = invocation?;
             let value = self.handler_obtain_message(invocation)?;
@@ -1975,13 +2144,25 @@ impl DexProgram {
             return None;
         }
 
+        // cite: frameworks-base Process.java#THREAD_PRIORITY_DEFAULT
+        self.store_handler_thread(invocation, DexValue::Int(0))
+    }
+
+    fn initialize_handler_thread_with_priority(&self, invocation: &DexInvocation) -> Option<()> {
+        let [_, _, priority @ DexValue::Int(_)] = invocation.arguments.as_slice() else {
+            return None;
+        };
+
+        self.store_handler_thread(invocation, priority.clone())
+    }
+
+    fn store_handler_thread(&self, invocation: &DexInvocation, priority: DexValue) -> Option<()> {
         self.initialize_thread(invocation, "(Ljava/lang/String;)V")?;
 
-        // cite: frameworks-base Process.java#THREAD_PRIORITY_DEFAULT
         self.write_stored_instance_field(
             &invocation.arguments[0],
             &handler_thread_priority_field(),
-            DexValue::Int(0),
+            priority,
         )
         .then_some(())
     }
@@ -1993,7 +2174,7 @@ impl DexProgram {
                 self.thread_store_target(invocation)?;
                 Some(())
             }
-            "(Ljava/lang/String;)V" if invocation.arguments.len() == 2 => {
+            "(Ljava/lang/String;)V" if invocation.arguments.len() >= 2 => {
                 self.thread_store_name(invocation)?;
                 Some(())
             }
@@ -2024,6 +2205,14 @@ impl DexProgram {
         if dex_value_is_object_like(thread) {
             self.write_stored_instance_field(thread, &thread_terminated_field(), DexValue::Int(1));
         }
+    }
+
+    pub(in crate::dex_run) fn thread_is_alive(&self, thread: &DexValue) -> bool {
+        // cite: libcore Thread.java#isAlive
+        matches!(
+            self.read_stored_instance_field(thread, &thread_started_field()),
+            Some(DexValue::Int(value)) if value != 0
+        ) && !self.thread_is_terminated(thread)
     }
 
     fn thread_is_terminated(&self, thread: &DexValue) -> bool {
@@ -2077,6 +2266,22 @@ impl DexProgram {
             invocation.arguments[1].clone(),
         )
         .then_some(())
+    }
+
+    fn thread_get_name(&self, invocation: &DexInvocation) -> Option<DexValue> {
+        let [thread] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        // cite: libcore Thread.java#getName, name
+        if let Some(name @ DexValue::String(_)) =
+            self.read_stored_instance_field(thread, &thread_name_field())
+        {
+            return Some(name);
+        }
+        // cite: art runtime.cc#Init
+        // cite: art thread.cc#CreatePeer
+        (*thread == main_guest_thread_reference())
+            .then(|| DexValue::String(std::rc::Rc::from("main")))
     }
 
     fn thread_set_name(&self, invocation: &DexInvocation) -> Option<()> {
@@ -2737,7 +2942,10 @@ impl DexProgram {
         Some(())
     }
 
-    pub(in crate::dex_run) fn throwable_stack_trace_text(&self, throwable: &DexValue) -> Option<String> {
+    pub(in crate::dex_run) fn throwable_stack_trace_text(
+        &self,
+        throwable: &DexValue,
+    ) -> Option<String> {
         // cite: libcore Throwable.java#printStackTrace
         let mut dej_vu = std::collections::HashSet::new();
         dej_vu.insert(map_identity_key(throwable));
@@ -2758,7 +2966,9 @@ impl DexProgram {
         // cite: libcore Throwable.java#printEnclosedStackTrace
         let header = self.throwable_header(throwable)?;
         if !dej_vu.insert(map_identity_key(throwable)) {
-            text.push_str(&format!("{prefix}{caption}[CIRCULAR REFERENCE: {header}]\n"));
+            text.push_str(&format!(
+                "{prefix}{caption}[CIRCULAR REFERENCE: {header}]\n"
+            ));
             return Some(());
         }
         text.push_str(&format!("{prefix}{caption}{header}\n"));
@@ -2774,20 +2984,26 @@ impl DexProgram {
         dej_vu: &mut std::collections::HashSet<String>,
     ) -> Option<()> {
         // cite: libcore Throwable.java#printStackTrace, printEnclosedStackTrace, getSuppressed, getCause
-        let suppressed = match self.read_stored_instance_field(throwable, &throwable_suppressed_field())
-        {
-            Some(array) => self
-                .runtime
-                .borrow()
-                .array_entries
-                .get(&map_identity_key(&array))
-                .cloned()
-                .unwrap_or_default(),
-            None => Vec::new(),
-        };
+        let suppressed =
+            match self.read_stored_instance_field(throwable, &throwable_suppressed_field()) {
+                Some(array) => self
+                    .runtime
+                    .borrow()
+                    .array_entries
+                    .get(&map_identity_key(&array))
+                    .cloned()
+                    .unwrap_or_default(),
+                None => Vec::new(),
+            };
         let suppressed_prefix = format!("{prefix}\t");
         for entry in &suppressed {
-            self.append_enclosed_stack_trace(text, entry, "Suppressed: ", &suppressed_prefix, dej_vu)?;
+            self.append_enclosed_stack_trace(
+                text,
+                entry,
+                "Suppressed: ",
+                &suppressed_prefix,
+                dej_vu,
+            )?;
         }
         let cause = self
             .read_stored_instance_field(throwable, &throwable_cause_field())
@@ -2940,6 +3156,8 @@ fn is_supported_throwable_class(class_descriptor: &str) -> bool {
             | "Ljava/net/UnknownHostException;"
             // cite: libcore NoClassDefFoundError.java#NoClassDefFoundError
             | "Ljava/lang/NoClassDefFoundError;"
+            // cite: libcore NoSuchFieldException.java#NoSuchFieldException
+            | "Ljava/lang/NoSuchFieldException;"
     )
 }
 

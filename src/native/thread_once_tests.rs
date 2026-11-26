@@ -1,5 +1,5 @@
 use super::test_deadline::bounded_test;
-use super::thread_test_support::{each_variant};
+use super::thread_test_support::each_variant;
 
 bounded_test! {
     fn bionic_pthread_once_runs_the_routine_exactly_once_and_ends_in_state_two() {

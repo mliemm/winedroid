@@ -51,6 +51,49 @@ impl DexProgram {
             return self.thread_pool_executor_allow_core_thread_time_out(invocation);
         }
 
+        if method.matches_builtin_signature(
+            "Ljava/util/concurrent/ScheduledThreadPoolExecutor;",
+            "submit",
+            "(Ljava/lang/Runnable;)Ljava/util/concurrent/Future;",
+        ) {
+            // cite: libcore ScheduledThreadPoolExecutor.java#submit
+            let invocation = invocation?;
+            let [executor, runnable] = invocation.arguments.as_slice() else {
+                return None;
+            };
+            let scheduled = DexInvocation {
+                arguments: smallvec::smallvec![
+                    executor.clone(),
+                    runnable.clone(),
+                    DexValue::Long(0),
+                    DexValue::Long(0),
+                    DexValue::Reference(Rc::from("Ljava/util/concurrent/TimeUnit;.NANOSECONDS")),
+                ],
+                ..invocation.clone()
+            };
+            return self.scheduled_thread_pool_executor_schedule_runnable(&scheduled);
+        }
+
+        if method.matches_builtin_signature(
+            "Ljava/util/concurrent/ScheduledThreadPoolExecutor;",
+            "schedule",
+            "(Ljava/lang/Runnable;JLjava/util/concurrent/TimeUnit;)Ljava/util/concurrent/ScheduledFuture;",
+        ) {
+            let invocation = invocation?;
+
+            return self.scheduled_thread_pool_executor_schedule_runnable(invocation);
+        }
+
+        if method.matches_builtin_signature(
+            "Ljava/util/concurrent/ThreadPoolExecutor;",
+            "setKeepAliveTime",
+            "(JLjava/util/concurrent/TimeUnit;)V",
+        ) {
+            let invocation = invocation?;
+
+            return self.thread_pool_executor_set_keep_alive_time(invocation);
+        }
+
         if method.class_descriptor == "Ljava/util/concurrent/FutureTask;"
             && method.name == "<init>"
             && method
@@ -159,13 +202,27 @@ impl DexProgram {
                 && invocation.arguments.get(1) == Some(&DexValue::Null)
             {
                 // cite: libcore ThreadPoolExecutor.java#execute
-                return Some(DexExecutionResult::Throw(self.allocate_object(
-                    "Ljava/lang/NullPointerException;".to_owned(),
-                )));
+                return Some(DexExecutionResult::Throw(
+                    self.allocate_object("Ljava/lang/NullPointerException;".to_owned()),
+                ));
             }
             self.executor_execute(invocation)?;
 
             return Some(DexExecutionResult::Void);
+        }
+
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/util/concurrent/ExecutorService;"
+                | "Ljava/util/concurrent/ScheduledExecutorService;"
+                | "Ljava/util/concurrent/ThreadPoolExecutor;"
+        ) && method.name == "isShutdown"
+            && method.proto.descriptor_is("()Z")
+        {
+            let invocation = invocation?;
+            let value = self.executor_service_is_shutdown(invocation)?;
+
+            return Some(DexExecutionResult::Int(i32::from(value)));
         }
 
         if method.matches_builtin_signature(
@@ -237,6 +294,40 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        if method.class_descriptor == "Ljava/util/concurrent/locks/ReentrantReadWriteLock;"
+            && method.name == "<init>"
+            && matches!(method.proto.descriptor().as_str(), "()V" | "(Z)V")
+        {
+            let invocation = invocation?;
+            self.reentrant_read_write_lock_init(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/util/concurrent/locks/ReentrantReadWriteLock;"
+                | "Ljava/util/concurrent/locks/ReadWriteLock;"
+        ) && matches!(method.name.as_str(), "readLock" | "writeLock")
+        {
+            let invocation = invocation?;
+            let [lock] = invocation.arguments.as_slice() else {
+                return None;
+            };
+            let (field, return_type) = reentrant_read_write_lock_accessor(&method.name)?;
+            if !method.proto.descriptor_is(&format!("(){return_type}"))
+                && !method
+                    .proto
+                    .descriptor_is("()Ljava/util/concurrent/locks/Lock;")
+            {
+                return None;
+            }
+
+            return Some(DexExecutionResult::Value(
+                self.read_stored_instance_field(lock, &field)?,
+            ));
+        }
+
         if method.matches_builtin_signature(
             "Ljava/util/concurrent/ThreadPoolExecutor$AbortPolicy;",
             "<init>",
@@ -246,19 +337,24 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
-        if matches!(
-            method.class_descriptor.as_str(),
-            "Ljava/util/concurrent/locks/Lock;" | "Ljava/util/concurrent/locks/ReentrantLock;"
-        ) && matches!(method.name.as_str(), "lock" | "unlock")
+        if method.matches_builtin_signature(
+            "Ljava/util/concurrent/ThreadPoolExecutor$DiscardOldestPolicy;",
+            "<init>",
+            "()V",
+        ) {
+            // cite: libcore ThreadPoolExecutor.java#DiscardOldestPolicy
+            return Some(DexExecutionResult::Void);
+        }
+
+        if is_builtin_lock_class(&method.class_descriptor)
+            && matches!(method.name.as_str(), "lock" | "unlock")
             && method.proto.descriptor_is("()V")
         {
             return Some(DexExecutionResult::Void);
         }
 
-        if matches!(
-            method.class_descriptor.as_str(),
-            "Ljava/util/concurrent/locks/Lock;" | "Ljava/util/concurrent/locks/ReentrantLock;"
-        ) && method.name == "tryLock"
+        if is_builtin_lock_class(&method.class_descriptor)
+            && method.name == "tryLock"
             && method.proto.descriptor_is("()Z")
         {
             return Some(DexExecutionResult::Int(1));
@@ -1039,5 +1135,57 @@ impl DexProgram {
             }
             _ => None,
         }
+    }
+}
+
+fn is_builtin_lock_class(class_descriptor: &str) -> bool {
+    matches!(
+        class_descriptor,
+        "Ljava/util/concurrent/locks/Lock;"
+            | "Ljava/util/concurrent/locks/ReentrantLock;"
+            | "Ljava/util/concurrent/locks/ReentrantReadWriteLock$ReadLock;"
+            | "Ljava/util/concurrent/locks/ReentrantReadWriteLock$WriteLock;"
+    )
+}
+
+fn reentrant_read_write_lock_accessor(name: &str) -> Option<(DexFieldId, &'static str)> {
+    let (field_name, class_descriptor) = match name {
+        "readLock" => (
+            "readerLock",
+            "Ljava/util/concurrent/locks/ReentrantReadWriteLock$ReadLock;",
+        ),
+        "writeLock" => (
+            "writerLock",
+            "Ljava/util/concurrent/locks/ReentrantReadWriteLock$WriteLock;",
+        ),
+        _ => return None,
+    };
+
+    Some((
+        DexFieldId {
+            class_descriptor: "Ljava/util/concurrent/locks/ReentrantReadWriteLock;".to_owned(),
+            type_descriptor: class_descriptor.to_owned(),
+            name: field_name.to_owned(),
+        },
+        class_descriptor,
+    ))
+}
+
+impl DexProgram {
+    // cite: libcore ReentrantReadWriteLock.java#ReentrantReadWriteLock, readerLock, writerLock
+    fn reentrant_read_write_lock_init(&self, invocation: &DexInvocation) -> Option<()> {
+        let lock = invocation.arguments.first()?;
+        if !dex_value_is_object_like(lock) {
+            return None;
+        }
+        for name in ["readLock", "writeLock"] {
+            let (field, class_descriptor) = reentrant_read_write_lock_accessor(name)?;
+            let child = self.allocate_object(class_descriptor.to_owned());
+            if !self.write_stored_instance_field(lock, &field, child) {
+                return None;
+            }
+        }
+
+        Some(())
     }
 }

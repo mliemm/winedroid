@@ -41,12 +41,17 @@ impl GuestVaList<'static> {
         if (raw.gr_offs < 0 && raw.gr_top == 0) || (raw.vr_offs < 0 && raw.vr_top == 0) {
             return Err(malformed(pointer, "register save area"));
         }
-        Ok(Self { raw, owner: PhantomData })
+        Ok(Self {
+            raw,
+            owner: PhantomData,
+        })
     }
 }
 
 fn malformed(pointer: u64, what: &str) -> WinedroidError {
-    WinedroidError::new(format!("malformed va_list at {pointer:#x}: {what}; next missing primitive: malformed va_list"))
+    WinedroidError::new(format!(
+        "malformed va_list at {pointer:#x}: {what}; next missing primitive: malformed va_list"
+    ))
 }
 
 impl<'a> GuestVaList<'a> {
@@ -94,7 +99,9 @@ impl<'a> GuestVaList<'a> {
     }
 
     pub fn next_gp(&mut self) -> u64 {
-        let address = self.register_slot(1, false).unwrap_or_else(|| self.stack_slot(8, 8));
+        let address = self
+            .register_slot(1, false)
+            .unwrap_or_else(|| self.stack_slot(8, 8));
         read_word(address)
     }
 
@@ -115,12 +122,16 @@ impl<'a> GuestVaList<'a> {
     }
 
     pub fn next_f64(&mut self) -> f64 {
-        let address = self.register_slot(1, true).unwrap_or_else(|| self.stack_slot(8, 8));
+        let address = self
+            .register_slot(1, true)
+            .unwrap_or_else(|| self.stack_slot(8, 8));
         f64::from_bits(read_word(address))
     }
 
     pub fn next_quad(&mut self) -> u128 {
-        let address = self.register_slot(1, true).unwrap_or_else(|| self.stack_slot(16, 16));
+        let address = self
+            .register_slot(1, true)
+            .unwrap_or_else(|| self.stack_slot(16, 16));
         read_quad(address)
     }
 
@@ -128,11 +139,18 @@ impl<'a> GuestVaList<'a> {
         if self.raw.gr_offs < 0 {
             self.raw.gr_offs = self.raw.gr_offs.wrapping_add(15) & !15;
         }
-        let address = self.register_slot(2, false).unwrap_or_else(|| self.stack_slot(16, 16));
+        let address = self
+            .register_slot(2, false)
+            .unwrap_or_else(|| self.stack_slot(16, 16));
         read_quad(address)
     }
 
-    pub fn next_composite(&mut self, size: usize, align: usize, hfa: Option<(usize, usize)>) -> Vec<u8> {
+    pub fn next_composite(
+        &mut self,
+        size: usize,
+        align: usize,
+        hfa: Option<(usize, usize)>,
+    ) -> Vec<u8> {
         if size > 16 && hfa.is_none() {
             let pointer = self.next_gp();
             return unsafe { std::slice::from_raw_parts(pointer as *const u8, size) }.to_vec();
@@ -143,12 +161,16 @@ impl<'a> GuestVaList<'a> {
                 Some(start) => {
                     for index in 0..count {
                         let source = start.wrapping_add(16 * index as u64);
-                        bytes.extend_from_slice(unsafe { std::slice::from_raw_parts(source as *const u8, element) });
+                        bytes.extend_from_slice(unsafe {
+                            std::slice::from_raw_parts(source as *const u8, element)
+                        });
                     }
                 }
                 None => {
                     let at = self.stack_slot(size as u64, 8);
-                    bytes.extend_from_slice(unsafe { std::slice::from_raw_parts(at as *const u8, size) });
+                    bytes.extend_from_slice(unsafe {
+                        std::slice::from_raw_parts(at as *const u8, size)
+                    });
                 }
             }
             return bytes;
@@ -157,7 +179,9 @@ impl<'a> GuestVaList<'a> {
         if align == 16 && self.raw.gr_offs < 0 {
             self.raw.gr_offs = self.raw.gr_offs.wrapping_add(15) & !15;
         }
-        let address = self.register_slot(slots, false).unwrap_or_else(|| self.stack_slot(size as u64, align.max(8) as u64));
+        let address = self
+            .register_slot(slots, false)
+            .unwrap_or_else(|| self.stack_slot(size as u64, align.max(8) as u64));
         bytes.extend_from_slice(unsafe { std::slice::from_raw_parts(address as *const u8, size) });
         bytes
     }

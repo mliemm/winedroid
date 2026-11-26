@@ -36,7 +36,11 @@ const FIXTURE_LIBRARIES: [&str; 20] = [
 fn crc_feed(crc: u32, byte: u8) -> u32 {
     let mut crc = crc ^ (u32::from(byte) << 24);
     for _ in 0..8 {
-        crc = if crc & 0x8000_0000 != 0 { (crc << 1) ^ 0x04C1_1DB7 } else { crc << 1 };
+        crc = if crc & 0x8000_0000 != 0 {
+            (crc << 1) ^ 0x04C1_1DB7
+        } else {
+            crc << 1
+        };
     }
     crc
 }
@@ -97,18 +101,37 @@ fn fixture_manifest_sources_and_binaries_match_the_files_on_disk() {
     let manifest = read_manifest(&fixtures.join("bin/manifest.txt"));
 
     let sources = checksummed(&manifest, "source");
-    let mut source_names: Vec<String> = files_in(&fixtures.join("src")).iter().map(|name| format!("src/{name}")).collect();
+    let mut source_names: Vec<String> = files_in(&fixtures.join("src"))
+        .iter()
+        .map(|name| format!("src/{name}"))
+        .collect();
     source_names.push("include/jni.h".to_owned());
-    assert_eq!(sources, checksums_on_disk(&fixtures, &source_names), "a source changed without rebuilding the fixtures");
+    assert_eq!(
+        sources,
+        checksums_on_disk(&fixtures, &source_names),
+        "a source changed without rebuilding the fixtures"
+    );
 
     let binaries = checksummed(&manifest, "binary");
     let binary_names: Vec<String> = VARIANT_DIRECTORIES
         .iter()
-        .flat_map(|directory| FIXTURE_LIBRARIES.iter().map(move |library| format!("{directory}/{library}")))
+        .flat_map(|directory| {
+            FIXTURE_LIBRARIES
+                .iter()
+                .map(move |library| format!("{directory}/{library}"))
+        })
         .collect();
-    assert_eq!(binaries, checksums_on_disk(&fixtures.join("bin"), &binary_names), "a binary differs from the manifest");
+    assert_eq!(
+        binaries,
+        checksums_on_disk(&fixtures.join("bin"), &binary_names),
+        "a binary differs from the manifest"
+    );
     for directory in VARIANT_DIRECTORIES {
-        assert_eq!(files_in(&fixtures.join("bin").join(directory)), FIXTURE_LIBRARIES, "{directory} file set");
+        assert_eq!(
+            files_in(&fixtures.join("bin").join(directory)),
+            FIXTURE_LIBRARIES,
+            "{directory} file set"
+        );
     }
 }
 
@@ -147,7 +170,11 @@ fn fixture_build_command_reproduces_the_checked_in_binaries_byte_for_byte() {
     let expected = read_manifest(&checked_in.join("manifest.txt"));
     let rebuilt = read_manifest(&output.join("manifest.txt"));
     if expected[..2] != rebuilt[..2] {
-        eprintln!("skipped: toolchain {:?} differs from the recorded {:?}", &rebuilt[..2], &expected[..2]);
+        eprintln!(
+            "skipped: toolchain {:?} differs from the recorded {:?}",
+            &rebuilt[..2],
+            &expected[..2]
+        );
         fs::remove_dir_all(&output).unwrap();
         return;
     }

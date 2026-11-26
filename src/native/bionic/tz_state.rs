@@ -45,7 +45,11 @@ fn load_file(name: &str) -> Option<Zone> {
     if name.is_empty() || name.starts_with('/') || name.contains("..") {
         return None;
     }
-    ZONE_DIRECTORIES.iter().find_map(|directory| std::fs::read(format!("{directory}/{name}")).ok().and_then(|bytes| parse(&bytes)))
+    ZONE_DIRECTORIES.iter().find_map(|directory| {
+        std::fs::read(format!("{directory}/{name}"))
+            .ok()
+            .and_then(|bytes| parse(&bytes))
+    })
 }
 
 fn load_zone(name: &[u8]) -> Zone {
@@ -55,39 +59,78 @@ fn load_zone(name: &[u8]) -> Zone {
         Some(rest) => (true, rest.to_string()),
         None => (false, text),
     };
-    load_file(&plain).or_else(|| if explicit { None } else { parse_posix(&plain).map(Zone::from_posix) }).unwrap_or_else(Zone::utc)
+    load_file(&plain)
+        .or_else(|| {
+            if explicit {
+                None
+            } else {
+                parse_posix(&plain).map(Zone::from_posix)
+            }
+        })
+        .unwrap_or_else(Zone::utc)
 }
 
 fn publish_names(zone: &Zone) {
     let (standard, daylight) = zone.standard_and_daylight();
-    write_value::<usize>(*TZNAME.get().expect("tzname registered"), intern(&standard.abbreviation));
-    write_value::<usize>(*TZNAME.get().expect("tzname registered") + 8, intern(&daylight.as_ref().unwrap_or(&standard).abbreviation));
-    write_value::<i64>(*TIMEZONE.get().expect("timezone registered"), -i64::from(standard.offset));
-    write_value::<i32>(*DAYLIGHT.get().expect("daylight registered"), i32::from(daylight.is_some()));
+    write_value::<usize>(
+        *TZNAME.get().expect("tzname registered"),
+        intern(&standard.abbreviation),
+    );
+    write_value::<usize>(
+        *TZNAME.get().expect("tzname registered") + 8,
+        intern(&daylight.as_ref().unwrap_or(&standard).abbreviation),
+    );
+    write_value::<i64>(
+        *TIMEZONE.get().expect("timezone registered"),
+        -i64::from(standard.offset),
+    );
+    write_value::<i32>(
+        *DAYLIGHT.get().expect("daylight registered"),
+        i32::from(daylight.is_some()),
+    );
 }
 
 pub fn current_zone() -> Arc<Zone> {
     let name = selected_name();
     let mut guard = STATE.lock().expect("time zone state");
-    let reload = guard.as_ref().is_none_or(|state| state.name.as_deref() != Some(&name));
+    let reload = guard
+        .as_ref()
+        .is_none_or(|state| state.name.as_deref() != Some(&name));
     if reload {
         let zone = Arc::new(load_zone(&name));
         publish_names(&zone);
-        *guard = Some(State { name: Some(name), zone });
+        *guard = Some(State {
+            name: Some(name),
+            zone,
+        });
     }
     guard.as_ref().expect("state was just set").zone.clone()
 }
 
 fn fill_local(address: usize, seconds: i64, zone: &Zone) -> Result<(), i32> {
     let kind = zone.at(seconds);
-    let parts = from_seconds(seconds.checked_add(i64::from(kind.offset)).ok_or(EOVERFLOW)?)?;
-    write_tm(address, &parts, i32::from(kind.is_dst), i64::from(kind.offset), intern(&kind.abbreviation));
+    let parts = from_seconds(
+        seconds
+            .checked_add(i64::from(kind.offset))
+            .ok_or(EOVERFLOW)?,
+    )?;
+    write_tm(
+        address,
+        &parts,
+        i32::from(kind.is_dst),
+        i64::from(kind.offset),
+        intern(&kind.abbreviation),
+    );
     Ok(())
 }
 
 fn matching_offsets(zone: &Zone, local: i64, hint: i32) -> i64 {
     // cite: bionic localtime.c#time2sub
-    let probes = [zone.at(local - 86_400).offset, zone.at(local + 86_400).offset, zone.at(local).offset];
+    let probes = [
+        zone.at(local - 86_400).offset,
+        zone.at(local + 86_400).offset,
+        zone.at(local).offset,
+    ];
     let mut candidates: Vec<(i64, bool)> = Vec::new();
     for offset in probes {
         let seconds = local - i64::from(offset);
@@ -100,12 +143,19 @@ fn matching_offsets(zone: &Zone, local: i64, hint: i32) -> i64 {
         return local - i64::from(zone.at(local - 86_400).offset);
     }
     candidates.sort_unstable();
-    candidates.iter().find(|(_, is_dst)| hint >= 0 && *is_dst == (hint > 0)).or(candidates.first()).map(|(seconds, _)| *seconds).expect("candidates is not empty")
+    candidates
+        .iter()
+        .find(|(_, is_dst)| hint >= 0 && *is_dst == (hint > 0))
+        .or(candidates.first())
+        .map(|(seconds, _)| *seconds)
+        .expect("candidates is not empty")
 }
 
 pub fn mktime_copy(address: usize) -> Result<i64, i32> {
     let mut scratch = [0u8; TM_SIZE];
-    super::guest_mem::write_bytes(scratch.as_mut_ptr() as usize, unsafe { std::slice::from_raw_parts(address as *const u8, TM_SIZE) });
+    super::guest_mem::write_bytes(scratch.as_mut_ptr() as usize, unsafe {
+        std::slice::from_raw_parts(address as *const u8, TM_SIZE)
+    });
     mktime(scratch.as_mut_ptr() as usize)
 }
 
@@ -128,7 +178,11 @@ pub fn register() {
     });
     for name in ["localtime_r", "localtime"] {
         in_libc(name, move |context| {
-            let destination = if context.symbol() == "localtime" { leaked_buffer(&LOCALTIME_BUFFER, TM_SIZE) } else { context.arg_ptr(1) };
+            let destination = if context.symbol() == "localtime" {
+                leaked_buffer(&LOCALTIME_BUFFER, TM_SIZE)
+            } else {
+                context.arg_ptr(1)
+            };
             let zone = current_zone();
             match fill_local(destination, read_value::<i64>(context.arg_ptr(0)), &zone) {
                 Ok(()) => context.ret_ptr(destination),
@@ -150,7 +204,11 @@ pub fn register() {
     }
     for name in ["ctime", "ctime_r"] {
         in_libc(name, move |context| {
-            let buffer = if context.symbol() == "ctime" { leaked_buffer(&CTIME_STATIC, 80) } else { context.arg_ptr(1) };
+            let buffer = if context.symbol() == "ctime" {
+                leaked_buffer(&CTIME_STATIC, 80)
+            } else {
+                context.arg_ptr(1)
+            };
             let zone = current_zone();
             let mut scratch = [0u8; TM_SIZE];
             let address = scratch.as_mut_ptr() as usize;

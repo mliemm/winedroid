@@ -49,7 +49,11 @@ fn assert_slots_equal(header: &[Slot], art: &[Slot]) {
         .filter(|(left, right)| left != right)
         .map(|(left, right)| format!("header {left:?} art {right:?}"))
         .collect();
-    assert!(differing.is_empty(), "slots differ from ART:\n{}", differing.join("\n"));
+    assert!(
+        differing.is_empty(),
+        "slots differ from ART:\n{}",
+        differing.join("\n")
+    );
 }
 
 #[test]
@@ -59,8 +63,10 @@ fn art_jni_internal_cc_gjninativeinterface_matches_the_header_slot_for_slot() {
         return;
     };
     let header = read_header();
-    let internal = fs::read_to_string(root.join("art/runtime/jni/jni_internal.cc")).expect("jni_internal.cc");
-    let vm_ext = fs::read_to_string(root.join("art/runtime/jni/java_vm_ext.cc")).expect("java_vm_ext.cc");
+    let internal =
+        fs::read_to_string(root.join("art/runtime/jni/jni_internal.cc")).expect("jni_internal.cc");
+    let vm_ext =
+        fs::read_to_string(root.join("art/runtime/jni/java_vm_ext.cc")).expect("java_vm_ext.cc");
 
     assert_slots_equal(
         &header_slots(&header, "JNINativeInterface"),
@@ -77,17 +83,27 @@ fn art_slot_parser_reports_a_swapped_pair() {
     let reference = "x gJniNativeInterface = {\n nullptr,\n JNIImpl::A,\n JNIImpl::B,\n};\nstatic jint A(JNIEnv*) {}\nstatic jint B(JNIEnv*) {}";
     let header = "struct JNINativeInterface {\n void* reserved0;\n jint (*B)(JNIEnv*);\n jint (*A)(JNIEnv*);\n};";
 
-    assert_ne!(header_slots(header, "JNINativeInterface"), art_slots(reference, "gJniNativeInterface = {", "JNIImpl::"));
+    assert_ne!(
+        header_slots(header, "JNINativeInterface"),
+        art_slots(reference, "gJniNativeInterface = {", "JNIImpl::")
+    );
 }
 
 #[test]
 fn art_slot_parser_reports_a_changed_parameter_type_and_ignores_parameter_names() {
     let reference = "x gJniNativeInterface = {\n nullptr,\n JNIImpl::A,\n};\nstatic jint A(JNIEnv* env, jclass, const char* name) {}";
     let same = "struct JNINativeInterface {\n void* reserved0;\n jint (*A)(JNIEnv *, jclass c, const char *);\n};";
-    let changed = "struct JNINativeInterface {\n void* reserved0;\n jint (*A)(JNIEnv *, jclass, int);\n};";
+    let changed =
+        "struct JNINativeInterface {\n void* reserved0;\n jint (*A)(JNIEnv *, jclass, int);\n};";
     let wanted = art_slots(reference, "gJniNativeInterface = {", "JNIImpl::");
 
     assert_eq!(header_slots(same, "JNINativeInterface"), wanted);
     assert_ne!(header_slots(changed, "JNINativeInterface"), wanted);
-    assert_eq!(wanted[1], Slot { name: "A".to_owned(), signature: "jint(JNIEnv*,jclass,constchar*)".to_owned() });
+    assert_eq!(
+        wanted[1],
+        Slot {
+            name: "A".to_owned(),
+            signature: "jint(JNIEnv*,jclass,constchar*)".to_owned()
+        }
+    );
 }

@@ -37,18 +37,26 @@ fn find_fold(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() {
         return Some(0);
     }
-    haystack.windows(needle.len()).position(|window| window.eq_ignore_ascii_case(needle))
+    haystack
+        .windows(needle.len())
+        .position(|window| window.eq_ignore_ascii_case(needle))
 }
 
 fn memrchr(base: usize, byte: u8, length: usize) -> usize {
     // cite: bionic memrchr.c#memrchr
-    (0..length).rev().find(|index| unsafe { *((base + index) as *const u8) } == byte).map_or(0, |index| base + index)
+    (0..length)
+        .rev()
+        .find(|index| unsafe { *((base + index) as *const u8) } == byte)
+        .map_or(0, |index| base + index)
 }
 
 fn strchrnul(base: usize, byte: u8) -> usize {
     // cite: bionic strchrnul.cpp#strchrnul
     let bytes = cstr_bytes(base);
-    base + bytes.iter().position(|candidate| *candidate == byte).unwrap_or(bytes.len())
+    base + bytes
+        .iter()
+        .position(|candidate| *candidate == byte)
+        .unwrap_or(bytes.len())
 }
 
 pub fn strlcat(destination: usize, source: usize, size: usize) -> usize {
@@ -103,58 +111,147 @@ fn strtok(start: usize, delimiters: usize) -> usize {
 
 fn register_memory() {
     in_libc("memcpy", |context| {
-        unsafe { libc::memmove(context.arg_ptr(0) as *mut _, context.arg_ptr(1) as *const _, context.arg_u64(2) as usize) };
+        unsafe {
+            libc::memmove(
+                context.arg_ptr(0) as *mut _,
+                context.arg_ptr(1) as *const _,
+                context.arg_u64(2) as usize,
+            )
+        };
         context.ret_ptr(context.arg_ptr(0));
     });
     in_libc("memmove", |context| {
-        unsafe { libc::memmove(context.arg_ptr(0) as *mut _, context.arg_ptr(1) as *const _, context.arg_u64(2) as usize) };
+        unsafe {
+            libc::memmove(
+                context.arg_ptr(0) as *mut _,
+                context.arg_ptr(1) as *const _,
+                context.arg_u64(2) as usize,
+            )
+        };
         context.ret_ptr(context.arg_ptr(0));
     });
     in_libc("mempcpy", |context| {
         let length = context.arg_u64(2) as usize;
-        unsafe { libc::memmove(context.arg_ptr(0) as *mut _, context.arg_ptr(1) as *const _, length) };
+        unsafe {
+            libc::memmove(
+                context.arg_ptr(0) as *mut _,
+                context.arg_ptr(1) as *const _,
+                length,
+            )
+        };
         context.ret_ptr(context.arg_ptr(0) + length);
     });
     in_libc("memset", |context| {
-        unsafe { libc::memset(context.arg_ptr(0) as *mut _, context.arg_i32(1), context.arg_u64(2) as usize) };
+        unsafe {
+            libc::memset(
+                context.arg_ptr(0) as *mut _,
+                context.arg_i32(1),
+                context.arg_u64(2) as usize,
+            )
+        };
         context.ret_ptr(context.arg_ptr(0));
     });
     in_libc("memcmp", |context| {
-        let result = unsafe { libc::memcmp(context.arg_ptr(0) as *const _, context.arg_ptr(1) as *const _, context.arg_u64(2) as usize) };
+        let result = unsafe {
+            libc::memcmp(
+                context.arg_ptr(0) as *const _,
+                context.arg_ptr(1) as *const _,
+                context.arg_u64(2) as usize,
+            )
+        };
         context.ret_i32(result);
     });
     in_libc("memchr", |context| {
-        let found = unsafe { libc::memchr(context.arg_ptr(0) as *const _, context.arg_i32(1), context.arg_u64(2) as usize) };
+        let found = unsafe {
+            libc::memchr(
+                context.arg_ptr(0) as *const _,
+                context.arg_i32(1),
+                context.arg_u64(2) as usize,
+            )
+        };
         context.ret_ptr(found as usize);
     });
-    in_libc("memrchr", |context| context.ret_ptr(memrchr(context.arg_ptr(0), context.arg_i32(1) as u8, context.arg_u64(2) as usize)));
+    in_libc("memrchr", |context| {
+        context.ret_ptr(memrchr(
+            context.arg_ptr(0),
+            context.arg_i32(1) as u8,
+            context.arg_u64(2) as usize,
+        ))
+    });
     in_libc("memmem", |context| {
-        let found = unsafe { libc::memmem(context.arg_ptr(0) as *const _, context.arg_u64(1) as usize, context.arg_ptr(2) as *const _, context.arg_u64(3) as usize) };
+        let found = unsafe {
+            libc::memmem(
+                context.arg_ptr(0) as *const _,
+                context.arg_u64(1) as usize,
+                context.arg_ptr(2) as *const _,
+                context.arg_u64(3) as usize,
+            )
+        };
         context.ret_ptr(found as usize);
     });
     in_libc("memccpy", |context| {
-        let found = unsafe { libc::memccpy(context.arg_ptr(0) as *mut _, context.arg_ptr(1) as *const _, context.arg_i32(2), context.arg_u64(3) as usize) };
+        let found = unsafe {
+            libc::memccpy(
+                context.arg_ptr(0) as *mut _,
+                context.arg_ptr(1) as *const _,
+                context.arg_i32(2),
+                context.arg_u64(3) as usize,
+            )
+        };
         context.ret_ptr(found as usize);
     });
 }
 
 fn register_length_and_compare() {
-    in_libc("strlen", |context| context.ret_u64(cstr_bytes(context.arg_ptr(0)).len() as u64));
-    in_libc("strnlen", |context| context.ret_u64(unsafe { libc::strnlen(text(context.arg_ptr(0)), context.arg_u64(1) as usize) } as u64));
-    in_libc("strcmp", |context| context.ret_i32(unsafe { libc::strcmp(text(context.arg_ptr(0)), text(context.arg_ptr(1))) }));
-    in_libc("strncmp", |context| context.ret_i32(unsafe { libc::strncmp(text(context.arg_ptr(0)), text(context.arg_ptr(1)), context.arg_u64(2) as usize) }));
-    in_libc("strcoll", |context| context.ret_i32(unsafe { libc::strcmp(text(context.arg_ptr(0)), text(context.arg_ptr(1))) }));
+    in_libc("strlen", |context| {
+        context.ret_u64(cstr_bytes(context.arg_ptr(0)).len() as u64)
+    });
+    in_libc("strnlen", |context| {
+        context.ret_u64(unsafe {
+            libc::strnlen(text(context.arg_ptr(0)), context.arg_u64(1) as usize)
+        } as u64)
+    });
+    in_libc("strcmp", |context| {
+        context.ret_i32(unsafe { libc::strcmp(text(context.arg_ptr(0)), text(context.arg_ptr(1))) })
+    });
+    in_libc("strncmp", |context| {
+        context.ret_i32(unsafe {
+            libc::strncmp(
+                text(context.arg_ptr(0)),
+                text(context.arg_ptr(1)),
+                context.arg_u64(2) as usize,
+            )
+        })
+    });
+    in_libc("strcoll", |context| {
+        context.ret_i32(unsafe { libc::strcmp(text(context.arg_ptr(0)), text(context.arg_ptr(1))) })
+    });
     in_libc("strcoll_l", |context| {
         // cite: bionic string_l.cpp#strcoll_l
-        context.ret_i32(unsafe { libc::strcmp(text(context.arg_ptr(0)), text(context.arg_ptr(1))) });
+        context
+            .ret_i32(unsafe { libc::strcmp(text(context.arg_ptr(0)), text(context.arg_ptr(1))) });
     });
     in_libc("strcasecmp", |context| {
-        let (left, right) = (cstr_bytes(context.arg_ptr(0)), cstr_bytes(context.arg_ptr(1)));
-        context.ret_i32(compare_ascii_fold(left, right, left.len().max(right.len()) + 1));
+        let (left, right) = (
+            cstr_bytes(context.arg_ptr(0)),
+            cstr_bytes(context.arg_ptr(1)),
+        );
+        context.ret_i32(compare_ascii_fold(
+            left,
+            right,
+            left.len().max(right.len()) + 1,
+        ));
     });
     in_libc("strncasecmp", |context| {
-        let (left, right) = (cstr_bytes(context.arg_ptr(0)), cstr_bytes(context.arg_ptr(1)));
-        context.ret_i32(compare_ascii_fold(left, right, (context.arg_u64(2) as usize).min(left.len().max(right.len()) + 1)));
+        let (left, right) = (
+            cstr_bytes(context.arg_ptr(0)),
+            cstr_bytes(context.arg_ptr(1)),
+        );
+        context.ret_i32(compare_ascii_fold(
+            left,
+            right,
+            (context.arg_u64(2) as usize).min(left.len().max(right.len()) + 1),
+        ));
     });
     in_libc("strxfrm", |context| {
         let source = cstr_bytes(context.arg_ptr(1));
@@ -180,25 +277,63 @@ fn register_length_and_compare() {
 }
 
 fn register_search() {
-    in_libc("strchr", |context| context.ret_ptr(unsafe { libc::strchr(text(context.arg_ptr(0)), context.arg_i32(1)) } as usize));
-    in_libc("strrchr", |context| context.ret_ptr(unsafe { libc::strrchr(text(context.arg_ptr(0)), context.arg_i32(1)) } as usize));
-    in_libc("strchrnul", |context| context.ret_ptr(strchrnul(context.arg_ptr(0), context.arg_i32(1) as u8)));
-    in_libc("strstr", |context| context.ret_ptr(unsafe { libc::strstr(text(context.arg_ptr(0)), text(context.arg_ptr(1))) } as usize));
+    in_libc("strchr", |context| {
+        context
+            .ret_ptr(unsafe { libc::strchr(text(context.arg_ptr(0)), context.arg_i32(1)) } as usize)
+    });
+    in_libc("strrchr", |context| {
+        context.ret_ptr(
+            unsafe { libc::strrchr(text(context.arg_ptr(0)), context.arg_i32(1)) } as usize,
+        )
+    });
+    in_libc("strchrnul", |context| {
+        context.ret_ptr(strchrnul(context.arg_ptr(0), context.arg_i32(1) as u8))
+    });
+    in_libc("strstr", |context| {
+        context.ret_ptr(
+            unsafe { libc::strstr(text(context.arg_ptr(0)), text(context.arg_ptr(1))) } as usize,
+        )
+    });
     in_libc("strcasestr", |context| {
         let haystack = context.arg_ptr(0);
         let found = find_fold(cstr_bytes(haystack), cstr_bytes(context.arg_ptr(1)));
         context.ret_ptr(found.map_or(0, |offset| haystack + offset));
     });
-    in_libc("strspn", |context| context.ret_u64(unsafe { libc::strspn(text(context.arg_ptr(0)), text(context.arg_ptr(1))) } as u64));
-    in_libc("strcspn", |context| context.ret_u64(unsafe { libc::strcspn(text(context.arg_ptr(0)), text(context.arg_ptr(1))) } as u64));
-    in_libc("strpbrk", |context| context.ret_ptr(unsafe { libc::strpbrk(text(context.arg_ptr(0)), text(context.arg_ptr(1))) } as usize));
-    in_libc("strtok", |context| context.ret_ptr(strtok(context.arg_ptr(0), context.arg_ptr(1))));
+    in_libc("strspn", |context| {
+        context.ret_u64(
+            unsafe { libc::strspn(text(context.arg_ptr(0)), text(context.arg_ptr(1))) } as u64,
+        )
+    });
+    in_libc("strcspn", |context| {
+        context.ret_u64(
+            unsafe { libc::strcspn(text(context.arg_ptr(0)), text(context.arg_ptr(1))) } as u64,
+        )
+    });
+    in_libc("strpbrk", |context| {
+        context.ret_ptr(
+            unsafe { libc::strpbrk(text(context.arg_ptr(0)), text(context.arg_ptr(1))) } as usize,
+        )
+    });
+    in_libc("strtok", |context| {
+        context.ret_ptr(strtok(context.arg_ptr(0), context.arg_ptr(1)))
+    });
     in_libc("strtok_r", |context| {
-        let token = unsafe { libc::strtok_r(context.arg_ptr(0) as *mut c_char, text(context.arg_ptr(1)), context.arg_ptr(2) as *mut *mut c_char) };
+        let token = unsafe {
+            libc::strtok_r(
+                context.arg_ptr(0) as *mut c_char,
+                text(context.arg_ptr(1)),
+                context.arg_ptr(2) as *mut *mut c_char,
+            )
+        };
         context.ret_ptr(token as usize);
     });
     in_libc("strsep", |context| {
-        let token = unsafe { host::strsep(context.arg_ptr(0) as *mut *mut c_char, text(context.arg_ptr(1))) };
+        let token = unsafe {
+            host::strsep(
+                context.arg_ptr(0) as *mut *mut c_char,
+                text(context.arg_ptr(1)),
+            )
+        };
         context.ret_ptr(token as usize);
     });
 }
@@ -210,15 +345,33 @@ fn register_copy() {
     });
     in_libc("stpcpy", |context| {
         let length = cstr_bytes(context.arg_ptr(1)).len();
-        unsafe { libc::memmove(context.arg_ptr(0) as *mut _, context.arg_ptr(1) as *const _, length + 1) };
+        unsafe {
+            libc::memmove(
+                context.arg_ptr(0) as *mut _,
+                context.arg_ptr(1) as *const _,
+                length + 1,
+            )
+        };
         context.ret_ptr(context.arg_ptr(0) + length);
     });
     in_libc("strncpy", |context| {
-        unsafe { libc::strncpy(context.arg_ptr(0) as *mut c_char, text(context.arg_ptr(1)), context.arg_u64(2) as usize) };
+        unsafe {
+            libc::strncpy(
+                context.arg_ptr(0) as *mut c_char,
+                text(context.arg_ptr(1)),
+                context.arg_u64(2) as usize,
+            )
+        };
         context.ret_ptr(context.arg_ptr(0));
     });
     in_libc("stpncpy", |context| {
-        let end = unsafe { libc::stpncpy(context.arg_ptr(0) as *mut c_char, text(context.arg_ptr(1)), context.arg_u64(2) as usize) };
+        let end = unsafe {
+            libc::stpncpy(
+                context.arg_ptr(0) as *mut c_char,
+                text(context.arg_ptr(1)),
+                context.arg_u64(2) as usize,
+            )
+        };
         context.ret_ptr(end as usize);
     });
     in_libc("strcat", |context| {
@@ -226,14 +379,32 @@ fn register_copy() {
         context.ret_ptr(context.arg_ptr(0));
     });
     in_libc("strncat", |context| {
-        unsafe { libc::strncat(context.arg_ptr(0) as *mut c_char, text(context.arg_ptr(1)), context.arg_u64(2) as usize) };
+        unsafe {
+            libc::strncat(
+                context.arg_ptr(0) as *mut c_char,
+                text(context.arg_ptr(1)),
+                context.arg_u64(2) as usize,
+            )
+        };
         context.ret_ptr(context.arg_ptr(0));
     });
     in_libc("strlcpy", |context| {
-        let length = unsafe { host::strlcpy(context.arg_ptr(0) as *mut c_char, text(context.arg_ptr(1)), context.arg_u64(2) as usize) };
+        let length = unsafe {
+            host::strlcpy(
+                context.arg_ptr(0) as *mut c_char,
+                text(context.arg_ptr(1)),
+                context.arg_u64(2) as usize,
+            )
+        };
         context.ret_u64(length as u64);
     });
-    in_libc("strlcat", |context| context.ret_u64(strlcat(context.arg_ptr(0), context.arg_ptr(1), context.arg_u64(2) as usize) as u64));
+    in_libc("strlcat", |context| {
+        context.ret_u64(strlcat(
+            context.arg_ptr(0),
+            context.arg_ptr(1),
+            context.arg_u64(2) as usize,
+        ) as u64)
+    });
     in_libc("strdup", |context| {
         let copy = unsafe { libc::strdup(text(context.arg_ptr(0))) };
         context.ret_ptr(copy as usize);

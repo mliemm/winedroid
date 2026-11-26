@@ -66,7 +66,9 @@ pub struct SymbolTable {
 
 pub fn gnu_hash(name: &[u8]) -> u32 {
     // cite: bionic linker_gnu_hash.h#calculate_gnu_hash_simple
-    name.iter().fold(5381u32, |hash, byte| hash.wrapping_add(hash << 5).wrapping_add(u32::from(*byte)))
+    name.iter().fold(5381u32, |hash, byte| {
+        hash.wrapping_add(hash << 5).wrapping_add(u32::from(*byte))
+    })
 }
 
 pub fn elf_hash(name: &[u8]) -> u32 {
@@ -82,19 +84,36 @@ pub fn elf_hash(name: &[u8]) -> u32 {
 }
 
 fn u32_at(image: &MappedImage, vaddr: u64) -> Result<u32> {
-    Ok(u32::from_le_bytes(image.bytes(vaddr, 4)?.try_into().expect("4 bytes")))
+    Ok(u32::from_le_bytes(
+        image.bytes(vaddr, 4)?.try_into().expect("4 bytes"),
+    ))
 }
 
 impl SymbolTable {
     pub fn new(name: &str, image: &MappedImage, dynamic: &DynamicInfo) -> Result<Self> {
-        let gnu = if dynamic.gnu_hash != 0 { Some(read_gnu(name, image, dynamic.gnu_hash)?) } else { None };
-        let sysv = if dynamic.hash != 0 { Some(read_sysv(image, dynamic.hash)?) } else { None };
+        let gnu = if dynamic.gnu_hash != 0 {
+            Some(read_gnu(name, image, dynamic.gnu_hash)?)
+        } else {
+            None
+        };
+        let sysv = if dynamic.hash != 0 {
+            Some(read_sysv(image, dynamic.hash)?)
+        } else {
+            None
+        };
         let count = match (&sysv, &gnu) {
             (Some(sysv), _) => u64::from(sysv.nchain),
             (None, Some(gnu)) => gnu_symbol_count(image, gnu)?,
             (None, None) => 0,
         };
-        Ok(Self { symtab: dynamic.symtab, strtab: dynamic.strtab, strsz: dynamic.strsz, count, gnu, sysv })
+        Ok(Self {
+            symtab: dynamic.symtab,
+            strtab: dynamic.strtab,
+            strsz: dynamic.strsz,
+            count,
+            gnu,
+            sysv,
+        })
     }
 
     pub fn count(&self) -> u64 {
@@ -115,7 +134,10 @@ impl SymbolTable {
 
     pub fn symbol(&self, image: &MappedImage, index: u64) -> Result<Sym> {
         if index >= self.count {
-            return Err(WinedroidError::new(format!("symbol index {index} is outside the symbol table of {} entries", self.count)));
+            return Err(WinedroidError::new(format!(
+                "symbol index {index} is outside the symbol table of {} entries",
+                self.count
+            )));
         }
         let entry = image.bytes(self.symtab + index * SYM_SIZE, SYM_SIZE)?;
         Ok(Sym {
@@ -130,7 +152,10 @@ impl SymbolTable {
     pub fn name_bytes<'a>(&self, image: &'a MappedImage, sym: &Sym) -> Result<&'a [u8]> {
         let offset = u64::from(sym.name);
         if offset >= self.strsz {
-            return Err(WinedroidError::new(format!("strtab out of bounds error; STRSZ={}, name={offset}", self.strsz)));
+            return Err(WinedroidError::new(format!(
+                "strtab out of bounds error; STRSZ={}, name={offset}",
+                self.strsz
+            )));
         }
         image.cstr(self.strtab + offset, self.strsz - offset)
     }
@@ -160,7 +185,10 @@ impl SymbolTable {
         if (word >> bit1) & (word >> bit2) & 1 == 0 {
             return Ok(None);
         }
-        let mut index = u64::from(u32_at(image, gnu.buckets + u64::from(hash % gnu.nbuckets) * 4)?);
+        let mut index = u64::from(u32_at(
+            image,
+            gnu.buckets + u64::from(hash % gnu.nbuckets) * 4,
+        )?);
         if index == 0 {
             return Ok(None);
         }
@@ -188,7 +216,10 @@ impl SymbolTable {
             return Ok(None);
         };
         let hash = elf_hash(name.as_bytes());
-        let mut index = u64::from(u32_at(image, sysv.buckets + u64::from(hash % sysv.nbucket) * 4)?);
+        let mut index = u64::from(u32_at(
+            image,
+            sysv.buckets + u64::from(hash % sysv.nbucket) * 4,
+        )?);
         let mut steps = 0u32;
         while index != 0 {
             if steps > sysv.nchain || index >= self.count {
@@ -206,7 +237,12 @@ impl SymbolTable {
 
     pub fn find_by_address(&self, image: &MappedImage, soaddr: u64) -> Result<Option<Sym>> {
         // cite: bionic linker_soinfo.cpp#gnu_addr_lookup, elf_addr_lookup, symbol_matches_soaddr
-        let matches = |sym: &Sym| sym.shndx != SHN_UNDEF && sym.kind() != STT_TLS && sym.value <= soaddr && soaddr - sym.value < sym.size;
+        let matches = |sym: &Sym| {
+            sym.shndx != SHN_UNDEF
+                && sym.kind() != STT_TLS
+                && sym.value <= soaddr
+                && soaddr - sym.value < sym.size
+        };
         if let Some(gnu) = &self.gnu {
             for bucket in 0..u64::from(gnu.nbuckets) {
                 let mut index = u64::from(u32_at(image, gnu.buckets + bucket * 4)?);
@@ -251,13 +287,23 @@ fn read_gnu(name: &str, image: &MappedImage, vaddr: u64) -> Result<Gnu> {
         )));
     }
     if nbuckets == 0 {
-        return Err(WinedroidError::new(format!("DT_GNU_HASH in \"{name}\" has no buckets")));
+        return Err(WinedroidError::new(format!(
+            "DT_GNU_HASH in \"{name}\" has no buckets"
+        )));
     }
     let bloom = vaddr + 16;
     let buckets = bloom + u64::from(maskwords) * 8;
     let chain = buckets + u64::from(nbuckets) * 4;
     image.bytes(vaddr, chain - vaddr)?;
-    Ok(Gnu { nbuckets, symndx, maskwords_m1: maskwords - 1, shift2, bloom, buckets, chain })
+    Ok(Gnu {
+        nbuckets,
+        symndx,
+        maskwords_m1: maskwords - 1,
+        shift2,
+        bloom,
+        buckets,
+        chain,
+    })
 }
 
 fn read_sysv(image: &MappedImage, vaddr: u64) -> Result<Sysv> {
@@ -269,7 +315,12 @@ fn read_sysv(image: &MappedImage, vaddr: u64) -> Result<Sysv> {
     let buckets = vaddr + 8;
     let chain = buckets + u64::from(nbucket) * 4;
     image.bytes(vaddr, chain + u64::from(nchain) * 4 - vaddr)?;
-    Ok(Sysv { nbucket, nchain, buckets, chain })
+    Ok(Sysv {
+        nbucket,
+        nchain,
+        buckets,
+        chain,
+    })
 }
 
 fn gnu_symbol_count(image: &MappedImage, gnu: &Gnu) -> Result<u64> {

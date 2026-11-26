@@ -172,6 +172,28 @@ fn builtin_fragment_constructor_returns_void() {
     );
 }
 
+// cite: libcore Collections.java#EMPTY_MAP, EMPTY_LIST, EMPTY_SET, emptyMap, emptyList, emptySet
+#[test]
+fn collections_empty_fields_match_factory_values() {
+    let program = DexProgram::new(Vec::new());
+    for (name, descriptor, factory) in [
+        ("EMPTY_MAP", "Ljava/util/Map;", "emptyMap"),
+        ("EMPTY_LIST", "Ljava/util/List;", "emptyList"),
+        ("EMPTY_SET", "Ljava/util/Set;", "emptySet"),
+    ] {
+        let field = DexFieldId {
+            class_descriptor: "Ljava/util/Collections;".to_owned(),
+            type_descriptor: descriptor.to_owned(),
+            name: name.to_owned(),
+        };
+        let method = builtin_method("Ljava/util/Collections;", factory, descriptor, &[]);
+        assert_eq!(
+            program.invoke_builtin_method(&method, None),
+            bootstrap_static_field(&field).map(DexExecutionResult::Value)
+        );
+    }
+}
+
 #[test]
 fn bootstraps_report_fragment_companion() {
     let field = DexFieldId {
@@ -1046,5 +1068,40 @@ fn bootstraps_reached_enum_static_fields() {
         Some(DexValue::Reference(std::rc::Rc::from(
             "Landroidx/work/ExistingWorkPolicy;.KEEP"
         )))
+    );
+}
+
+#[test]
+fn libcore_enum_equals_is_reference_identity() {
+    // cite: libcore Enum.java#equals
+    let program = DexProgram::new(Vec::new());
+    let equals = DexMethodId {
+        class_descriptor: "Ljava/lang/Enum;".to_owned(),
+        name: "equals".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "ZL".to_owned(),
+            return_type: "Z".to_owned(),
+            parameters: vec!["Ljava/lang/Object;".to_owned()],
+        },
+    };
+    let left = DexValue::Object(DexObjectRef {
+        id: 1,
+        class_descriptor: std::rc::Rc::from("Lexample/State;"),
+    });
+    let right = DexValue::Object(DexObjectRef {
+        id: 2,
+        class_descriptor: std::rc::Rc::from("Lexample/State;"),
+    });
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &equals,
+            Some(&test_invocation(vec![left.clone(), left.clone()]))
+        ),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&equals, Some(&test_invocation(vec![left, right]))),
+        Some(DexExecutionResult::Int(0))
     );
 }

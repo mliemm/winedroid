@@ -103,7 +103,10 @@ fn libcore_properties_constructor_makes_empty_hashtable_subclass() {
         "Ljava/util/Map;",
         "Ljava/io/Serializable;",
     ] {
-        assert!(program.value_matches_type(&properties, supertype), "{supertype}");
+        assert!(
+            program.value_matches_type(&properties, supertype),
+            "{supertype}"
+        );
     }
 }
 
@@ -209,7 +212,10 @@ fn libcore_properties_load_null_stream_throws_and_unknown_stream_is_missing_prim
         ])),
     );
 
-    assert_eq!(thrown_class(null_stream), "Ljava/lang/NullPointerException;");
+    assert_eq!(
+        thrown_class(null_stream),
+        "Ljava/lang/NullPointerException;"
+    );
     assert_eq!(unknown_stream, None);
 }
 
@@ -235,8 +241,14 @@ fn libcore_hashtable_contains_key_hits_misses_and_rejects_null_key() {
             .expect("Hashtable.containsKey should run")
     };
 
-    assert_eq!(ask(&properties, text("present")), Some(DexExecutionResult::Int(1)));
-    assert_eq!(ask(&properties, text("absent")), Some(DexExecutionResult::Int(0)));
+    assert_eq!(
+        ask(&properties, text("present")),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(
+        ask(&properties, text("absent")),
+        Some(DexExecutionResult::Int(0))
+    );
     assert_eq!(
         thrown_class(ask(&properties, DexValue::Null)),
         "Ljava/lang/NullPointerException;"

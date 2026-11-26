@@ -34,11 +34,23 @@ pub struct LoadReport {
     pub x18_writes: Vec<(String, usize)>,
 }
 
-pub fn lookup_in_module(state: &State, provider: &dyn SystemLibraryProvider, id: ModuleId, name: &str) -> Result<Option<Resolved>> {
+pub fn lookup_in_module(
+    state: &State,
+    provider: &dyn SystemLibraryProvider,
+    id: ModuleId,
+    name: &str,
+) -> Result<Option<Resolved>> {
     // cite: bionic linker_soinfo.cpp#soinfo_do_lookup_impl
     let module = state.module(id);
     let Some(guest) = &module.guest else {
-        return Ok(provider.export(&module.soname, name).map(|address| Resolved { address, kind: STT_FUNC, value: 0, tls_module: 0 }));
+        return Ok(provider
+            .export(&module.soname, name)
+            .map(|address| Resolved {
+                address,
+                kind: STT_FUNC,
+                value: 0,
+                tls_module: 0,
+            }));
     };
     let Some((_, sym)) = guest.symbols.lookup(&guest.mapped, name)? else {
         return Ok(None);
@@ -63,8 +75,15 @@ impl SymbolResolution for LinkResolution<'_> {
     fn resolve(&self, name: &str, sym: &Sym) -> Result<Option<Resolved>> {
         // cite: bionic linker.cpp#find_libraries
         let importer = self.state.module(self.importer);
-        let symbolic = importer.guest.as_ref().is_some_and(|guest| guest.dynamic.has_symbolic);
-        let order = symbolic.then_some(self.importer).into_iter().chain(self.state.global_group()).chain(self.group.iter().copied());
+        let symbolic = importer
+            .guest
+            .as_ref()
+            .is_some_and(|guest| guest.dynamic.has_symbolic);
+        let order = symbolic
+            .then_some(self.importer)
+            .into_iter()
+            .chain(self.state.global_group())
+            .chain(self.group.iter().copied());
         for id in order {
             if let Some(resolved) = lookup_in_module(self.state, self.provider, id, name)? {
                 return Ok(Some(resolved));
@@ -73,8 +92,17 @@ impl SymbolResolution for LinkResolution<'_> {
         if sym.bind() == STB_WEAK {
             return Ok(None);
         }
-        let kind = if sym.kind() == STT_OBJECT { ImportKind::Data } else { ImportKind::Function };
-        let fresh = self.report.lock().expect("load report").unresolved_imports.insert((importer.path.clone(), name.to_string()));
+        let kind = if sym.kind() == STT_OBJECT {
+            ImportKind::Data
+        } else {
+            ImportKind::Function
+        };
+        let fresh = self
+            .report
+            .lock()
+            .expect("load report")
+            .unresolved_imports
+            .insert((importer.path.clone(), name.to_string()));
         if fresh {
             crate::missing::record_from_error_message(&format!(
                 "unresolved import {name} in {}; next missing primitive: unresolved import {name}",
@@ -83,7 +111,11 @@ impl SymbolResolution for LinkResolution<'_> {
         }
         Ok(Some(Resolved {
             address: self.provider.unresolved(&importer.path, name, kind),
-            kind: if kind == ImportKind::Data { STT_OBJECT } else { STT_FUNC },
+            kind: if kind == ImportKind::Data {
+                STT_OBJECT
+            } else {
+                STT_FUNC
+            },
             value: 0,
             tls_module: 0,
         }))
@@ -93,21 +125,41 @@ impl SymbolResolution for LinkResolution<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::native::loader_test_support::{host_function_address, unresolved_import_address, TestProvider};
+    use crate::native::loader_test_support::{
+        host_function_address, unresolved_import_address, TestProvider,
+    };
 
     const IMPORTER: &str = "/guest/libimporter.so";
     const STB_GLOBAL: u8 = 1;
 
     fn symbol(bind: u8, kind: u8) -> Sym {
-        Sym { name: 0, info: (bind << 4) | kind, shndx: 0, value: 0, size: 0 }
+        Sym {
+            name: 0,
+            info: (bind << 4) | kind,
+            shndx: 0,
+            value: 0,
+            size: 0,
+        }
     }
 
     fn resolve(provider: &TestProvider, name: &str, sym: &Sym) -> (Option<Resolved>, LoadReport) {
         let mut state = State::with_system_modules();
-        let importer = state.allocate(IMPORTER.to_string(), "libimporter.so".to_string(), 0, None, None);
+        let importer = state.allocate(
+            IMPORTER.to_string(),
+            "libimporter.so".to_string(),
+            0,
+            None,
+            None,
+        );
         let report = Mutex::new(LoadReport::default());
         let group = [importer];
-        let resolution = LinkResolution { state: &state, provider, importer, group: &group, report: &report };
+        let resolution = LinkResolution {
+            state: &state,
+            provider,
+            importer,
+            group: &group,
+            report: &report,
+        };
         let resolved = resolution.resolve(name, sym).unwrap();
         (resolved, report.into_inner().unwrap())
     }
@@ -115,13 +167,23 @@ mod tests {
     #[test]
     fn bionic_lookup_symbol_failure_hands_an_unresolved_function_import_to_the_provider() {
         let provider = TestProvider::new();
-        let (resolved, report) = resolve(&provider, "absent_function", &symbol(STB_GLOBAL, STT_FUNC));
+        let (resolved, report) =
+            resolve(&provider, "absent_function", &symbol(STB_GLOBAL, STT_FUNC));
 
         let resolved = resolved.unwrap();
         assert_eq!(resolved.address, unresolved_import_address());
         assert_eq!(resolved.kind, STT_FUNC);
-        assert_eq!(*provider.unresolved_calls.lock().unwrap(), vec![(IMPORTER.to_string(), "absent_function".to_string(), ImportKind::Function)]);
-        assert!(report.unresolved_imports.contains(&(IMPORTER.to_string(), "absent_function".to_string())));
+        assert_eq!(
+            *provider.unresolved_calls.lock().unwrap(),
+            vec![(
+                IMPORTER.to_string(),
+                "absent_function".to_string(),
+                ImportKind::Function
+            )]
+        );
+        assert!(report
+            .unresolved_imports
+            .contains(&(IMPORTER.to_string(), "absent_function".to_string())));
     }
 
     #[test]
@@ -130,11 +192,15 @@ mod tests {
         let (resolved, _) = resolve(&provider, "absent_object", &symbol(STB_GLOBAL, STT_OBJECT));
 
         assert_eq!(resolved.unwrap().kind, STT_OBJECT);
-        assert_eq!(provider.unresolved_calls.lock().unwrap()[0].2, ImportKind::Data);
+        assert_eq!(
+            provider.unresolved_calls.lock().unwrap()[0].2,
+            ImportKind::Data
+        );
     }
 
     #[test]
-    fn bionic_process_relocation_general_leaves_an_unresolved_weak_import_null_without_asking_the_provider() {
+    fn bionic_process_relocation_general_leaves_an_unresolved_weak_import_null_without_asking_the_provider(
+    ) {
         let provider = TestProvider::new();
         let (resolved, report) = resolve(&provider, "absent_weak", &symbol(STB_WEAK, STT_FUNC));
 

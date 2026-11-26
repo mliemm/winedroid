@@ -77,7 +77,9 @@ mod tests {
 
     use super::*;
     use crate::native::fixture_elf::{FixtureElf, PT_DYNAMIC};
-    use crate::native::loader_test_support::{dlopen_without_constructors, fixture_dir, loader_for};
+    use crate::native::loader_test_support::{
+        dlopen_without_constructors, fixture_dir, loader_for,
+    };
 
     const DT_INIT: u64 = 12;
     const DT_FLAGS_1: u64 = 0x6fff_fffb;
@@ -87,8 +89,17 @@ mod tests {
         let mut data = fs::read(fixture_dir("16k").join("libfx_order_child.so")).unwrap();
         let (init_vaddr, slot) = {
             let elf = FixtureElf::parse(&data);
-            let dynamic = elf.segments.iter().find(|segment| segment.kind == PT_DYNAMIC).unwrap().offset as usize;
-            let index = elf.dynamic.iter().position(|entry| entry.0 == DT_FLAGS_1).unwrap();
+            let dynamic = elf
+                .segments
+                .iter()
+                .find(|segment| segment.kind == PT_DYNAMIC)
+                .unwrap()
+                .offset as usize;
+            let index = elf
+                .dynamic
+                .iter()
+                .position(|entry| entry.0 == DT_FLAGS_1)
+                .unwrap();
             (elf.export_addresses["fx_write_x18"], dynamic + index * 16)
         };
         data[slot..slot + 8].copy_from_slice(&DT_INIT.to_le_bytes());
@@ -102,13 +113,25 @@ mod tests {
 
         let guard = loader.lock.lock();
         let root = *guard.borrow().handles.get(&handle).unwrap();
-        let bias = guard.borrow().module(root).guest.as_ref().unwrap().mapped.load_bias();
+        let bias = guard
+            .borrow()
+            .module(root)
+            .guest
+            .as_ref()
+            .unwrap()
+            .mapped
+            .load_bias();
         let mut calls = Vec::new();
         collect_constructors(&mut guard.borrow_mut(), root, &mut calls);
 
         assert_eq!(calls.len(), 4, "{calls:?}");
         assert_eq!(calls[0], Constructor::Init(bias + init_vaddr as usize));
-        assert!(calls[1..].iter().all(|call| matches!(call, Constructor::InitArray(_))), "{calls:?}");
+        assert!(
+            calls[1..]
+                .iter()
+                .all(|call| matches!(call, Constructor::InitArray(_))),
+            "{calls:?}"
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -3,12 +3,12 @@ use std::sync::atomic::AtomicU32;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use super::fork_gate;
 use super::futex::{self, MATCH_ANY};
 use super::guest_thread::{self, attach_current};
 use super::loader_test_support::child_result;
 use super::test_deadline::bounded_test;
 use super::thread_list;
-use super::fork_gate;
 
 const HOLD: Duration = Duration::from_millis(300);
 const CHILD_LIMIT_SECONDS: u32 = 10;

@@ -32,17 +32,48 @@ thread_local! {
 }
 
 impl GuestContext {
-    pub fn open(prefix: &Path, package: &str, policy: Arc<RwLock<ExternalStoragePolicy>>) -> Result<Self> {
+    pub fn open(
+        prefix: &Path,
+        package: &str,
+        policy: Arc<RwLock<ExternalStoragePolicy>>,
+    ) -> Result<Self> {
         let app = prefix.join("apps").join(package);
-        let filesystem = GuestFilesystem::new(package, app.join("data"), app.join("data_de"), prefix.join("storage"))?;
+        let filesystem = GuestFilesystem::new(
+            package,
+            app.join("data"),
+            app.join("data_de"),
+            prefix.join("storage"),
+        )?;
         let temp_dir = prefix.join("tmp");
-        fs::DirBuilder::new().recursive(true).mode(0o700).create(&temp_dir).map_err(|error| WinedroidError::with_source(format!("cannot create guest temp directory {}", temp_dir.display()), error))?;
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&temp_dir)
+            .map_err(|error| {
+                WinedroidError::with_source(
+                    format!("cannot create guest temp directory {}", temp_dir.display()),
+                    error,
+                )
+            })?;
         // cite: frameworks-base ApplicationInfo.java#sourceDir, nativeLibraryDir
         let app_code = vec![
-            AppCodeMount { guest: guest_app_paths::base_apk(package), host: app.join("source.apk") },
-            AppCodeMount { guest: guest_app_paths::native_library_dir(package), host: app.join("native").join(NATIVE_ABI) },
+            AppCodeMount {
+                guest: guest_app_paths::base_apk(package),
+                host: app.join("source.apk"),
+            },
+            AppCodeMount {
+                guest: guest_app_paths::native_library_dir(package),
+                host: app.join("native").join(NATIVE_ABI),
+            },
         ];
-        Ok(Self { package: package.to_string(), filesystem, policy, prefix: prefix.to_path_buf(), temp_dir, app_code })
+        Ok(Self {
+            package: package.to_string(),
+            filesystem,
+            policy,
+            prefix: prefix.to_path_buf(),
+            temp_dir,
+            app_code,
+        })
     }
 }
 
@@ -51,7 +82,9 @@ pub fn install(context: GuestContext) -> Result<()> {
 }
 
 pub fn current() -> Option<Arc<GuestContext>> {
-    OVERRIDE.with(|slot| slot.borrow().clone()).or_else(|| CONTEXT.get().cloned())
+    OVERRIDE
+        .with(|slot| slot.borrow().clone())
+        .or_else(|| CONTEXT.get().cloned())
 }
 
 pub fn use_on_this_thread(context: Arc<GuestContext>) {

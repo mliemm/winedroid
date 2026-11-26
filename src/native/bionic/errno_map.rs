@@ -5,7 +5,11 @@ pub struct ErrnoRow {
 }
 
 const fn row(name: &'static str, linux: i32, darwin: i32) -> ErrnoRow {
-    ErrnoRow { name, linux, darwin }
+    ErrnoRow {
+        name,
+        linux,
+        darwin,
+    }
 }
 
 // cite: bionic errno-base.h#EPERM, EDOM, ERANGE
@@ -111,14 +115,21 @@ pub fn linux_from_darwin(darwin: i32) -> Option<i32> {
     ROWS.iter()
         .find(|row| row.darwin == darwin)
         .map(|row| row.linux)
-        .or_else(|| DARWIN_ALIASES.iter().find(|alias| alias.1 == darwin).map(|alias| alias.2))
+        .or_else(|| {
+            DARWIN_ALIASES
+                .iter()
+                .find(|alias| alias.1 == darwin)
+                .map(|alias| alias.2)
+        })
 }
 
 pub fn darwin_from_linux(linux: i32) -> Option<i32> {
     if linux == 0 {
         return Some(0);
     }
-    ROWS.iter().find(|row| row.linux == linux).map(|row| row.darwin)
+    ROWS.iter()
+        .find(|row| row.linux == linux)
+        .map(|row| row.darwin)
 }
 
 pub fn is_linux_errno(code: i32) -> bool {

@@ -193,7 +193,12 @@ fn context_impl_get_files_dir_returns_android_guest_path() {
     fs::remove_dir_all(app_dir).ok();
 }
 
-fn context_method(class_descriptor: &str, name: &str, shorty: &str, return_type: &str) -> DexMethodId {
+fn context_method(
+    class_descriptor: &str,
+    name: &str,
+    shorty: &str,
+    return_type: &str,
+) -> DexMethodId {
     DexMethodId {
         class_descriptor: class_descriptor.to_owned(),
         name: name.to_owned(),
@@ -229,7 +234,12 @@ fn frameworks_base_application_attach_base_context_makes_get_files_dir_resolve()
         "L",
         "Landroid/content/Context;",
     );
-    let get_files_dir = context_method("Landroid/content/Context;", "getFilesDir", "L", "Ljava/io/File;");
+    let get_files_dir = context_method(
+        "Landroid/content/Context;",
+        "getFilesDir",
+        "L",
+        "Ljava/io/File;",
+    );
 
     program
         .ensure_application_initialized(0)
@@ -247,7 +257,10 @@ fn frameworks_base_application_attach_base_context_makes_get_files_dir_resolve()
         panic!("getBaseContext should return the attached context");
     };
 
-    assert_eq!(value_class_descriptor(&base), Some("Landroid/app/ContextImpl;"));
+    assert_eq!(
+        value_class_descriptor(&base),
+        Some("Landroid/app/ContextImpl;")
+    );
     assert_eq!(
         program.invoke_builtin_method(&get_files_dir, Some(&invocation)),
         Some(DexExecutionResult::Value(DexValue::Reference(
@@ -392,6 +405,53 @@ fn context_impl_get_external_files_dirs_returns_single_primary_volume_entry() {
     );
     assert!(app_dir
         .join("storage/Android/data/com.example/files")
+        .is_dir());
+
+    fs::remove_dir_all(app_dir).ok();
+}
+
+#[test]
+fn context_impl_get_external_files_dir_returns_first_primary_volume_entry() {
+    // cite: frameworks-base ContextImpl.java#getExternalFilesDir, getExternalFilesDirs
+    let app_dir = test_app_data_dir("context_external_files_dir");
+    let data_dir = app_dir.join("apps/com.example/data");
+    let shared_dir = app_dir.join("storage");
+    fs::create_dir_all(&data_dir).expect("data dir should be created");
+    fs::create_dir_all(&shared_dir).expect("shared dir should be created");
+    let program =
+        DexProgram::with_guest_filesystem(Vec::new(), "com.example", data_dir.clone(), shared_dir)
+            .expect("program should load guest filesystem");
+    let method = builtin_method(
+        "Landroid/content/Context;",
+        "getExternalFilesDir",
+        "Ljava/io/File;",
+        &["Ljava/lang/String;"],
+    );
+    let context = DexValue::Reference(std::rc::Rc::from("Landroid/content/Context;.bootstrap"));
+    let typed = test_invocation(vec![
+        context.clone(),
+        DexValue::String(std::rc::Rc::from("Pictures")),
+    ]);
+    let untyped = test_invocation(vec![context.clone(), DexValue::Null]);
+    let invalid = test_invocation(vec![context, DexValue::Int(7)]);
+
+    assert_eq!(
+        program.invoke_builtin_method(&method, Some(&typed)),
+        Some(DexExecutionResult::Value(DexValue::Reference(
+            std::rc::Rc::from(
+                "Ljava/io/File;:/storage/emulated/0/Android/data/com.example/files/Pictures"
+            )
+        )))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&method, Some(&untyped)),
+        Some(DexExecutionResult::Value(DexValue::Reference(
+            std::rc::Rc::from("Ljava/io/File;:/storage/emulated/0/Android/data/com.example/files")
+        )))
+    );
+    assert_eq!(program.invoke_builtin_method(&method, Some(&invalid)), None);
+    assert!(app_dir
+        .join("storage/Android/data/com.example/files/Pictures")
         .is_dir());
 
     fs::remove_dir_all(app_dir).ok();
@@ -1451,7 +1511,10 @@ fn builtin_shared_preferences_get_string_set_follows_shared_preferences_impl_jav
         proto: crate::dex::DexProto {
             shorty: "LLL".to_owned(),
             return_type: "Ljava/util/Set;".to_owned(),
-            parameters: vec!["Ljava/lang/String;".to_owned(), "Ljava/util/Set;".to_owned()],
+            parameters: vec![
+                "Ljava/lang/String;".to_owned(),
+                "Ljava/util/Set;".to_owned(),
+            ],
         },
     };
     let default_set = program.allocate_object("Ljava/util/HashSet;".to_owned());
@@ -1475,13 +1538,14 @@ fn builtin_shared_preferences_get_string_set_follows_shared_preferences_impl_jav
         Some(DexExecutionResult::Value(default_set))
     );
 
-    program.runtime.borrow_mut().shared_preferences_entries.insert(
-        (
-            map_identity_key(&preferences),
-            "tags".to_owned(),
-        ),
-        DexValue::String(std::rc::Rc::from("not a set")),
-    );
+    program
+        .runtime
+        .borrow_mut()
+        .shared_preferences_entries
+        .insert(
+            (map_identity_key(&preferences), "tags".to_owned()),
+            DexValue::String(std::rc::Rc::from("not a set")),
+        );
 
     assert_eq!(call("tags", DexValue::Null), None);
 }
@@ -2658,8 +2722,9 @@ fn storage_test_program(name: &str) -> (DexProgram, PathBuf) {
     let shared_dir = app_dir.join("storage");
     fs::create_dir_all(&data_dir).expect("data dir should be created");
     fs::create_dir_all(&shared_dir).expect("shared dir should be created");
-    let program = DexProgram::with_guest_filesystem(Vec::new(), "com.example", data_dir, shared_dir)
-        .expect("program should load guest filesystem");
+    let program =
+        DexProgram::with_guest_filesystem(Vec::new(), "com.example", data_dir, shared_dir)
+            .expect("program should load guest filesystem");
 
     (program, app_dir)
 }
@@ -2776,8 +2841,14 @@ fn frameworks_base_package_manager_get_application_info_finds_only_the_installed
         std::rc::Rc::from("Landroid/content/pm/ApplicationInfo;.bootstrap"),
     )));
 
-    assert_eq!(ask(DexValue::String(std::rc::Rc::from("com.example")), 128), installed);
-    assert_eq!(ask(DexValue::String(std::rc::Rc::from("com.example")), 0x2000), installed);
+    assert_eq!(
+        ask(DexValue::String(std::rc::Rc::from("com.example")), 128),
+        installed
+    );
+    assert_eq!(
+        ask(DexValue::String(std::rc::Rc::from("com.example")), 0x2000),
+        installed
+    );
     let missing = thrown_exception(ask(DexValue::String(std::rc::Rc::from("com.other")), 0));
     let null_name = thrown_exception(ask(DexValue::Null, 0));
 
@@ -2796,5 +2867,174 @@ fn frameworks_base_package_manager_get_application_info_finds_only_the_installed
         "Landroid/content/pm/PackageManager$NameNotFoundException;"
     ));
     assert_eq!(ask(DexValue::Int(1), 0), None);
+    fs::remove_dir_all(app_dir).ok();
+}
+
+#[test]
+fn frameworks_base_package_manager_get_package_info_builds_providers_from_the_manifest() {
+    // cite: frameworks-base PackageParser.java#generatePackageInfo, generateProviderInfo, parseProvider
+    // cite: frameworks-base ApplicationPackageManager.java#getPackageInfo
+    let (mut program, app_dir) = storage_test_program("package_manager_package_info");
+    let manifest_context = ApkManifestContext::from_manifest(crate::manifest::AndroidManifest {
+        package_name: Some("com.example".to_owned()),
+        version_code: Some("42".to_owned()),
+        version_name: Some("4.2".to_owned()),
+        target_sdk_version: Some("30".to_owned()),
+        providers: vec![
+            crate::manifest::Provider {
+                name: "com.example.Share".to_owned(),
+                authority: "com.example.share".to_owned(),
+                exported: None,
+                enabled: None,
+            },
+            crate::manifest::Provider {
+                name: "com.example.Off".to_owned(),
+                authority: "com.example.off".to_owned(),
+                exported: Some(true),
+                enabled: Some(false),
+            },
+        ],
+        ..crate::manifest::AndroidManifest::default()
+    })
+    .expect("manifest context should apply");
+    program.apply_apk_manifest_context(manifest_context);
+    let method = builtin_method(
+        "Landroid/content/pm/PackageManager;",
+        "getPackageInfo",
+        "Landroid/content/pm/PackageInfo;",
+        &["Ljava/lang/String;", "I"],
+    );
+    let manager = DexValue::Reference(std::rc::Rc::from(
+        "Landroid/content/pm/PackageManager;.bootstrap",
+    ));
+    let ask = |name: &str, flags: i32| {
+        program.invoke_builtin_method(
+            &method,
+            Some(&test_invocation(vec![
+                manager.clone(),
+                DexValue::String(std::rc::Rc::from(name)),
+                DexValue::Int(flags),
+            ])),
+        )
+    };
+    let field = |class: &str, name: &str, type_descriptor: &str| DexFieldId {
+        class_descriptor: class.to_owned(),
+        type_descriptor: type_descriptor.to_owned(),
+        name: name.to_owned(),
+    };
+    let package_field = |name: &str, type_descriptor: &str| {
+        field("Landroid/content/pm/PackageInfo;", name, type_descriptor)
+    };
+    let text = |value: &str| DexValue::String(std::rc::Rc::from(value));
+
+    let Some(DexExecutionResult::Value(plain)) = ask("com.example", 0) else {
+        panic!("installed package should return a PackageInfo");
+    };
+    assert_eq!(
+        program.read_stored_instance_field(
+            &plain,
+            &package_field("packageName", "Ljava/lang/String;")
+        ),
+        Some(text("com.example"))
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&plain, &package_field("versionCode", "I")),
+        Some(DexValue::Int(42))
+    );
+    assert_eq!(
+        program.read_stored_instance_field(
+            &plain,
+            &package_field("versionName", "Ljava/lang/String;")
+        ),
+        Some(text("4.2"))
+    );
+    assert_eq!(
+        program.read_stored_instance_field(
+            &plain,
+            &package_field("providers", "[Landroid/content/pm/ProviderInfo;")
+        ),
+        None
+    );
+
+    let Some(DexExecutionResult::Value(with_providers)) = ask("com.example", 0x8) else {
+        panic!("GET_PROVIDERS should return a PackageInfo");
+    };
+    let providers = program
+        .read_stored_instance_field(
+            &with_providers,
+            &package_field("providers", "[Landroid/content/pm/ProviderInfo;"),
+        )
+        .expect("GET_PROVIDERS should fill providers");
+    assert_eq!(program.array_length(&providers), Some(1));
+    let provider = program
+        .read_array_value(&providers, 0)
+        .expect("provider element");
+    let provider_field = |name: &str, type_descriptor: &str| {
+        field("Landroid/content/pm/ProviderInfo;", name, type_descriptor)
+    };
+    assert_eq!(
+        program
+            .read_stored_instance_field(&provider, &provider_field("name", "Ljava/lang/String;")),
+        Some(text("com.example.Share"))
+    );
+    assert_eq!(
+        program.read_stored_instance_field(
+            &provider,
+            &provider_field("authority", "Ljava/lang/String;")
+        ),
+        Some(text("com.example.share"))
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&provider, &provider_field("exported", "Z")),
+        Some(DexValue::Int(0))
+    );
+
+    let (mut legacy_program, legacy_dir) =
+        storage_test_program("package_manager_package_info_legacy");
+    let legacy_context = ApkManifestContext::from_manifest(crate::manifest::AndroidManifest {
+        package_name: Some("com.example".to_owned()),
+        target_sdk_version: Some("16".to_owned()),
+        providers: vec![crate::manifest::Provider {
+            name: "com.example.Share".to_owned(),
+            authority: "com.example.share".to_owned(),
+            exported: None,
+            enabled: None,
+        }],
+        ..crate::manifest::AndroidManifest::default()
+    })
+    .expect("manifest context should apply");
+    legacy_program.apply_apk_manifest_context(legacy_context);
+    let Some(DexExecutionResult::Value(legacy_info)) = legacy_program.invoke_builtin_method(
+        &method,
+        Some(&test_invocation(vec![
+            manager.clone(),
+            text("com.example"),
+            DexValue::Int(0x8),
+        ])),
+    ) else {
+        panic!("GET_PROVIDERS should return a PackageInfo");
+    };
+    let legacy_providers = legacy_program
+        .read_stored_instance_field(
+            &legacy_info,
+            &package_field("providers", "[Landroid/content/pm/ProviderInfo;"),
+        )
+        .expect("GET_PROVIDERS should fill providers");
+    let legacy_provider = legacy_program
+        .read_array_value(&legacy_providers, 0)
+        .expect("provider element");
+    assert_eq!(
+        legacy_program
+            .read_stored_instance_field(&legacy_provider, &provider_field("exported", "Z")),
+        Some(DexValue::Int(1))
+    );
+    fs::remove_dir_all(legacy_dir).ok();
+
+    assert!(ask("com.example", 0x40).is_none());
+    let missing = thrown_exception(ask("com.other", 0));
+    assert!(program.value_matches_type(
+        &missing,
+        "Landroid/content/pm/PackageManager$NameNotFoundException;"
+    ));
     fs::remove_dir_all(app_dir).ok();
 }

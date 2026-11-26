@@ -2,16 +2,16 @@ use super::*;
 
 // cite: libcore Pattern.java#compile
 thread_local! {
-    static REGEX_CACHE: std::cell::RefCell<std::collections::HashMap<String, Option<std::rc::Rc<regex::Regex>>>> =
+    static REGEX_CACHE: std::cell::RefCell<std::collections::HashMap<String, Option<std::rc::Rc<JavaRegex>>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
-fn cached_regex(pattern: &str) -> Option<std::rc::Rc<regex::Regex>> {
+fn cached_regex(pattern: &str) -> Option<std::rc::Rc<JavaRegex>> {
     REGEX_CACHE.with(|cache| {
         if let Some(entry) = cache.borrow().get(pattern) {
             return entry.clone();
         }
-        let compiled = regex::Regex::new(pattern).ok().map(std::rc::Rc::new);
+        let compiled = JavaRegex::new(pattern).map(std::rc::Rc::new);
         cache
             .borrow_mut()
             .insert(pattern.to_owned(), compiled.clone());
@@ -402,15 +402,15 @@ impl DexProgram {
         search_start: usize,
     ) -> Option<i32> {
         let regex = cached_regex(&pattern)?;
-        let captures = regex.captures_at(&input, search_start);
+        let captures = regex.captures_at(input, search_start)?;
 
         let Some(captures) = captures else {
             self.write_regex_matcher_no_match(&matcher_key, input.len())?;
             return Some(0);
         };
-        let full_match = captures.get(0)?;
+        let (_, full_match_end) = captures.first().copied().flatten()?;
         let groups = regex_capture_groups(&captures);
-        let next_search_start = next_regex_search_start(&input, full_match.end());
+        let next_search_start = next_regex_search_start(&input, full_match_end);
 
         self.write_regex_matcher_match(&matcher_key, next_search_start, groups)?;
 
@@ -423,7 +423,7 @@ impl DexProgram {
         let (pattern, input, _search_start) = self.regex_matcher_search_snapshot(&matcher_key)?;
         let anchored_pattern = format!("^(?:{pattern})$");
         let regex = cached_regex(&anchored_pattern)?;
-        let captures = regex.captures(&input);
+        let captures = regex.captures(&input)?;
 
         let Some(captures) = captures else {
             self.write_regex_matcher_no_match(&matcher_key, 0)?;
@@ -477,11 +477,7 @@ impl DexProgram {
         let state = runtime.regex_matchers.get(&matcher_key)?;
         let regex = cached_regex(&state.pattern)?;
 
-        Some(
-            regex
-                .replace_all(&state.input, replacement.as_ref())
-                .to_string(),
-        )
+        regex.replace_all(&state.input, replacement.as_ref())
     }
 
     pub(super) fn regex_matcher_search_snapshot(
@@ -2389,6 +2385,21 @@ impl DexProgram {
         Some(())
     }
 
+    // cite: libcore String.java#toCharArray
+    pub(super) fn string_to_char_array(&self, invocation: &DexInvocation) -> Option<DexValue> {
+        if invocation.arguments.len() != 1 {
+            return None;
+        }
+
+        let text = self.string_text(&invocation.arguments[0])?;
+        let units = text
+            .encode_utf16()
+            .map(|unit| DexValue::Int(i32::from(unit)))
+            .collect();
+
+        Some(self.allocate_filled_array("[C".to_owned(), units))
+    }
+
     pub(super) fn string_length(&self, invocation: &DexInvocation) -> Option<i32> {
         if invocation.arguments.len() != 1 {
             return None;
@@ -2723,6 +2734,68 @@ impl DexProgram {
         replace_utf16_units(&value, old_char, new_char)
     }
 
+    // cite: libcore String.java#replace
+    pub(super) fn string_replace_sequences(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        let [receiver, target, replacement] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        if matches!(target, DexValue::Null | DexValue::Int(0))
+            || matches!(replacement, DexValue::Null | DexValue::Int(0))
+        {
+            return Some(DexExecutionResult::Throw(
+                self.allocate_generated_exception(DexGeneratedException {
+                    class_descriptor: "Ljava/lang/NullPointerException;".to_owned(),
+                    detail_message: None,
+                }),
+            ));
+        }
+        let receiver_text = self.string_text(receiver)?;
+        let target: Vec<u16> = self.string_text(target)?.encode_utf16().collect();
+        let replacement: Vec<u16> = self.string_text(replacement)?.encode_utf16().collect();
+        let receiver_units: Vec<u16> = receiver_text.encode_utf16().collect();
+
+        let utf16_index_of = |from: usize| -> Option<usize> {
+            let length = receiver_units.len();
+            let from = from.min(length);
+            if target.is_empty() {
+                return Some(from);
+            }
+            if target.len() > length {
+                return None;
+            }
+            (from..=length - target.len())
+                .find(|start| receiver_units[*start..].starts_with(&target))
+        };
+        let Some(mut match_start) = utf16_index_of(0) else {
+            return Some(DexExecutionResult::Value(receiver.clone()));
+        };
+        let target_step = target.len().max(1);
+        let mut result: Vec<u16> = Vec::new();
+        let mut copied_to = 0;
+        loop {
+            result.extend_from_slice(&receiver_units[copied_to..match_start]);
+            result.extend_from_slice(&replacement);
+            copied_to = match_start + target.len();
+            if match_start >= receiver_units.len() {
+                break;
+            }
+            match utf16_index_of(match_start + target_step) {
+                Some(next) if next > 0 => match_start = next,
+                _ => break,
+            }
+        }
+        result.extend_from_slice(&receiver_units[copied_to..]);
+
+        let text = String::from_utf16(&result).ok()?;
+
+        Some(DexExecutionResult::Value(DexValue::String(
+            std::rc::Rc::from(text),
+        )))
+    }
+
     pub(super) fn string_concat(&self, invocation: &DexInvocation) -> Option<DexValue> {
         if invocation.arguments.len() != 2 {
             return None;
@@ -2765,8 +2838,13 @@ impl DexProgram {
 
         let value = self.string_text(value)?;
         let pattern = self.string_text(pattern)?;
-        let delimiter = string_split_literal_delimiter(&pattern)?;
-        let parts = string_fast_split(&value, delimiter, limit);
+        let parts = match string_split_literal_delimiter(&pattern) {
+            Some(delimiter) => string_fast_split(&value, delimiter, limit),
+            None => {
+                let regex = cached_regex(&translate_java_regex_quoting(&pattern))?;
+                string_pattern_split(&regex, &value, limit, self.target_sdk_version)?
+            }
+        };
         let values = parts
             .into_iter()
             .map(|value| DexValue::String(value.into()))
@@ -3722,18 +3800,11 @@ pub(super) fn regex_matcher_group_key(invocation: &DexInvocation) -> Option<(Str
     }
 }
 
-pub(super) fn regex_capture_groups(captures: &regex::Captures<'_>) -> Vec<Option<RegexMatchRange>> {
-    let mut groups = Vec::new();
-
-    for index in 0..captures.len() {
-        let range = captures.get(index).map(|matched| RegexMatchRange {
-            start: matched.start(),
-            end: matched.end(),
-        });
-        groups.push(range);
-    }
-
-    groups
+pub(super) fn regex_capture_groups(captures: &JavaCaptures) -> Vec<Option<RegexMatchRange>> {
+    captures
+        .iter()
+        .map(|group| group.map(|(start, end)| RegexMatchRange { start, end }))
+        .collect()
 }
 
 pub(super) fn next_regex_search_start(input: &str, match_end: usize) -> usize {
@@ -4206,6 +4277,54 @@ fn string_split_literal_delimiter(pattern: &str) -> Option<char> {
     Some(delimiter)
 }
 
+// cite: libcore Pattern.java#split
+fn string_pattern_split(
+    regex: &JavaRegex,
+    input: &str,
+    limit: i32,
+    target_sdk_version: i32,
+) -> Option<Vec<String>> {
+    let match_limited = limit > 0;
+    let mut matches: Vec<String> = Vec::new();
+    let mut index = 0;
+    let mut search = 0;
+
+    while search <= input.len() {
+        let Some((start, end)) = regex.find_at(input, search)? else {
+            break;
+        };
+        if !match_limited || (matches.len() as i32) < limit - 1 {
+            let leading_empty_match = index == 0 && start == 0 && end == 0;
+            if !(leading_empty_match && target_sdk_version > 28) {
+                matches.push(input[index..start].to_owned());
+                index = end;
+            }
+        } else if matches.len() as i32 == limit - 1 {
+            matches.push(input[index..].to_owned());
+            index = end;
+        }
+        search = match input[end..].chars().next() {
+            Some(next) if start == end => end + next.len_utf8(),
+            None if start == end => input.len() + 1,
+            _ => end,
+        };
+    }
+
+    if index == 0 {
+        return Some(vec![input.to_owned()]);
+    }
+    if !match_limited || (matches.len() as i32) < limit {
+        matches.push(input[index..].to_owned());
+    }
+    if limit == 0 {
+        while matches.last().is_some_and(String::is_empty) {
+            matches.pop();
+        }
+    }
+
+    Some(matches)
+}
+
 fn string_fast_split(value: &str, delimiter: char, limit: i32) -> Vec<String> {
     // cite: libcore Pattern.java#fastSplit
     if value.is_empty() {
@@ -4307,6 +4426,8 @@ pub(super) fn print_stream_write(invocation: &DexInvocation) -> Option<()> {
 
 pub(super) fn bootstrap_system_property(key: &str) -> Option<String> {
     match key {
+        // cite: art ti_properties.cc#kProperties
+        "java.version" => Some("0".to_owned()),
         "file.separator" => Some("/".to_owned()),
         "java.vm.name" => Some("Winedroid".to_owned()),
         "line.separator" => Some("\n".to_owned()),

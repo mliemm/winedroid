@@ -1225,9 +1225,44 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Landroid/os/Process;"
+            && method.name == "is64Bit"
+            && method.proto.descriptor_is("()Z")
+        {
+            // cite: frameworks-base Process.java#is64Bit
+            // cite: art dalvik_system_VMRuntime.cc#VMRuntime_is64Bit
+            let is_64_bit = std::mem::size_of::<*const ()>() == std::mem::size_of::<u64>();
+
+            return Some(DexExecutionResult::Int(i32::from(is_64_bit)));
+        }
+
+        if method.class_descriptor == "Landroid/os/Process;"
+            && method.name == "myTid"
+            && method.proto.descriptor_is("()I")
+        {
+            return Some(DexExecutionResult::Int(self.current_guest_thread_tid()));
+        }
+
+        if method.class_descriptor == "Landroid/os/Process;"
+            && method.name == "setThreadPriority"
+            && method.proto.descriptor_is("(II)V")
+        {
+            let invocation = invocation?;
+
+            return self.process_set_thread_priority(invocation);
+        }
+
+        if method.class_descriptor == "Landroid/os/Process;"
             && method.name == "myUid"
             && method.proto.descriptor_is("()I")
         {
+            return Some(DexExecutionResult::Int(BOOTSTRAP_PROCESS_UID));
+        }
+
+        if method.class_descriptor == "Landroid/os/Binder;"
+            && method.name == "getCallingUid"
+            && method.proto.descriptor_is("()I")
+        {
+            // cite: frameworks-base Binder.java#getCallingUid
             return Some(DexExecutionResult::Int(BOOTSTRAP_PROCESS_UID));
         }
 
@@ -1236,6 +1271,36 @@ impl DexProgram {
             && method.proto.descriptor_is("()J")
         {
             // cite: frameworks-base Process.java#getStartUptimeMillis, setStartTimes
+            let value = self.runtime.borrow().process_start_uptime_millis;
+
+            return Some(DexExecutionResult::Value(DexValue::Long(value)));
+        }
+
+        if method.class_descriptor == "Landroid/app/ActivityManager;"
+            && (method.name == "isLowRamDevice" || method.name == "isLowRamDeviceStatic")
+            && method.proto.descriptor_is("()Z")
+        {
+            // cite: frameworks-base ActivityManager.java#isLowRamDevice, isLowRamDeviceStatic
+            let low_ram = crate::native::bionic::props::get("ro.config.low_ram")
+                .is_some_and(|value| matches!(value.as_str(), "1" | "y" | "yes" | "on" | "true"));
+            return Some(DexExecutionResult::Int(i32::from(low_ram)));
+        }
+
+        if method.class_descriptor == "Landroid/app/ActivityManager;"
+            && method.name == "getRunningAppProcesses"
+            && method.proto.descriptor_is("()Ljava/util/List;")
+        {
+            let invocation = invocation?;
+            let value = self.activity_manager_running_app_processes(invocation)?;
+
+            return Some(DexExecutionResult::Value(value));
+        }
+
+        if method.class_descriptor == "Landroid/os/Process;"
+            && method.name == "getStartElapsedRealtime"
+            && method.proto.descriptor_is("()J")
+        {
+            // cite: frameworks-base Process.java#getStartElapsedRealtime, setStartTimes
             let value = self.runtime.borrow().process_start_uptime_millis;
 
             return Some(DexExecutionResult::Value(DexValue::Long(value)));
@@ -1857,6 +1922,15 @@ impl DexProgram {
             return Some(DexExecutionResult::Int(value));
         }
 
+        if method.class_descriptor == "Landroid/webkit/WebView;"
+            && method.name == "setDataDirectorySuffix"
+            && method.proto.descriptor_is("(Ljava/lang/String;)V")
+        {
+            let invocation = invocation?;
+
+            return self.web_view_set_data_directory_suffix(invocation);
+        }
+
         // cite: frameworks-base MimeTypeMap.java#getSingleton
         if method.class_descriptor == "Landroid/webkit/MimeTypeMap;"
             && method.name == "getSingleton"
@@ -1912,6 +1986,56 @@ impl DexProgram {
         }
 
         None
+    }
+
+    fn web_view_set_data_directory_suffix(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        // cite: frameworks-base WebView.java#setDataDirectorySuffix
+        // cite: frameworks-base WebViewFactory.java#setDataDirectorySuffix, sDataDirectorySuffix, sProviderInstance
+        let [suffix] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        let suffix_field = DexFieldId {
+            class_descriptor: "Landroid/webkit/WebViewFactory;".to_owned(),
+            type_descriptor: "Ljava/lang/String;".to_owned(),
+            name: "sDataDirectorySuffix".to_owned(),
+        };
+        let provider_field = DexFieldId {
+            class_descriptor: "Landroid/webkit/WebViewFactory;".to_owned(),
+            type_descriptor: "Landroid/webkit/WebViewProvider;".to_owned(),
+            name: "sProviderInstance".to_owned(),
+        };
+        if self.read_stored_static_field(&provider_field).is_some() {
+            return Some(DexExecutionResult::Throw(
+                self.allocate_generated_exception(DexGeneratedException {
+                    class_descriptor: "Ljava/lang/IllegalStateException;".to_owned(),
+                    detail_message: Some(
+                        "Can't set data directory suffix: WebView already initialized".to_owned(),
+                    ),
+                }),
+            ));
+        }
+        let DexValue::String(text) = suffix else {
+            if matches!(suffix, DexValue::Null | DexValue::Int(0)) {
+                return Some(DexExecutionResult::Throw(
+                    self.allocate_object("Ljava/lang/NullPointerException;".to_owned()),
+                ));
+            }
+            return None;
+        };
+        if text.contains('/') {
+            return Some(DexExecutionResult::Throw(
+                self.allocate_generated_exception(DexGeneratedException {
+                    class_descriptor: "Ljava/lang/IllegalArgumentException;".to_owned(),
+                    detail_message: Some(format!("Suffix {text} contains a path separator")),
+                }),
+            ));
+        }
+        self.write_stored_static_field(&suffix_field, suffix.clone());
+
+        Some(DexExecutionResult::Void)
     }
 
     // cite: frameworks-base MimeTypeMap.java#getMimeTypeFromExtension
@@ -3381,5 +3505,56 @@ impl DexProgram {
         }
 
         self.throwable_stack_trace_text(throwable)
+    }
+}
+
+const RUNNING_APP_PROCESS_INFO: &str = "Landroid/app/ActivityManager$RunningAppProcessInfo;";
+const ACTIVITY_MANAGER_IMPORTANCE_FOREGROUND: i32 = 100;
+
+impl DexProgram {
+    fn activity_manager_running_app_processes(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexValue> {
+        // cite: frameworks-base ActivityManager.java#getRunningAppProcesses, RunningAppProcessInfo, IMPORTANCE_FOREGROUND
+        let [receiver] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        if !dex_value_is_object_like(receiver) {
+            return None;
+        }
+        let process_name = self.bootstrap_process_name();
+        let package_list = self.allocate_array("[Ljava/lang/String;".to_owned(), 1)?;
+        self.write_array_value(
+            &package_list,
+            0,
+            DexValue::String(std::rc::Rc::from(process_name.as_str())),
+        )?;
+        let info = self.allocate_object(RUNNING_APP_PROCESS_INFO.to_owned());
+        let fields = [
+            (
+                "processName",
+                "Ljava/lang/String;",
+                DexValue::String(std::rc::Rc::from(process_name.as_str())),
+            ),
+            ("pid", "I", DexValue::Int(BOOTSTRAP_PROCESS_ID)),
+            ("uid", "I", DexValue::Int(BOOTSTRAP_PROCESS_UID)),
+            ("pkgList", "[Ljava/lang/String;", package_list),
+            (
+                "importance",
+                "I",
+                DexValue::Int(ACTIVITY_MANAGER_IMPORTANCE_FOREGROUND),
+            ),
+        ];
+        for (name, type_descriptor, value) in fields {
+            let field = DexFieldId {
+                class_descriptor: RUNNING_APP_PROCESS_INFO.to_owned(),
+                type_descriptor: type_descriptor.to_owned(),
+                name: name.to_owned(),
+            };
+            self.write_stored_instance_field(&info, &field, value);
+        }
+
+        Some(self.allocate_tracked_list(vec![info]))
     }
 }

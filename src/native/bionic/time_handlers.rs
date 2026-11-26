@@ -11,14 +11,17 @@ use super::sleep::{clock_sleep, nanosleep, sleep_micros, sleep_seconds};
 
 const ASCTIME_BUFFER: usize = 26;
 const WEEKDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 
 static GMT_NAME: OnceLock<usize> = OnceLock::new();
 static GMTIME_BUFFER: OnceLock<usize> = OnceLock::new();
 static ASCTIME_STATIC: OnceLock<usize> = OnceLock::new();
 
 fn gmt_name() -> usize {
-    *GMT_NAME.get_or_init(|| Box::leak(Box::new(CString::new("GMT").expect("no nul"))).as_ptr() as usize)
+    *GMT_NAME
+        .get_or_init(|| Box::leak(Box::new(CString::new("GMT").expect("no nul"))).as_ptr() as usize)
 }
 
 pub fn leaked_buffer(cell: &'static OnceLock<usize>, size: usize) -> usize {
@@ -33,7 +36,10 @@ fn write_timespec(address: usize, value: libc::timespec) {
 }
 
 fn read_timespec(address: usize) -> libc::timespec {
-    libc::timespec { tv_sec: read_value::<i64>(address), tv_nsec: read_value::<i64>(address + 8) }
+    libc::timespec {
+        tv_sec: read_value::<i64>(address),
+        tv_nsec: read_value::<i64>(address + 8),
+    }
 }
 
 fn clock_gettime(context: &mut CallContext) {
@@ -76,7 +82,10 @@ fn gettimeofday(context: &mut CallContext) {
     // cite: bionic vdso.cpp#gettimeofday
     let (value, zone) = (context.arg_ptr(0), context.arg_ptr(1));
     if value != 0 {
-        let current = now(0).unwrap_or(libc::timespec { tv_sec: 0, tv_nsec: 0 });
+        let current = now(0).unwrap_or(libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        });
         write_value::<i64>(value, current.tv_sec);
         write_value::<i64>(value + 8, current.tv_nsec / 1000);
     }
@@ -103,8 +112,16 @@ fn sleeping(context: &mut CallContext) {
 }
 
 fn clock_nanosleep(context: &mut CallContext) {
-    let (clock, flags, request, remaining) = (context.arg_i32(0), context.arg_i32(1), context.arg_ptr(2), context.arg_ptr(3));
-    let mut left = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let (clock, flags, request, remaining) = (
+        context.arg_i32(0),
+        context.arg_i32(1),
+        context.arg_ptr(2),
+        context.arg_ptr(3),
+    );
+    let mut left = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     let code = clock_sleep(clock, flags, read_timespec(request), &mut left);
     if remaining != 0 && code != 0 && flags & 1 == 0 {
         write_timespec(remaining, left);
@@ -129,7 +146,8 @@ fn gmtime_into(context: &mut CallContext, seconds_pointer: usize, destination: u
 fn timegm(context: &mut CallContext) {
     // cite: bionic localtime.c#timegm
     let address = context.arg_ptr(0);
-    let outcome = to_seconds(&read_tm(address)).and_then(|seconds| from_seconds(seconds).map(|parts| (seconds, parts)));
+    let outcome = to_seconds(&read_tm(address))
+        .and_then(|seconds| from_seconds(seconds).map(|parts| (seconds, parts)));
     match outcome {
         Ok((seconds, parts)) => {
             write_tm(address, &parts, 0, 0, gmt_name());
@@ -148,11 +166,26 @@ fn year_text(parts: &BrokenDown) -> String {
 
 fn asctime_text(parts: &BrokenDown) -> String {
     // cite: bionic asctime.c#asctime_r
-    let weekday = usize::try_from(parts.weekday).ok().and_then(|index| WEEKDAYS.get(index)).copied().unwrap_or("???");
-    let month = usize::try_from(parts.month).ok().and_then(|index| MONTHS.get(index)).copied().unwrap_or("???");
+    let weekday = usize::try_from(parts.weekday)
+        .ok()
+        .and_then(|index| WEEKDAYS.get(index))
+        .copied()
+        .unwrap_or("???");
+    let month = usize::try_from(parts.month)
+        .ok()
+        .and_then(|index| MONTHS.get(index))
+        .copied()
+        .unwrap_or("???");
     let year = year_text(parts);
-    let year_field = if year.len() <= 4 { format!("{year:<4}") } else { format!("    {year}") };
-    format!("{weekday} {month}{:3} {:02}:{:02}:{:02} {year_field}\n", parts.day, parts.hour, parts.minute, parts.second)
+    let year_field = if year.len() <= 4 {
+        format!("{year:<4}")
+    } else {
+        format!("    {year}")
+    };
+    format!(
+        "{weekday} {month}{:3} {:02}:{:02}:{:02} {year_field}\n",
+        parts.day, parts.hour, parts.minute, parts.second
+    )
 }
 
 pub fn asctime_into(buffer: usize, parts: &BrokenDown, is_static: bool) -> bool {
@@ -200,12 +233,34 @@ pub fn register() {
     });
     in_libc("nanosleep", sleeping);
     in_libc("clock_nanosleep", clock_nanosleep);
-    in_libc("usleep", |context| context.ret_i32(sleep_micros(context.arg_u32(0))));
-    in_libc("sleep", |context| context.ret_u32(sleep_seconds(context.arg_u32(0))));
-    in_libc("gmtime_r", |context| gmtime_into(context, context.arg_ptr(0), context.arg_ptr(1)));
-    in_libc("gmtime", |context| gmtime_into(context, context.arg_ptr(0), leaked_buffer(&GMTIME_BUFFER, TM_SIZE)));
+    in_libc("usleep", |context| {
+        context.ret_i32(sleep_micros(context.arg_u32(0)))
+    });
+    in_libc("sleep", |context| {
+        context.ret_u32(sleep_seconds(context.arg_u32(0)))
+    });
+    in_libc("gmtime_r", |context| {
+        gmtime_into(context, context.arg_ptr(0), context.arg_ptr(1))
+    });
+    in_libc("gmtime", |context| {
+        gmtime_into(
+            context,
+            context.arg_ptr(0),
+            leaked_buffer(&GMTIME_BUFFER, TM_SIZE),
+        )
+    });
     in_libc("timegm", timegm);
-    in_libc("difftime", |context| context.ret_f64((context.arg_u64(0) as i64 as f64) - (context.arg_u64(1) as i64 as f64)));
-    in_libc("asctime_r", |context| asctime(context, context.arg_ptr(1), false));
-    in_libc("asctime", |context| asctime(context, leaked_buffer(&ASCTIME_STATIC, ASCTIME_BUFFER.max(80)), true));
+    in_libc("difftime", |context| {
+        context.ret_f64((context.arg_u64(0) as i64 as f64) - (context.arg_u64(1) as i64 as f64))
+    });
+    in_libc("asctime_r", |context| {
+        asctime(context, context.arg_ptr(1), false)
+    });
+    in_libc("asctime", |context| {
+        asctime(
+            context,
+            leaked_buffer(&ASCTIME_STATIC, ASCTIME_BUFFER.max(80)),
+            true,
+        )
+    });
 }

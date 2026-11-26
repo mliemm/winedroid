@@ -14,7 +14,20 @@ const ENOENT: i32 = 2;
 
 const EVENT_SIZE: usize = 16;
 
-const INTEREST: u32 = flags::IN | flags::PRI | flags::OUT | flags::ERR | flags::HUP | flags::RDNORM | flags::RDBAND | flags::WRNORM | flags::WRBAND | flags::RDHUP | flags::EXCLUSIVE | flags::WAKEUP | flags::ONESHOT | flags::ET;
+const INTEREST: u32 = flags::IN
+    | flags::PRI
+    | flags::OUT
+    | flags::ERR
+    | flags::HUP
+    | flags::RDNORM
+    | flags::RDBAND
+    | flags::WRNORM
+    | flags::WRBAND
+    | flags::RDHUP
+    | flags::EXCLUSIVE
+    | flags::WAKEUP
+    | flags::ONESHOT
+    | flags::ET;
 
 const READ_INTEREST: u32 = flags::IN | flags::RDNORM | flags::RDHUP;
 
@@ -54,8 +67,11 @@ pub fn create(flags_value: i32) -> i64 {
     if flags_value & flags::CLOEXEC != 0 {
         unsafe { libc::fcntl(queue, libc::F_SETFD, libc::FD_CLOEXEC) };
     }
-    let state = Arc::new(EpollState { registrations: Mutex::new(HashMap::new()) });
-    let entry = FdEntry::new(FdKind::Epoll, "anon_inode:[eventpoll]", open::RDWR).with_payload(state);
+    let state = Arc::new(EpollState {
+        registrations: Mutex::new(HashMap::new()),
+    });
+    let entry =
+        FdEntry::new(FdKind::Epoll, "anon_inode:[eventpoll]", open::RDWR).with_payload(state);
     fd_table::adopt(queue, entry);
     i64::from(queue)
 }
@@ -80,7 +96,16 @@ fn change(queue: i32, fd: i32, changes: &[Change]) -> Result<(), i32> {
             udata: fd as *mut libc::c_void,
         })
         .collect();
-    let status = unsafe { libc::kevent(queue, events.as_ptr(), events.len() as libc::c_int, std::ptr::null_mut(), 0, std::ptr::null()) };
+    let status = unsafe {
+        libc::kevent(
+            queue,
+            events.as_ptr(),
+            events.len() as libc::c_int,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null(),
+        )
+    };
     if status < 0 {
         Err((-from_host()) as i32)
     } else {
@@ -95,18 +120,30 @@ fn apply(queue: i32, fd: i32, events: u32, edge: bool, previous: Option<u32>) ->
         read_flags |= libc::EV_CLEAR;
     }
     if events & READ_INTEREST != 0 {
-        changes.push(Change { filter: libc::EVFILT_READ, flags: read_flags });
+        changes.push(Change {
+            filter: libc::EVFILT_READ,
+            flags: read_flags,
+        });
     } else if previous.is_some_and(|previous| previous & READ_INTEREST != 0) {
-        changes.push(Change { filter: libc::EVFILT_READ, flags: libc::EV_DELETE });
+        changes.push(Change {
+            filter: libc::EVFILT_READ,
+            flags: libc::EV_DELETE,
+        });
     }
     let mut write_flags = libc::EV_ADD | libc::EV_ENABLE;
     if edge {
         write_flags |= libc::EV_CLEAR;
     }
     if events & WRITE_INTEREST != 0 {
-        changes.push(Change { filter: libc::EVFILT_WRITE, flags: write_flags });
+        changes.push(Change {
+            filter: libc::EVFILT_WRITE,
+            flags: write_flags,
+        });
     } else if previous.is_some_and(|previous| previous & WRITE_INTEREST != 0) {
-        changes.push(Change { filter: libc::EVFILT_WRITE, flags: libc::EV_DELETE });
+        changes.push(Change {
+            filter: libc::EVFILT_WRITE,
+            flags: libc::EV_DELETE,
+        });
     }
     change(queue, fd, &changes)
 }
@@ -127,8 +164,25 @@ fn control(epfd: i32, operation: i32, fd: i32, event_pointer: usize) -> i64 {
         return error(EFAULT);
     }
     if operation == flags::CTL_DEL {
-        let removed = state.registrations.lock().expect("epoll registrations").remove(&fd);
-        let _ = change(epfd, fd, &[Change { filter: libc::EVFILT_READ, flags: libc::EV_DELETE }, Change { filter: libc::EVFILT_WRITE, flags: libc::EV_DELETE }]);
+        let removed = state
+            .registrations
+            .lock()
+            .expect("epoll registrations")
+            .remove(&fd);
+        let _ = change(
+            epfd,
+            fd,
+            &[
+                Change {
+                    filter: libc::EVFILT_READ,
+                    flags: libc::EV_DELETE,
+                },
+                Change {
+                    filter: libc::EVFILT_WRITE,
+                    flags: libc::EV_DELETE,
+                },
+            ],
+        );
         return if removed.is_some() { 0 } else { error(ENOENT) };
     }
     let events = read_value::<u32>(event_pointer);
@@ -137,14 +191,19 @@ fn control(epfd: i32, operation: i32, fd: i32, event_pointer: usize) -> i64 {
         return error(EINVAL);
     }
     if events & flags::PRI != 0 {
-        missing("epoll_ctl", "EPOLLPRI needs out of band data reporting kqueue does not provide");
+        missing(
+            "epoll_ctl",
+            "EPOLLPRI needs out of band data reporting kqueue does not provide",
+        );
         return error(EINVAL);
     }
     if events & flags::ET != 0 && events & flags::ONESHOT != 0 {
         return error(EINVAL);
     }
     let mut registrations = state.registrations.lock().expect("epoll registrations");
-    let previous = registrations.get(&fd).map(|registration| registration.events);
+    let previous = registrations
+        .get(&fd)
+        .map(|registration| registration.events);
     if operation == flags::CTL_ADD && previous.is_some() {
         return error(EEXIST);
     }
@@ -154,15 +213,28 @@ fn control(epfd: i32, operation: i32, fd: i32, event_pointer: usize) -> i64 {
     if let Err(errno) = apply(epfd, fd, events, events & flags::ET != 0, previous) {
         return error(errno);
     }
-    registrations.insert(fd, Registration { events, data, armed: true });
+    registrations.insert(
+        fd,
+        Registration {
+            events,
+            data,
+            armed: true,
+        },
+    );
     0
 }
 
 fn timeout_of(milliseconds: i64) -> libc::timespec {
     if milliseconds < 0 {
-        return libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        return libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
     }
-    libc::timespec { tv_sec: milliseconds / 1000, tv_nsec: (milliseconds % 1000) * 1_000_000 }
+    libc::timespec {
+        tv_sec: milliseconds / 1000,
+        tv_nsec: (milliseconds % 1000) * 1_000_000,
+    }
 }
 
 fn event_flags(interest: u32, filter: i16, returned: u16) -> u32 {
@@ -195,7 +267,13 @@ fn event_flags(interest: u32, filter: i16, returned: u16) -> u32 {
     events
 }
 
-fn wait_impl(epfd: i32, events_pointer: usize, max_events: i32, timeout: Option<libc::timespec>, mask: usize) -> i64 {
+fn wait_impl(
+    epfd: i32,
+    events_pointer: usize,
+    max_events: i32,
+    timeout: Option<libc::timespec>,
+    mask: usize,
+) -> i64 {
     // cite: bionic sys_epoll.cpp#epoll_wait
     let state = match state_of(epfd) {
         Ok(state) => state,
@@ -214,9 +292,30 @@ fn wait_impl(epfd: i32, events_pointer: usize, max_events: i32, timeout: Option<
     if mask != 0 {
         super::super::signal_state::set_mask(read_value::<u64>(mask));
     }
-    let mut returned = vec![libc::kevent { ident: 0, filter: 0, flags: 0, fflags: 0, data: 0, udata: std::ptr::null_mut() }; max_events as usize];
-    let timeout_pointer = timeout.as_ref().map_or(std::ptr::null(), |value| value as *const libc::timespec);
-    let count = unsafe { libc::kevent(epfd, std::ptr::null(), 0, returned.as_mut_ptr(), max_events, timeout_pointer) };
+    let mut returned = vec![
+        libc::kevent {
+            ident: 0,
+            filter: 0,
+            flags: 0,
+            fflags: 0,
+            data: 0,
+            udata: std::ptr::null_mut()
+        };
+        max_events as usize
+    ];
+    let timeout_pointer = timeout
+        .as_ref()
+        .map_or(std::ptr::null(), |value| value as *const libc::timespec);
+    let count = unsafe {
+        libc::kevent(
+            epfd,
+            std::ptr::null(),
+            0,
+            returned.as_mut_ptr(),
+            max_events,
+            timeout_pointer,
+        )
+    };
     let failure = if count < 0 { Some(from_host()) } else { None };
     if mask != 0 {
         super::super::signal_state::set_mask(previous);
@@ -229,7 +328,9 @@ fn wait_impl(epfd: i32, events_pointer: usize, max_events: i32, timeout: Option<
     let mut registrations = state.registrations.lock().expect("epoll registrations");
     for entry in returned.iter().take(count as usize) {
         let fd = entry.udata as usize as i32;
-        let Some(registration) = registrations.get(&fd) else { continue };
+        let Some(registration) = registrations.get(&fd) else {
+            continue;
+        };
         if !registration.armed || !fd_table::contains(fd) {
             continue;
         }
@@ -248,7 +349,10 @@ fn wait_impl(epfd: i32, events_pointer: usize, max_events: i32, timeout: Option<
     }
     let mut written = 0usize;
     for (fd, events) in merged.iter().take(max_events as usize) {
-        let data = registrations.get(fd).map(|registration| registration.data).unwrap_or(0);
+        let data = registrations
+            .get(fd)
+            .map(|registration| registration.data)
+            .unwrap_or(0);
         write_value::<u32>(events_pointer + written * EVENT_SIZE, *events);
         write_value::<u64>(events_pointer + written * EVENT_SIZE + 8, data);
         written += 1;
@@ -257,7 +361,20 @@ fn wait_impl(epfd: i32, events_pointer: usize, max_events: i32, timeout: Option<
         if let Some(registration) = registrations.get_mut(&fd) {
             registration.armed = false;
         }
-        let _ = change(epfd, fd, &[Change { filter: libc::EVFILT_READ, flags: libc::EV_DELETE }, Change { filter: libc::EVFILT_WRITE, flags: libc::EV_DELETE }]);
+        let _ = change(
+            epfd,
+            fd,
+            &[
+                Change {
+                    filter: libc::EVFILT_READ,
+                    flags: libc::EV_DELETE,
+                },
+                Change {
+                    filter: libc::EVFILT_WRITE,
+                    flags: libc::EV_DELETE,
+                },
+            ],
+        );
     }
     written as i64
 }
@@ -266,7 +383,11 @@ pub fn forget_closed(fd: i32) {
     for epfd in fd_table::list() {
         if let Some(entry) = fd_table::get(epfd) {
             if let Some(state) = entry.payload_as::<EpollState>() {
-                state.registrations.lock().expect("epoll registrations").remove(&fd);
+                state
+                    .registrations
+                    .lock()
+                    .expect("epoll registrations")
+                    .remove(&fd);
             }
         }
     }
@@ -278,17 +399,55 @@ fn handle(context: &mut CallContext, result: i64) {
 
 pub fn register() {
     in_libc("epoll_create", |context| handle(context, create(0)));
-    in_libc("epoll_create1", |context| handle(context, create(context.arg_i32(0))));
-    in_libc("epoll_ctl", |context| handle(context, control(context.arg_i32(0), context.arg_i32(1), context.arg_i32(2), context.arg_ptr(3))));
+    in_libc("epoll_create1", |context| {
+        handle(context, create(context.arg_i32(0)))
+    });
+    in_libc("epoll_ctl", |context| {
+        handle(
+            context,
+            control(
+                context.arg_i32(0),
+                context.arg_i32(1),
+                context.arg_i32(2),
+                context.arg_ptr(3),
+            ),
+        )
+    });
     in_libc("epoll_wait", |context| {
         let milliseconds = i64::from(context.arg_i32(3));
-        let timeout = if milliseconds < 0 { None } else { Some(timeout_of(milliseconds)) };
-        handle(context, wait_impl(context.arg_i32(0), context.arg_ptr(1), context.arg_i32(2), timeout, 0));
+        let timeout = if milliseconds < 0 {
+            None
+        } else {
+            Some(timeout_of(milliseconds))
+        };
+        handle(
+            context,
+            wait_impl(
+                context.arg_i32(0),
+                context.arg_ptr(1),
+                context.arg_i32(2),
+                timeout,
+                0,
+            ),
+        );
     });
     in_libc("epoll_pwait", |context| {
         let milliseconds = i64::from(context.arg_i32(3));
-        let timeout = if milliseconds < 0 { None } else { Some(timeout_of(milliseconds)) };
-        handle(context, wait_impl(context.arg_i32(0), context.arg_ptr(1), context.arg_i32(2), timeout, context.arg_ptr(4)));
+        let timeout = if milliseconds < 0 {
+            None
+        } else {
+            Some(timeout_of(milliseconds))
+        };
+        handle(
+            context,
+            wait_impl(
+                context.arg_i32(0),
+                context.arg_ptr(1),
+                context.arg_i32(2),
+                timeout,
+                context.arg_ptr(4),
+            ),
+        );
     });
     in_libc("epoll_pwait2", |context| {
         let pointer = context.arg_ptr(3);
@@ -299,8 +458,20 @@ pub fn register() {
             if seconds < 0 || !(0..1_000_000_000).contains(&nanos) {
                 return handle(context, error(EINVAL));
             }
-            Some(libc::timespec { tv_sec: seconds as libc::time_t, tv_nsec: nanos as libc::c_long })
+            Some(libc::timespec {
+                tv_sec: seconds as libc::time_t,
+                tv_nsec: nanos as libc::c_long,
+            })
         };
-        handle(context, wait_impl(context.arg_i32(0), context.arg_ptr(1), context.arg_i32(2), timeout, context.arg_ptr(4)));
+        handle(
+            context,
+            wait_impl(
+                context.arg_i32(0),
+                context.arg_ptr(1),
+                context.arg_i32(2),
+                timeout,
+                context.arg_ptr(4),
+            ),
+        );
     });
 }

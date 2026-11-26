@@ -30,7 +30,12 @@ fn barrier_wait(barrier: usize) -> i32 {
         if previous >= init_count {
             return EINVAL;
         }
-        match count.compare_exchange_weak(previous, previous + 1, Ordering::AcqRel, Ordering::Relaxed) {
+        match count.compare_exchange_weak(
+            previous,
+            previous + 1,
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        ) {
             Ok(_) => break,
             Err(current) => previous = current,
         }
@@ -63,7 +68,10 @@ pub fn register() {
         context.ret_i32(0);
     });
     in_libc("pthread_barrierattr_getpshared", |context| {
-        write_value::<i32>(context.arg_ptr(1), read_value::<i32>(context.arg_ptr(0)) & 1);
+        write_value::<i32>(
+            context.arg_ptr(1),
+            read_value::<i32>(context.arg_ptr(0)) & 1,
+        );
         context.ret_i32(0);
     });
     in_libc("pthread_barrierattr_setpshared", |context| {
@@ -75,17 +83,23 @@ pub fn register() {
     });
     in_libc("pthread_barrier_init", |context| {
         // cite: bionic pthread_barrier.cpp#pthread_barrier_init
-        let (barrier, attribute, count) = (context.arg_ptr(0), context.arg_ptr(1), context.arg_u32(2));
+        let (barrier, attribute, count) =
+            (context.arg_ptr(0), context.arg_ptr(1), context.arg_u32(2));
         if count == 0 {
             return context.ret_i32(EINVAL);
         }
         u32_at(barrier).store(count, Ordering::Relaxed);
         u32_at(barrier + STATE).store(WAIT, Ordering::Relaxed);
         u32_at(barrier + WAIT_COUNT).store(0, Ordering::Relaxed);
-        write_value::<u8>(barrier + PSHARED, u8::from(attribute != 0 && read_value::<i32>(attribute) & 1 != 0));
+        write_value::<u8>(
+            barrier + PSHARED,
+            u8::from(attribute != 0 && read_value::<i32>(attribute) & 1 != 0),
+        );
         context.ret_i32(0);
     });
-    in_libc("pthread_barrier_wait", |context| context.ret_i32(barrier_wait(context.arg_ptr(0))));
+    in_libc("pthread_barrier_wait", |context| {
+        context.ret_i32(barrier_wait(context.arg_ptr(0)))
+    });
     in_libc("pthread_barrier_destroy", |context| {
         // cite: bionic pthread_barrier.cpp#pthread_barrier_destroy
         let barrier = context.arg_ptr(0);

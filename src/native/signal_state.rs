@@ -25,7 +25,12 @@ pub struct Action {
     pub restorer: u64,
 }
 
-pub const DEFAULT_ACTION: Action = Action { flags: 0, handler: SIG_DFL, mask: 0, restorer: 0 };
+pub const DEFAULT_ACTION: Action = Action {
+    flags: 0,
+    handler: SIG_DFL,
+    mask: 0,
+    restorer: 0,
+};
 
 impl Action {
     pub fn has_handler(&self) -> bool {
@@ -33,11 +38,14 @@ impl Action {
     }
 }
 
-static ACTIONS: [AtomicPtr<Action>; SIGNAL_COUNT as usize + 1] = [const { AtomicPtr::new(std::ptr::null_mut()) }; SIGNAL_COUNT as usize + 1];
+static ACTIONS: [AtomicPtr<Action>; SIGNAL_COUNT as usize + 1] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; SIGNAL_COUNT as usize + 1];
 
 pub fn action_of(signal: i32) -> Action {
     let published = ACTIONS[signal as usize].load(Ordering::Acquire);
-    unsafe { published.as_ref() }.copied().unwrap_or(DEFAULT_ACTION)
+    unsafe { published.as_ref() }
+        .copied()
+        .unwrap_or(DEFAULT_ACTION)
 }
 
 pub fn publish_action(signal: i32, action: Action) {
@@ -78,7 +86,9 @@ pub fn in_guest() -> bool {
 }
 
 pub fn set_in_guest(value: bool) -> bool {
-    IN_GUEST.try_with(|flag| flag.replace(value)).unwrap_or(false)
+    IN_GUEST
+        .try_with(|flag| flag.replace(value))
+        .unwrap_or(false)
 }
 
 pub fn pending() -> u64 {
@@ -142,7 +152,12 @@ mod tests {
     #[test]
     fn actions_start_as_default_and_publish_replaces_them() {
         // cite: bionic sigaction.cpp#sigaction
-        let action = Action { flags: SA_SIGINFO | SA_RESTART, handler: 0x1234, mask: bit(10), restorer: 0 };
+        let action = Action {
+            flags: SA_SIGINFO | SA_RESTART,
+            handler: 0x1234,
+            mask: bit(10),
+            restorer: 0,
+        };
 
         assert_eq!(action_of(50), DEFAULT_ACTION);
         publish_action(50, action);

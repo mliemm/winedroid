@@ -1,9 +1,9 @@
 use std::cmp::Ordering;
 
+use super::super::bridge::CallContext;
 use super::abi_types::ERANGE;
 use super::export::in_libc;
 use super::guest_mem::{cstr_bytes, read_value, write_value};
-use super::super::bridge::CallContext;
 
 const MANTISSA_BITS: u32 = 112;
 const EXPONENT_BIAS: i32 = 16383;
@@ -34,7 +34,11 @@ impl Big {
     }
 
     fn from_digits(digits: &[u8], radix: u32) -> Self {
-        let chunk_digits = if radix == 10 { CHUNK_DIGITS } else { HEX_CHUNK_DIGITS };
+        let chunk_digits = if radix == 10 {
+            CHUNK_DIGITS
+        } else {
+            HEX_CHUNK_DIGITS
+        };
         let mut value = Self::zero();
         let mut index = 0;
         while index < digits.len() {
@@ -118,7 +122,11 @@ impl Big {
         let mut carry = 0u32;
         for limb in &self.0 {
             value.0.push((limb << offset) | carry);
-            carry = if offset == 0 { 0 } else { limb >> (32 - offset) };
+            carry = if offset == 0 {
+                0
+            } else {
+                limb >> (32 - offset)
+            };
         }
         if carry != 0 {
             value.0.push(carry);
@@ -179,7 +187,11 @@ impl Big {
 #[derive(Debug, PartialEq, Eq)]
 enum Magnitude {
     Zero,
-    Finite { numerator: Big, denominator: Big, sticky: bool },
+    Finite {
+        numerator: Big,
+        denominator: Big,
+        sticky: bool,
+    },
     Infinite,
     Overflow,
     Underflow,
@@ -194,7 +206,11 @@ struct Scan {
 }
 
 fn matches(input: &[u8], index: usize, word: &[u8]) -> bool {
-    input.len() >= index + word.len() && input[index..index + word.len()].iter().map(|byte| byte.to_ascii_lowercase()).eq(word.iter().copied())
+    input.len() >= index + word.len()
+        && input[index..index + word.len()]
+            .iter()
+            .map(|byte| byte.to_ascii_lowercase())
+            .eq(word.iter().copied())
 }
 
 fn is_space(byte: u8) -> bool {
@@ -228,7 +244,10 @@ fn scan_decimal_exponent(input: &[u8], cursor: &mut usize) -> Option<i32> {
     let digits = at;
     let mut value: i32 = 0;
     while let Some(byte) = input.get(at).filter(|byte| byte.is_ascii_digit()) {
-        value = value.saturating_mul(10).saturating_add(i32::from(*byte - b'0')).min(EXPONENT_LIMIT);
+        value = value
+            .saturating_mul(10)
+            .saturating_add(i32::from(*byte - b'0'))
+            .min(EXPONENT_LIMIT);
         at += 1;
     }
     if at == digits {
@@ -239,7 +258,10 @@ fn scan_decimal_exponent(input: &[u8], cursor: &mut usize) -> Option<i32> {
 }
 
 fn significant_digits(digits: &[u8]) -> (usize, bool) {
-    let leading = digits.iter().position(|digit| *digit != 0).unwrap_or(digits.len());
+    let leading = digits
+        .iter()
+        .position(|digit| *digit != 0)
+        .unwrap_or(digits.len());
     let significant = &digits[leading..];
     let kept = significant.len().min(DIGIT_LIMIT);
     (kept, significant[kept..].iter().any(|digit| *digit != 0))
@@ -249,7 +271,11 @@ fn scan_decimal(input: &[u8], start: usize) -> Option<(Magnitude, usize)> {
     let mut cursor = start;
     let mut digits: Vec<u8> = Vec::new();
     let mut fraction_digits = 0i32;
-    while let Some(byte) = input.get(cursor).copied().filter(|byte| byte.is_ascii_digit()) {
+    while let Some(byte) = input
+        .get(cursor)
+        .copied()
+        .filter(|byte| byte.is_ascii_digit())
+    {
         digits.push(byte - b'0');
         cursor += 1;
     }
@@ -258,7 +284,11 @@ fn scan_decimal(input: &[u8], start: usize) -> Option<(Magnitude, usize)> {
         let before = digits.len();
         let dot = cursor;
         cursor += 1;
-        while let Some(byte) = input.get(cursor).copied().filter(|byte| byte.is_ascii_digit()) {
+        while let Some(byte) = input
+            .get(cursor)
+            .copied()
+            .filter(|byte| byte.is_ascii_digit())
+        {
             digits.push(byte - b'0');
             saw_digit = true;
             cursor += 1;
@@ -277,7 +307,10 @@ fn scan_decimal(input: &[u8], start: usize) -> Option<(Magnitude, usize)> {
     if kept == 0 {
         return Some((Magnitude::Zero, cursor));
     }
-    let leading = digits.iter().position(|digit| *digit != 0).unwrap_or(digits.len());
+    let leading = digits
+        .iter()
+        .position(|digit| *digit != 0)
+        .unwrap_or(digits.len());
     let magnitude_exponent = i64::from(exponent) + kept as i64;
     if magnitude_exponent > DECIMAL_RANGE {
         return Some((Magnitude::Overflow, cursor));
@@ -306,17 +339,30 @@ fn scan_decimal(input: &[u8], start: usize) -> Option<(Magnitude, usize)> {
             denominator.mul_small(10u32.pow((-exponent) as u32));
         }
     }
-    Some((Magnitude::Finite { numerator, denominator, sticky }, cursor))
+    Some((
+        Magnitude::Finite {
+            numerator,
+            denominator,
+            sticky,
+        },
+        cursor,
+    ))
 }
 
 fn scan_hex(input: &[u8], start: usize) -> Option<(Magnitude, usize)> {
-    if input.get(start) != Some(&b'0') || !matches!(input.get(start + 1).copied(), Some(b'x' | b'X')) {
+    if input.get(start) != Some(&b'0')
+        || !matches!(input.get(start + 1).copied(), Some(b'x' | b'X'))
+    {
         return None;
     }
     let mut cursor = start + 2;
     let mut digits: Vec<u8> = Vec::new();
     let mut fraction_digits = 0i64;
-    while let Some(value) = input.get(cursor).copied().and_then(|byte| digit_value(byte, 16)) {
+    while let Some(value) = input
+        .get(cursor)
+        .copied()
+        .and_then(|byte| digit_value(byte, 16))
+    {
         digits.push(value as u8);
         cursor += 1;
     }
@@ -325,7 +371,11 @@ fn scan_hex(input: &[u8], start: usize) -> Option<(Magnitude, usize)> {
         let before = digits.len();
         let dot = cursor;
         cursor += 1;
-        while let Some(value) = input.get(cursor).copied().and_then(|byte| digit_value(byte, 16)) {
+        while let Some(value) = input
+            .get(cursor)
+            .copied()
+            .and_then(|byte| digit_value(byte, 16))
+        {
             digits.push(value as u8);
             saw_digit = true;
             cursor += 1;
@@ -354,7 +404,10 @@ fn scan_hex(input: &[u8], start: usize) -> Option<(Magnitude, usize)> {
         let digits_start = at;
         let mut value: i64 = 0;
         while let Some(byte) = input.get(at).filter(|byte| byte.is_ascii_digit()) {
-            value = value.saturating_mul(10).saturating_add(i64::from(*byte - b'0')).min(i64::from(EXPONENT_LIMIT));
+            value = value
+                .saturating_mul(10)
+                .saturating_add(i64::from(*byte - b'0'))
+                .min(i64::from(EXPONENT_LIMIT));
             at += 1;
         }
         if at != digits_start {
@@ -366,7 +419,10 @@ fn scan_hex(input: &[u8], start: usize) -> Option<(Magnitude, usize)> {
     if kept == 0 {
         return Some((Magnitude::Zero, cursor));
     }
-    let leading = digits.iter().position(|digit| *digit != 0).unwrap_or(digits.len());
+    let leading = digits
+        .iter()
+        .position(|digit| *digit != 0)
+        .unwrap_or(digits.len());
     let mantissa = Big::from_digits(&digits[leading..leading + kept], 16);
     let binary_exponent = exponent - 4 * fraction_digits;
     if binary_exponent > BINARY_RANGE {
@@ -382,7 +438,11 @@ fn scan_hex(input: &[u8], start: usize) -> Option<(Magnitude, usize)> {
             sticky,
         }
     } else {
-        Magnitude::Finite { numerator: mantissa, denominator: Big::power_of_two((-binary_exponent) as usize), sticky }
+        Magnitude::Finite {
+            numerator: mantissa,
+            denominator: Big::power_of_two((-binary_exponent) as usize),
+            sticky,
+        }
     };
     Some((magnitude, cursor))
 }
@@ -407,26 +467,45 @@ fn scan(input: &[u8]) -> Option<Scan> {
         if matches(input, index, b"inity") {
             index += 5;
         }
-        return Some(Scan { negative, magnitude: Magnitude::Infinite, end: index });
+        return Some(Scan {
+            negative,
+            magnitude: Magnitude::Infinite,
+            end: index,
+        });
     }
     if matches(input, index, b"nan") {
         index += 3;
         if input.get(index) == Some(&b'(') {
             let mut at = index + 1;
-            while input.get(at).is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_') {
+            while input
+                .get(at)
+                .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+            {
                 at += 1;
             }
             if input.get(at) == Some(&b')') {
                 index = at + 1;
             }
         }
-        return Some(Scan { negative, magnitude: Magnitude::Nan, end: index });
+        return Some(Scan {
+            negative,
+            magnitude: Magnitude::Nan,
+            end: index,
+        });
     }
     if let Some((magnitude, end)) = scan_hex(input, index) {
-        return Some(Scan { negative, magnitude, end });
+        return Some(Scan {
+            negative,
+            magnitude,
+            end,
+        });
     }
     let (magnitude, end) = scan_decimal(input, index)?;
-    Some(Scan { negative, magnitude, end })
+    Some(Scan {
+        negative,
+        magnitude,
+        end,
+    })
 }
 
 fn floor_log2(numerator: &Big, denominator: &Big) -> i64 {
@@ -437,7 +516,11 @@ fn floor_log2(numerator: &Big, denominator: &Big) -> i64 {
         } else {
             difference
         }
-    } else if numerator.shifted((-difference) as usize).compare(denominator) == Ordering::Less {
+    } else if numerator
+        .shifted((-difference) as usize)
+        .compare(denominator)
+        == Ordering::Less
+    {
         difference - 1
     } else {
         difference
@@ -454,7 +537,12 @@ struct Rounding {
 fn divide_rounded(numerator: &mut Big, denominator: &Big) -> Option<Rounding> {
     let difference = numerator.bit_length() as i64 - denominator.bit_length() as i64;
     if difference < 0 {
-        return Some(Rounding { value: 0, above_half: false, exactly_half: false, below_half_by_one: false });
+        return Some(Rounding {
+            value: 0,
+            above_half: false,
+            exactly_half: false,
+            below_half_by_one: false,
+        });
     }
     if difference as u32 > SIGNIFICAND_BITS {
         return None;
@@ -474,12 +562,19 @@ fn divide_rounded(numerator: &mut Big, denominator: &Big) -> Option<Rounding> {
     let exactly_half = twice.compare(denominator) == Ordering::Equal;
     twice.add_small(1);
     let below_half_by_one = twice.compare(denominator) == Ordering::Equal;
-    Some(Rounding { value, above_half, exactly_half, below_half_by_one })
+    Some(Rounding {
+        value,
+        above_half,
+        exactly_half,
+        below_half_by_one,
+    })
 }
 
 fn round_significand(numerator: &Big, denominator: &Big, sticky: bool) -> Option<u128> {
     let rounding = divide_rounded(&mut numerator.clone(), denominator)?;
-    let round_up = rounding.above_half || (rounding.exactly_half && ((rounding.value & 1) != 0 || sticky)) || (rounding.below_half_by_one && sticky);
+    let round_up = rounding.above_half
+        || (rounding.exactly_half && ((rounding.value & 1) != 0 || sticky))
+        || (rounding.below_half_by_one && sticky);
     Some(rounding.value + u128::from(round_up))
 }
 
@@ -490,7 +585,10 @@ enum Converted {
 
 fn convert(negative: bool, numerator: &Big, denominator: &Big, sticky: bool) -> Converted {
     if numerator.is_zero() {
-        return Converted::Bits { bits: u128::from(negative) << 127, zero: true };
+        return Converted::Bits {
+            bits: u128::from(negative) << 127,
+            zero: true,
+        };
     }
     let mut exponent = floor_log2(numerator, denominator).max(i64::from(MIN_EXPONENT));
     if exponent > i64::from(MAX_EXPONENT) {
@@ -502,11 +600,15 @@ fn convert(negative: bool, numerator: &Big, denominator: &Big, sticky: bool) -> 
     } else {
         (numerator.clone(), denominator.shifted((-shift) as usize))
     };
-    let Some(mut significand) = round_significand(&scaled_numerator, &scaled_denominator, sticky) else {
+    let Some(mut significand) = round_significand(&scaled_numerator, &scaled_denominator, sticky)
+    else {
         return Converted::Overflow;
     };
     if significand == 0 {
-        return Converted::Bits { bits: u128::from(negative) << 127, zero: true };
+        return Converted::Bits {
+            bits: u128::from(negative) << 127,
+            zero: true,
+        };
     }
     while significand >= 1u128 << SIGNIFICAND_BITS {
         significand >>= 1;
@@ -518,9 +620,15 @@ fn convert(negative: bool, numerator: &Big, denominator: &Big, sticky: bool) -> 
     let sign = u128::from(negative) << 127;
     if significand >= 1u128 << MANTISSA_BITS {
         let field = ((exponent as i32 + EXPONENT_BIAS) as u128) << MANTISSA_BITS;
-        Converted::Bits { bits: sign | field | (significand & ((1u128 << MANTISSA_BITS) - 1)), zero: false }
+        Converted::Bits {
+            bits: sign | field | (significand & ((1u128 << MANTISSA_BITS) - 1)),
+            zero: false,
+        }
     } else {
-        Converted::Bits { bits: sign | significand, zero: false }
+        Converted::Bits {
+            bits: sign | significand,
+            zero: false,
+        }
     }
 }
 
@@ -532,8 +640,14 @@ fn evaluate(scan: &Scan) -> (u128, Option<i32>) {
         Magnitude::Overflow => (sign | INFINITY_BITS, Some(ERANGE)),
         Magnitude::Underflow => (sign, Some(ERANGE)),
         Magnitude::Nan => (sign | QUIET_NAN, None),
-        Magnitude::Finite { numerator, denominator, sticky } => match convert(scan.negative, numerator, denominator, *sticky) {
-            Converted::Bits { bits, zero } => (bits, (zero && !numerator.is_zero()).then_some(ERANGE)),
+        Magnitude::Finite {
+            numerator,
+            denominator,
+            sticky,
+        } => match convert(scan.negative, numerator, denominator, *sticky) {
+            Converted::Bits { bits, zero } => {
+                (bits, (zero && !numerator.is_zero()).then_some(ERANGE))
+            }
             Converted::Overflow => (sign | INFINITY_BITS, Some(ERANGE)),
         },
     }
@@ -555,7 +669,14 @@ fn strtold(context: &mut CallContext) {
     let (bits, consumed, errno) = convert_bytes(cstr_bytes(start));
     let end = context.arg_ptr(1);
     if end != 0 {
-        write_value::<usize>(end, if consumed == 0 { start } else { start + consumed });
+        write_value::<usize>(
+            end,
+            if consumed == 0 {
+                start
+            } else {
+                start + consumed
+            },
+        );
     }
     if let Some(code) = errno {
         context.set_errno(code);
@@ -583,11 +704,20 @@ fn wcstold(context: &mut CallContext) {
         }
         span += 1;
     }
-    let ascii: Vec<u8> = (0..span).map(|index| read_value::<u32>(cursor + index * 4) as u8).collect();
+    let ascii: Vec<u8> = (0..span)
+        .map(|index| read_value::<u32>(cursor + index * 4) as u8)
+        .collect();
     let (bits, consumed, errno) = convert_bytes(&ascii);
     let end = context.arg_ptr(1);
     if end != 0 {
-        write_value::<usize>(end, if consumed == 0 { original } else { cursor + consumed * 4 });
+        write_value::<usize>(
+            end,
+            if consumed == 0 {
+                original
+            } else {
+                cursor + consumed * 4
+            },
+        );
     }
     if let Some(code) = errno {
         context.set_errno(code);
@@ -615,9 +745,18 @@ mod tests {
         let vectors: [(&str, u128); 9] = [
             ("0.1", 0x3ffb_9999_9999_9999_9999_9999_9999_999a),
             ("1.5", 0x3fff_8000_0000_0000_0000_0000_0000_0000),
-            ("3.14159265358979323846264338327950288", 0x4000_921f_b544_42d1_8469_898c_c517_01b8),
-            ("123456789012345678901234567890.5", 0x405f_8ee9_0ff6_c373_e0ee_4e3f_0ad2_8000),
-            ("2.2250738585072014e-308", 0x3c01_0000_0000_0000_008c_304c_cf86_7de0),
+            (
+                "3.14159265358979323846264338327950288",
+                0x4000_921f_b544_42d1_8469_898c_c517_01b8,
+            ),
+            (
+                "123456789012345678901234567890.5",
+                0x405f_8ee9_0ff6_c373_e0ee_4e3f_0ad2_8000,
+            ),
+            (
+                "2.2250738585072014e-308",
+                0x3c01_0000_0000_0000_008c_304c_cf86_7de0,
+            ),
             ("1e400", 0x452f_b4ec_7f91_973f_f3cb_1ccf_26fb_c178),
             ("1e-4000", 0x0c17_387a_e70c_9e70_0b80_4973_2d11_a23d),
             ("1e-4950", 0x0000_0000_0000_0000_0005_7c96_47e1_a018),
@@ -629,17 +768,34 @@ mod tests {
     }
 
     #[test]
-    fn hexadecimal_vectors_are_exact_and_the_minimum_and_maximum_finite_values_round_to_the_extremes() {
-        assert_eq!(bits_of("0x1.8p3"), 0x4002_8000_0000_0000_0000_0000_0000_0000);
-        assert_eq!(bits_of("0x1p-16494"), 0x0000_0000_0000_0000_0000_0000_0000_0001);
-        assert_eq!(bits_of("0x1.ffffffffffffffffffffffffffffp16383"), 0x7ffe_ffff_ffff_ffff_ffff_ffff_ffff_ffff);
+    fn hexadecimal_vectors_are_exact_and_the_minimum_and_maximum_finite_values_round_to_the_extremes(
+    ) {
+        assert_eq!(
+            bits_of("0x1.8p3"),
+            0x4002_8000_0000_0000_0000_0000_0000_0000
+        );
+        assert_eq!(
+            bits_of("0x1p-16494"),
+            0x0000_0000_0000_0000_0000_0000_0000_0001
+        );
+        assert_eq!(
+            bits_of("0x1.ffffffffffffffffffffffffffffp16383"),
+            0x7ffe_ffff_ffff_ffff_ffff_ffff_ffff_ffff
+        );
     }
 
     #[test]
     fn overflow_and_underflow_set_erange_and_saturate_to_infinity_or_zero() {
-        assert_eq!(evaluate(&scan(b"1e4933").unwrap()), (INFINITY_BITS, Some(ERANGE)));
+        assert_eq!(
+            evaluate(&scan(b"1e4933").unwrap()),
+            (INFINITY_BITS, Some(ERANGE))
+        );
         assert_eq!(evaluate(&scan(b"1e-5000").unwrap()), (0, Some(ERANGE)));
-        assert_eq!(evaluate(&scan(b"1e-4951").unwrap()), (0x8c75_6d96_9002, None), "the smallest subnormals are still representable");
+        assert_eq!(
+            evaluate(&scan(b"1e-4951").unwrap()),
+            (0x8c75_6d96_9002, None),
+            "the smallest subnormals are still representable"
+        );
     }
 
     #[test]
@@ -665,8 +821,14 @@ mod tests {
 
     #[test]
     fn half_way_values_round_to_even_and_a_sticky_digit_breaks_the_tie_upward() {
-        assert_eq!(bits_of("0x1.00000000000000000000000000008p0"), 0x3fff_0000_0000_0000_0000_0000_0000_0000);
-        assert_eq!(bits_of("0x1.00000000000000000000000000009p0"), 0x3fff_0000_0000_0000_0000_0000_0000_0001);
+        assert_eq!(
+            bits_of("0x1.00000000000000000000000000008p0"),
+            0x3fff_0000_0000_0000_0000_0000_0000_0000
+        );
+        assert_eq!(
+            bits_of("0x1.00000000000000000000000000009p0"),
+            0x3fff_0000_0000_0000_0000_0000_0000_0001
+        );
         assert_eq!(
             bits_of("0x1.00000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001p0"),
             0x3fff_0000_0000_0000_0000_0000_0000_0001
@@ -675,15 +837,24 @@ mod tests {
 
     #[test]
     fn decimal_exponents_outside_the_binary128_range_saturate_instead_of_building_huge_integers() {
-        assert_eq!(evaluate(&scan(b"1e-400").unwrap()), (0x3ace_2bfc_fc0f_923d_f5f4_7263_70a1_be12, None));
+        assert_eq!(
+            evaluate(&scan(b"1e-400").unwrap()),
+            (0x3ace_2bfc_fc0f_923d_f5f4_7263_70a1_be12, None)
+        );
         assert_eq!(evaluate(&scan(b"1e-6000").unwrap()), (0, Some(ERANGE)));
-        assert_eq!(evaluate(&scan(b"1e6000").unwrap()), (INFINITY_BITS, Some(ERANGE)));
+        assert_eq!(
+            evaluate(&scan(b"1e6000").unwrap()),
+            (INFINITY_BITS, Some(ERANGE))
+        );
     }
 
     #[test]
     fn a_huge_number_of_fraction_digits_still_lands_on_the_representable_neighbour() {
         let text = format!("1.{}1", "0".repeat(400));
         assert_eq!(bits_of(&text), 0x3fff_0000_0000_0000_0000_0000_0000_0000);
-        assert_eq!(evaluate(&scan(b"1e-4000").unwrap()), (0x0c17_387a_e70c_9e70_0b80_4973_2d11_a23d, None));
+        assert_eq!(
+            evaluate(&scan(b"1e-4000").unwrap()),
+            (0x0c17_387a_e70c_9e70_0b80_4973_2d11_a23d, None)
+        );
     }
 }

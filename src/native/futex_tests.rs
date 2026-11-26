@@ -3,7 +3,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::bionic::abs_timeout::Deadline;
-use super::futex::{lock_pi, queued_at, requeue, trylock_pi, unlock_pi, wait, wake, wake_op, EAGAIN, EDEADLK, EINVAL, ENOSYS, EPERM, ETIMEDOUT, MATCH_ANY};
+use super::futex::{
+    lock_pi, queued_at, requeue, trylock_pi, unlock_pi, wait, wake, wake_op, EAGAIN, EDEADLK,
+    EINVAL, ENOSYS, EPERM, ETIMEDOUT, MATCH_ANY,
+};
 use super::test_deadline::bounded_test;
 
 fn address_of(cell: &AtomicU32) -> usize {
@@ -176,7 +179,14 @@ fn spawn_waiters(cell: &Arc<AtomicU32>, count: usize) -> Vec<std::thread::JoinHa
     let waiters = (0..count)
         .map(|_| {
             let cell = cell.clone();
-            std::thread::spawn(move || wait(address_of(&cell), cell.load(Ordering::SeqCst), MATCH_ANY, Some(after(5000))))
+            std::thread::spawn(move || {
+                wait(
+                    address_of(&cell),
+                    cell.load(Ordering::SeqCst),
+                    MATCH_ANY,
+                    Some(after(5000)),
+                )
+            })
         })
         .collect();
     while queued_at(address_of(cell)) < count {
@@ -199,21 +209,38 @@ const GE: u32 = 5;
 const OPARG_SHIFT: u32 = 8;
 
 fn encode(operation: u32, compare: u32, operand: i32, comparand: i32) -> u32 {
-    (operation << 28) | (compare << 24) | ((operand as u32 & 0xFFF) << 12) | (comparand as u32 & 0xFFF)
+    (operation << 28)
+        | (compare << 24)
+        | ((operand as u32 & 0xFFF) << 12)
+        | (comparand as u32 & 0xFFF)
 }
 
 fn word_after(operation: u32, start: u32, operand: i32) -> u32 {
     let (first, second) = (AtomicU32::new(0), AtomicU32::new(start));
-    wake_op(address_of(&first), 1, address_of(&second), 1, encode(operation, EQ, operand, 0));
+    wake_op(
+        address_of(&first),
+        1,
+        address_of(&second),
+        1,
+        encode(operation, EQ, operand, 0),
+    );
     second.load(Ordering::SeqCst)
 }
 
 fn second_word_waiters_woken_when(start: u32, compare: u32, comparand: i32) -> i32 {
     let (first, second) = (AtomicU32::new(0), Arc::new(AtomicU32::new(start)));
     let waiters = spawn_waiters(&second, 1);
-    let woken = wake_op(address_of(&first), 1, address_of(&second), 1, encode(ADD, compare, 0, comparand));
+    let woken = wake_op(
+        address_of(&first),
+        1,
+        address_of(&second),
+        1,
+        encode(ADD, compare, 0, comparand),
+    );
     wake(address_of(&second), i32::MAX, MATCH_ANY);
-    assert!(waiters.into_iter().all(|waiter| waiter.join().unwrap() == 0));
+    assert!(waiters
+        .into_iter()
+        .all(|waiter| waiter.join().unwrap() == 0));
     woken
 }
 

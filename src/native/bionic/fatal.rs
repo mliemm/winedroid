@@ -45,7 +45,14 @@ pub fn fatal(prefix: Option<&str>, message: &str) -> ! {
     }
     let line = format!("{text}\n");
     unsafe { libc::write(2, line.as_ptr() as *const libc::c_void, line.len()) };
-    emit(LogRecord { buffer: 0, priority: LOG_FATAL, tag: "libc".to_string(), file: None, line: 0, message: text.clone() });
+    emit(LogRecord {
+        buffer: 0,
+        priority: LOG_FATAL,
+        tag: "libc".to_string(),
+        file: None,
+        line: 0,
+        message: text.clone(),
+    });
     set_abort_message(&text);
     guest_abort()
 }
@@ -59,7 +66,12 @@ pub fn register() {
     in_libc("abort", |_| guest_abort());
     in_libc("__assert", |context| {
         // cite: bionic assert.cpp#__assert
-        let message = format!("{}:{}: assertion \"{}\" failed", cstr_lossy(context.arg_ptr(0)), context.arg_i32(1), cstr_lossy(context.arg_ptr(2)));
+        let message = format!(
+            "{}:{}: assertion \"{}\" failed",
+            cstr_lossy(context.arg_ptr(0)),
+            context.arg_i32(1),
+            cstr_lossy(context.arg_ptr(2))
+        );
         fatal(None, &message)
     });
     in_libc("__assert2", |context| {
@@ -74,7 +86,10 @@ pub fn register() {
         fatal(None, &message)
     });
     in_libc("android_set_abort_message", |context| {
-        let message = optional_cstr(context.arg_ptr(0)).map_or_else(|| "(null)".to_string(), |bytes| String::from_utf8_lossy(bytes).into_owned());
+        let message = optional_cstr(context.arg_ptr(0)).map_or_else(
+            || "(null)".to_string(),
+            |bytes| String::from_utf8_lossy(bytes).into_owned(),
+        );
         set_abort_message(&message);
     });
     in_libc("__stack_chk_fail", |_| {

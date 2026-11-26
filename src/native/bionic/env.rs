@@ -29,7 +29,9 @@ static ENVIRONMENT: OnceLock<Mutex<Environment>> = OnceLock::new();
 static PROGRAM_CELL: OnceLock<usize> = OnceLock::new();
 
 fn environment() -> &'static Mutex<Environment> {
-    ENVIRONMENT.get().expect("environment is registered before first use")
+    ENVIRONMENT
+        .get()
+        .expect("environment is registered before first use")
 }
 
 fn entries(cell: usize) -> Vec<usize> {
@@ -92,7 +94,10 @@ fn replace_or_append(environment: &mut Environment, name: &[u8], entry: usize) {
 fn getenv(name: &[u8]) -> usize {
     // cite: bionic getenv.c#getenv
     let environment = environment().lock().expect("environment");
-    entries(environment.cell).into_iter().find(|entry| entry_matches(*entry, name)).map_or(0, |entry| entry + name.len() + 1)
+    entries(environment.cell)
+        .into_iter()
+        .find(|entry| entry_matches(*entry, name))
+        .map_or(0, |entry| entry + name.len() + 1)
 }
 
 pub fn lookup(name: &[u8]) -> Option<Vec<u8>> {
@@ -106,7 +111,11 @@ fn setenv(name: &[u8], value: &[u8], overwrite: bool) -> i32 {
         return -EINVAL;
     }
     let mut environment = environment().lock().expect("environment");
-    if !overwrite && entries(environment.cell).iter().any(|entry| entry_matches(*entry, name)) {
+    if !overwrite
+        && entries(environment.cell)
+            .iter()
+            .any(|entry| entry_matches(*entry, name))
+    {
         return 0;
     }
     let mut text = name.to_vec();
@@ -126,7 +135,10 @@ fn unsetenv(name: &[u8]) -> i32 {
         return -EINVAL;
     }
     let mut environment = environment().lock().expect("environment");
-    let list: Vec<usize> = entries(environment.cell).into_iter().filter(|entry| !entry_matches(*entry, name)).collect();
+    let list: Vec<usize> = entries(environment.cell)
+        .into_iter()
+        .filter(|entry| !entry_matches(*entry, name))
+        .collect();
     publish(&mut environment, &list);
     0
 }
@@ -134,7 +146,13 @@ fn unsetenv(name: &[u8]) -> i32 {
 fn putenv(text: usize) -> i32 {
     // cite: bionic setenv.c#putenv
     let bytes = cstr_bytes(text);
-    let Some(equals) = bytes.iter().position(|byte| *byte == b'=').filter(|position| *position > 0) else { return -EINVAL };
+    let Some(equals) = bytes
+        .iter()
+        .position(|byte| *byte == b'=')
+        .filter(|position| *position > 0)
+    else {
+        return -EINVAL;
+    };
     let mut environment = environment().lock().expect("environment");
     replace_or_append(&mut environment, &bytes[..equals], text);
     0
@@ -163,18 +181,27 @@ fn set_program_name(name: &[u8]) {
     let base = name.rsplit(|byte| *byte == b'/').next().unwrap_or(name);
     let text = CString::new(base).unwrap_or_default();
     let leaked: &'static CString = Box::leak(Box::new(text));
-    write_value::<usize>(*PROGRAM_CELL.get().expect("program cell"), leaked.as_ptr() as *const c_char as usize);
+    write_value::<usize>(
+        *PROGRAM_CELL.get().expect("program cell"),
+        leaked.as_ptr() as *const c_char as usize,
+    );
 }
 
 pub fn program_name() -> String {
-    String::from_utf8_lossy(cstr_bytes(read_value::<usize>(*PROGRAM_CELL.get().expect("program cell")))).into_owned()
+    String::from_utf8_lossy(cstr_bytes(read_value::<usize>(
+        *PROGRAM_CELL.get().expect("program cell"),
+    )))
+    .into_owned()
 }
 
 pub fn register() {
     let cell = data_in_libc("environ", 8);
     let program = data_in_libc("__progname", 8);
     let _ = PROGRAM_CELL.set(program);
-    let _ = ENVIRONMENT.set(Mutex::new(Environment { cell, owned_array: 0 }));
+    let _ = ENVIRONMENT.set(Mutex::new(Environment {
+        cell,
+        owned_array: 0,
+    }));
     set_program_name(PROGRAM_NAME.as_bytes());
     {
         let mut guard = environment().lock().expect("environment");
@@ -187,9 +214,14 @@ pub fn register() {
             .collect();
         publish(&mut guard, &list);
     }
-    in_libc("getenv", |context| context.ret_ptr(super::guest_mem::optional_cstr(context.arg_ptr(0)).map_or(0, getenv)));
+    in_libc("getenv", |context| {
+        context.ret_ptr(super::guest_mem::optional_cstr(context.arg_ptr(0)).map_or(0, getenv))
+    });
     in_libc("setenv", |context| {
-        let (Some(name), Some(value)) = (super::guest_mem::optional_cstr(context.arg_ptr(0)), super::guest_mem::optional_cstr(context.arg_ptr(1))) else {
+        let (Some(name), Some(value)) = (
+            super::guest_mem::optional_cstr(context.arg_ptr(0)),
+            super::guest_mem::optional_cstr(context.arg_ptr(1)),
+        ) else {
             finish_status(context, -EINVAL);
             return;
         };
@@ -201,14 +233,22 @@ pub fn register() {
         finish_status(context, status);
     });
     in_libc("putenv", |context| {
-        let status = if context.arg_ptr(0) == 0 { -EINVAL } else { putenv(context.arg_ptr(0)) };
+        let status = if context.arg_ptr(0) == 0 {
+            -EINVAL
+        } else {
+            putenv(context.arg_ptr(0))
+        };
         finish_status(context, status);
     });
     in_libc("clearenv", |context| {
         clearenv();
         context.ret_i32(0);
     });
-    in_libc("getprogname", |context| context.ret_ptr(read_value::<usize>(*PROGRAM_CELL.get().expect("program cell"))));
+    in_libc("getprogname", |context| {
+        context.ret_ptr(read_value::<usize>(
+            *PROGRAM_CELL.get().expect("program cell"),
+        ))
+    });
     in_libc("setprogname", |context| {
         if let Some(name) = super::guest_mem::optional_cstr(context.arg_ptr(0)) {
             set_program_name(name);

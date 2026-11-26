@@ -2884,11 +2884,12 @@ pub(in crate::dex_run) fn context_system_service_by_class(
     ))))
 }
 
-// cite: frameworks-base SystemServiceRegistry.java#ACCESSIBILITY_SERVICE, AccessibilityManager, AUTOFILL_MANAGER_SERVICE, AutofillManager, CLIPBOARD_SERVICE, ClipboardManager, INPUT_METHOD_SERVICE, InputMethodManager, LAYOUT_INFLATER_SERVICE, LayoutInflater, VIBRATOR_MANAGER_SERVICE, VibratorManager, SystemVibratorManager, WINDOW_SERVICE, WindowManager, WindowManagerImpl
-// cite: frameworks-base Context.java#getSystemService, CONNECTIVITY_SERVICE
+// cite: frameworks-base SystemServiceRegistry.java#ACTIVITY_SERVICE, ActivityManager, ACCESSIBILITY_SERVICE, AccessibilityManager, AUTOFILL_MANAGER_SERVICE, AutofillManager, CLIPBOARD_SERVICE, ClipboardManager, INPUT_METHOD_SERVICE, InputMethodManager, LAYOUT_INFLATER_SERVICE, LayoutInflater, VIBRATOR_MANAGER_SERVICE, VibratorManager, SystemVibratorManager, WINDOW_SERVICE, WindowManager, WindowManagerImpl
+// cite: frameworks-base Context.java#getSystemService, CONNECTIVITY_SERVICE, ACTIVITY_SERVICE
 fn system_service_runtime_descriptor(service_name: &str) -> Option<&'static str> {
     match service_name {
         "accessibility" => Some("Landroid/view/accessibility/AccessibilityManager;"),
+        "activity" => Some("Landroid/app/ActivityManager;"),
         "autofill" => Some("Landroid/view/autofill/AutofillManager;"),
         "clipboard" => Some("Landroid/content/ClipboardManager;"),
         "connectivity" => Some("Landroid/net/ConnectivityManager;"),
@@ -2907,6 +2908,7 @@ fn system_service_name_for_class(class_descriptor: &str) -> Option<&'static str>
         "Landroid/content/ClipboardManager;" | "Landroid/text/ClipboardManager;" => {
             Some("clipboard")
         }
+        "Landroid/app/ActivityManager;" => Some("activity"),
         "Landroid/net/ConnectivityManager;" => Some("connectivity"),
         "Landroid/view/autofill/AutofillManager;" => Some("autofill"),
         "Landroid/view/inputmethod/InputMethodManager;" => Some("input_method"),
@@ -2981,12 +2983,12 @@ impl DexProgram {
             .read_stored_instance_field(receiver, &field)
             .is_some_and(|current| current != DexValue::Null)
         {
-            return Some(DexExecutionResult::Throw(self.allocate_generated_exception(
-                DexGeneratedException {
+            return Some(DexExecutionResult::Throw(
+                self.allocate_generated_exception(DexGeneratedException {
                     class_descriptor: "Ljava/lang/IllegalStateException;".to_owned(),
                     detail_message: Some("Base context already set".to_owned()),
-                },
-            )));
+                }),
+            ));
         }
         self.write_stored_instance_field(receiver, &field, base.clone());
 

@@ -1,5 +1,5 @@
-use std::collections::BinaryHeap;
 use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::sync::{Arc, Condvar, Mutex, Once, Weak};
 use std::time::Duration;
 
@@ -54,26 +54,45 @@ fn monotonic_ns() -> i64 {
 }
 
 fn clock_ns(clock: i32) -> i64 {
-    clocks::now(clock).map(|stamp| stamp.tv_sec * 1_000_000_000 + stamp.tv_nsec).unwrap_or(0)
+    clocks::now(clock)
+        .map(|stamp| stamp.tv_sec * 1_000_000_000 + stamp.tv_nsec)
+        .unwrap_or(0)
 }
 
-static SCHEDULER: Scheduler = Scheduler { queue: Mutex::new(BinaryHeap::new()), wake: Condvar::new(), timers: Mutex::new(Vec::new()) };
+static SCHEDULER: Scheduler = Scheduler {
+    queue: Mutex::new(BinaryHeap::new()),
+    wake: Condvar::new(),
+    timers: Mutex::new(Vec::new()),
+};
 static START: Once = Once::new();
 
 fn scheduler() -> &'static Scheduler {
     START.call_once(|| {
-        std::thread::Builder::new().name("winedroid-timerfd".to_string()).stack_size(THREAD_STACK).spawn(run).expect("timerfd thread");
+        std::thread::Builder::new()
+            .name("winedroid-timerfd".to_string())
+            .stack_size(THREAD_STACK)
+            .spawn(run)
+            .expect("timerfd thread");
     });
     &SCHEDULER
 }
 
 fn state_at(index: usize) -> Option<Arc<TimerFdState>> {
-    scheduler().timers.lock().expect("timer list").get(index).and_then(Weak::upgrade)
+    scheduler()
+        .timers
+        .lock()
+        .expect("timer list")
+        .get(index)
+        .and_then(Weak::upgrade)
 }
 
 fn schedule(index: usize, deadline: i64, generation: u64) {
     let scheduler = scheduler();
-    scheduler.queue.lock().expect("timer queue").push(Reverse((deadline, generation, index)));
+    scheduler
+        .queue
+        .lock()
+        .expect("timer queue")
+        .push(Reverse((deadline, generation, index)));
     scheduler.wake.notify_all();
 }
 
@@ -109,7 +128,11 @@ fn run() {
                 queue = SCHEDULER.queue.lock().expect("timer queue");
             }
             Some(Reverse((deadline, _, _))) => {
-                queue = SCHEDULER.wake.wait_timeout(queue, Duration::from_nanos((deadline - now) as u64)).expect("timer queue").0;
+                queue = SCHEDULER
+                    .wake
+                    .wait_timeout(queue, Duration::from_nanos((deadline - now) as u64))
+                    .expect("timer queue")
+                    .0;
             }
             None => queue = SCHEDULER.wake.wait(queue).expect("timer queue"),
         }
@@ -119,7 +142,11 @@ fn run() {
 pub fn create(clock: i32, flags: i32) -> i64 {
     // cite: bionic timerfd.h#TFD_TIMER_ABSTIME
     if !matches!(clock, CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_BOOTTIME) {
-        return error(if matches!(clock, 8 | 9) { EPERM } else { EINVAL });
+        return error(if matches!(clock, 8 | 9) {
+            EPERM
+        } else {
+            EINVAL
+        });
     }
     if flags & !(flags_of::EFD_NONBLOCK | flags_of::EFD_CLOEXEC) != 0 {
         return error(EINVAL);
@@ -132,11 +159,29 @@ pub fn create(clock: i32, flags: i32) -> i64 {
     if flags & flags_of::EFD_CLOEXEC != 0 {
         unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
     }
-    let state = Arc::new(TimerFdState { bell, clock, inner: Mutex::new(Inner::default()) });
-    scheduler().timers.lock().expect("timer list").push(Arc::downgrade(&state));
-    let guest_flags = open::RDWR | if flags & flags_of::EFD_NONBLOCK != 0 { open::NONBLOCK } else { 0 };
+    let state = Arc::new(TimerFdState {
+        bell,
+        clock,
+        inner: Mutex::new(Inner::default()),
+    });
+    scheduler()
+        .timers
+        .lock()
+        .expect("timer list")
+        .push(Arc::downgrade(&state));
+    let guest_flags = open::RDWR
+        | if flags & flags_of::EFD_NONBLOCK != 0 {
+            open::NONBLOCK
+        } else {
+            0
+        };
     let entry = FdEntry::new(FdKind::TimerFd, "anon_inode:[timerfd]", guest_flags)
-        .with_synthetic(SyntheticStat { mode: S_IFREG | 0o600, dev: (0, 0xe), rdev: (0, 0), zero_size: false })
+        .with_synthetic(SyntheticStat {
+            mode: S_IFREG | 0o600,
+            dev: (0, 0xe),
+            rdev: (0, 0),
+            zero_size: false,
+        })
         .with_payload(state);
     fd_table::adopt(fd, entry);
     i64::from(fd)
@@ -149,7 +194,9 @@ pub fn read(entry: &FdEntry, buffer: usize, length: usize) -> i64 {
     if buffer == 0 {
         return error(EFAULT);
     }
-    let Some(state) = entry.payload_as::<TimerFdState>() else { return error(EINVAL) };
+    let Some(state) = entry.payload_as::<TimerFdState>() else {
+        return error(EINVAL);
+    };
     loop {
         {
             let mut inner = state.inner.lock().expect("timer state");
@@ -198,7 +245,16 @@ fn state_of(fd: i32) -> Result<Arc<TimerFdState>, i32> {
 }
 
 fn index_of(state: &Arc<TimerFdState>) -> usize {
-    scheduler().timers.lock().expect("timer list").iter().position(|weak| weak.upgrade().is_some_and(|candidate| Arc::ptr_eq(&candidate, state))).expect("timer is registered")
+    scheduler()
+        .timers
+        .lock()
+        .expect("timer list")
+        .iter()
+        .position(|weak| {
+            weak.upgrade()
+                .is_some_and(|candidate| Arc::ptr_eq(&candidate, state))
+        })
+        .expect("timer is registered")
 }
 
 pub fn set_time(fd: i32, flags: i32, new_pointer: usize, old_pointer: usize) -> i64 {
@@ -213,14 +269,20 @@ pub fn set_time(fd: i32, flags: i32, new_pointer: usize, old_pointer: usize) -> 
         return error(EFAULT);
     }
     let (interval, value) = match (read_spec(new_pointer), read_spec(new_pointer + 16)) {
-        (Ok(interval), Ok(value)) => (interval.0 * 1_000_000_000 + interval.1, value.0 * 1_000_000_000 + value.1),
+        (Ok(interval), Ok(value)) => (
+            interval.0 * 1_000_000_000 + interval.1,
+            value.0 * 1_000_000_000 + value.1,
+        ),
         (Err(errno), _) | (_, Err(errno)) => return error(errno),
     };
     if flags & flags_of::TFD_TIMER_CANCEL_ON_SET != 0 {
         if flags & flags_of::TFD_TIMER_ABSTIME == 0 || state.clock != CLOCK_REALTIME {
             return error(EINVAL);
         }
-        missing("timerfd cancel-on-set", "the host cannot report wall clock steps");
+        missing(
+            "timerfd cancel-on-set",
+            "the host cannot report wall clock steps",
+        );
     }
     let mut inner = state.inner.lock().expect("timer state");
     if old_pointer != 0 {
@@ -232,7 +294,11 @@ pub fn set_time(fd: i32, flags: i32, new_pointer: usize, old_pointer: usize) -> 
     inner.interval = interval;
     inner.next = None;
     if value > 0 {
-        let relative = if flags & flags_of::TFD_TIMER_ABSTIME != 0 { (value - clock_ns(state.clock)).max(0) } else { value };
+        let relative = if flags & flags_of::TFD_TIMER_ABSTIME != 0 {
+            (value - clock_ns(state.clock)).max(0)
+        } else {
+            value
+        };
         let deadline = monotonic_ns() + relative;
         inner.next = Some(deadline);
         let generation = inner.generation;
@@ -261,7 +327,12 @@ pub fn register() {
         finish_int(context, result);
     });
     in_libc("timerfd_settime", |context| {
-        let result = set_time(context.arg_i32(0), context.arg_i32(1), context.arg_ptr(2), context.arg_ptr(3));
+        let result = set_time(
+            context.arg_i32(0),
+            context.arg_i32(1),
+            context.arg_ptr(2),
+            context.arg_ptr(3),
+        );
         finish_int(context, result);
     });
     in_libc("timerfd_gettime", |context| {

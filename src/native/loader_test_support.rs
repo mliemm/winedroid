@@ -30,20 +30,26 @@ pub fn take_recorded() -> Vec<i32> {
 
 pub fn dlopen_without_constructors(loader: &Loader, name: &str) -> Result<u64> {
     let guard = loader.lock.lock();
-    let result = loader.find_libraries(&guard, name, 2).map(|root| guard.borrow().module(root).handle);
+    let result = loader
+        .find_libraries(&guard, name, 2)
+        .map(|root| guard.borrow().module(root).handle);
     set_dl_error("dlopen failed: ", result)
 }
 
 pub static MUTEX_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 pub fn fixture_dir(variant: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/native_fixtures/bin").join(variant)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/native_fixtures/bin")
+        .join(variant)
 }
 
 pub fn corpus_dir() -> PathBuf {
     std::env::var_os("WINEDROID_TIKTOK_LIBS")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tiktok-libs/lib/arm64-v8a"))
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tiktok-libs/lib/arm64-v8a")
+        })
 }
 
 extern "C" fn mutex_stub(_mutex: *mut u8) -> i32 {
@@ -65,17 +71,43 @@ extern "C" fn unresolved_import() {
 }
 
 extern "C" fn dlopen_shim(name: *const c_char, flags: i32) -> u64 {
-    let name = unsafe { CStr::from_ptr(name) }.to_str().unwrap().to_string();
-    CURRENT.with(|current| current.borrow().as_ref().unwrap().dlopen(Some(&name), flags, None).unwrap_or(0))
+    let name = unsafe { CStr::from_ptr(name) }
+        .to_str()
+        .unwrap()
+        .to_string();
+    CURRENT.with(|current| {
+        current
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .dlopen(Some(&name), flags, None)
+            .unwrap_or(0)
+    })
 }
 
 extern "C" fn dlsym_shim(handle: u64, name: *const c_char) -> usize {
-    let name = unsafe { CStr::from_ptr(name) }.to_str().unwrap().to_string();
-    CURRENT.with(|current| current.borrow().as_ref().unwrap().dlsym(DlHandle::from_raw(handle), &name, None).unwrap_or(0))
+    let name = unsafe { CStr::from_ptr(name) }
+        .to_str()
+        .unwrap()
+        .to_string();
+    CURRENT.with(|current| {
+        current
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .dlsym(DlHandle::from_raw(handle), &name, None)
+            .unwrap_or(0)
+    })
 }
 
 extern "C" fn dlclose_shim(handle: u64) -> i32 {
-    CURRENT.with(|current| if current.borrow().as_ref().unwrap().dlclose(handle).is_ok() { 0 } else { -1 })
+    CURRENT.with(|current| {
+        if current.borrow().as_ref().unwrap().dlclose(handle).is_ok() {
+            0
+        } else {
+            -1
+        }
+    })
 }
 
 pub struct TestProvider {
@@ -84,7 +116,9 @@ pub struct TestProvider {
 
 impl TestProvider {
     pub fn new() -> Self {
-        Self { unresolved_calls: Mutex::new(Vec::new()) }
+        Self {
+            unresolved_calls: Mutex::new(Vec::new()),
+        }
     }
 }
 
@@ -110,7 +144,10 @@ impl SystemLibraryProvider for TestProvider {
     }
 
     fn unresolved(&self, importer: &str, name: &str, kind: ImportKind) -> usize {
-        self.unresolved_calls.lock().unwrap().push((importer.to_string(), name.to_string(), kind));
+        self.unresolved_calls
+            .lock()
+            .unwrap()
+            .push((importer.to_string(), name.to_string(), kind));
         unresolved_import as *const () as usize
     }
 }
@@ -130,14 +167,32 @@ pub fn loader_for(dirs: Vec<PathBuf>) -> Arc<Loader> {
 }
 
 extern "C" {
-    fn mach_vm_region(task: u32, address: *mut u64, size: *mut u64, flavor: i32, info: *mut i32, count: *mut u32, object_name: *mut u32) -> i32;
+    fn mach_vm_region(
+        task: u32,
+        address: *mut u64,
+        size: *mut u64,
+        flavor: i32,
+        info: *mut i32,
+        count: *mut u32,
+        object_name: *mut u32,
+    ) -> i32;
 }
 
 pub fn host_protection_of(address: usize) -> i32 {
     const VM_REGION_BASIC_INFO_64: i32 = 9;
     let mut at = address as u64;
     let (mut size, mut info, mut count, mut object) = (0u64, [0i32; 9], 9u32, 0u32);
-    let status = unsafe { mach_vm_region(super::mach_task::current(), &mut at, &mut size, VM_REGION_BASIC_INFO_64, info.as_mut_ptr(), &mut count, &mut object) };
+    let status = unsafe {
+        mach_vm_region(
+            super::mach_task::current(),
+            &mut at,
+            &mut size,
+            VM_REGION_BASIC_INFO_64,
+            info.as_mut_ptr(),
+            &mut count,
+            &mut object,
+        )
+    };
     assert_eq!(status, 0, "mach_vm_region({address:#x})");
     assert!(at as usize <= address, "{address:#x} is not mapped");
     info[0]
@@ -145,7 +200,11 @@ pub fn host_protection_of(address: usize) -> i32 {
 
 fn run_child_work(work: impl FnOnce()) {
     if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)) {
-        let text = panic.downcast_ref::<String>().cloned().or_else(|| panic.downcast_ref::<&str>().map(|text| text.to_string())).unwrap_or_default();
+        let text = panic
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| panic.downcast_ref::<&str>().map(|text| text.to_string()))
+            .unwrap_or_default();
         super::host_log::line(&format!("child test body panicked: {text}"));
         unsafe { libc::_exit(101) };
     }
@@ -215,6 +274,16 @@ pub fn is_mapped(address: usize) -> bool {
     const VM_REGION_BASIC_INFO_64: i32 = 9;
     let mut at = address as u64;
     let (mut size, mut info, mut count, mut object) = (0u64, [0i32; 9], 9u32, 0u32);
-    let status = unsafe { mach_vm_region(super::mach_task::current(), &mut at, &mut size, VM_REGION_BASIC_INFO_64, info.as_mut_ptr(), &mut count, &mut object) };
+    let status = unsafe {
+        mach_vm_region(
+            super::mach_task::current(),
+            &mut at,
+            &mut size,
+            VM_REGION_BASIC_INFO_64,
+            info.as_mut_ptr(),
+            &mut count,
+            &mut object,
+        )
+    };
     status == 0 && at as usize <= address
 }

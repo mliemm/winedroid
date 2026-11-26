@@ -74,9 +74,8 @@ pub(in crate::dex_run) fn long_parse_long(
         DexValue::String(value) => value,
         _ => return None,
     };
-    let for_input_string = || -> std::result::Result<i64, String> {
-        Err(format!("For input string: \"{value}\""))
-    };
+    let for_input_string =
+        || -> std::result::Result<i64, String> { Err(format!("For input string: \"{value}\"")) };
     let units: Vec<u16> = value.encode_utf16().collect();
     let Some(&first) = units.first() else {
         return Some(for_input_string());

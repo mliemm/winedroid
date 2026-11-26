@@ -5,6 +5,10 @@ const CONTEXT_MODE_WORLD_READABLE: i32 = 0x0001;
 const CONTEXT_MODE_WORLD_WRITEABLE: i32 = 0x0002;
 // cite: frameworks-base Build.java#N
 const ANDROID_SDK_N: i32 = 24;
+// cite: frameworks-base Build.java#JELLY_BEAN_MR1
+const ANDROID_SDK_JELLY_BEAN_MR1: i32 = 17;
+// cite: frameworks-base PackageManager.java#GET_PROVIDERS
+const PACKAGE_MANAGER_GET_PROVIDERS: i32 = 0x0000_0008;
 
 impl DexProgram {
     pub(super) fn invoke_android_content_storage_builtin(
@@ -425,6 +429,18 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Landroid/content/Context;"
+            && method.name == "getExternalFilesDir"
+            && method
+                .proto
+                .descriptor_is("(Ljava/lang/String;)Ljava/io/File;")
+        {
+            let invocation = invocation?;
+            let value = self.context_external_files_dir(invocation)?;
+
+            return Some(DexExecutionResult::Value(value));
+        }
+
+        if method.class_descriptor == "Landroid/content/Context;"
             && method.name == "getExternalFilesDirs"
             && method
                 .proto
@@ -611,6 +627,17 @@ impl DexProgram {
             let invocation = invocation?;
 
             return self.package_manager_get_application_info(invocation);
+        }
+
+        if method.class_descriptor == "Landroid/content/pm/PackageManager;"
+            && method.name == "getPackageInfo"
+            && method
+                .proto
+                .descriptor_is("(Ljava/lang/String;I)Landroid/content/pm/PackageInfo;")
+        {
+            let invocation = invocation?;
+
+            return self.package_manager_get_package_info(invocation);
         }
 
         if method.class_descriptor == "Landroid/content/pm/PackageManager;"
@@ -827,6 +854,22 @@ impl DexProgram {
     }
 
     fn build_external_files_dirs_array(&self, type_name: Option<&str>) -> Option<DexValue> {
+        let file = self.build_external_files_dir(type_name)?;
+
+        Some(self.allocate_filled_array("[Ljava/io/File;".to_owned(), vec![file]))
+    }
+
+    // cite: frameworks-base ContextImpl.java#getExternalFilesDir, getExternalFilesDirs
+    fn context_external_files_dir(&self, invocation: &DexInvocation) -> Option<DexValue> {
+        let _context = context_receiver(invocation)?;
+        match &invocation.arguments[1] {
+            DexValue::String(type_name) => self.build_external_files_dir(Some(type_name.as_ref())),
+            DexValue::Null | DexValue::Int(0) => self.build_external_files_dir(None),
+            _ => None,
+        }
+    }
+
+    fn build_external_files_dir(&self, type_name: Option<&str>) -> Option<DexValue> {
         let package_name = self.package_name.as_deref()?;
         let mut guest_path = format!(
             "{}/Android/data/{package_name}/files",
@@ -847,12 +890,9 @@ impl DexProgram {
             }
         }
 
-        Some(self.allocate_filled_array(
-            "[Ljava/io/File;".to_owned(),
-            vec![DexValue::Reference(std::rc::Rc::from(format!(
-                "Ljava/io/File;:{guest_path}"
-            )))],
-        ))
+        Some(DexValue::Reference(std::rc::Rc::from(format!(
+            "Ljava/io/File;:{guest_path}"
+        ))))
     }
 
     fn context_database_path_file(&self, invocation: &DexInvocation) -> Option<DexExecutionResult> {
@@ -932,6 +972,159 @@ impl DexProgram {
                 detail_message,
             }),
         ))
+    }
+
+    fn package_manager_get_package_info(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        // cite: frameworks-base ApplicationPackageManager.java#getPackageInfo, getPackageInfoAsUser
+        // cite: frameworks-base PackageParser.java#generatePackageInfo
+        let [_receiver, package_name, DexValue::Int(flags)] = invocation.arguments.as_slice()
+        else {
+            return None;
+        };
+        let installed = match package_name {
+            DexValue::String(name) => name.as_ref() == self.bootstrap_process_name(),
+            DexValue::Null => false,
+            _ => return None,
+        };
+        if !installed {
+            let detail_message = match package_name {
+                DexValue::String(name) => Some(name.to_string()),
+                _ => None,
+            };
+
+            return Some(DexExecutionResult::Throw(
+                self.allocate_generated_exception(DexGeneratedException {
+                    class_descriptor: "Landroid/content/pm/PackageManager$NameNotFoundException;"
+                        .to_owned(),
+                    detail_message,
+                }),
+            ));
+        }
+        if flags & !PACKAGE_MANAGER_GET_PROVIDERS != 0 {
+            return None;
+        }
+        let version_code = match self.manifest_version_code.as_deref() {
+            Some(text) => text.parse::<i32>().ok()?,
+            None => 0,
+        };
+
+        let application_info = DexValue::Reference(std::rc::Rc::from(
+            "Landroid/content/pm/ApplicationInfo;.bootstrap",
+        ));
+        let package_info = self.allocate_object("Landroid/content/pm/PackageInfo;".to_owned());
+        let package_info_field = |name: &str, type_descriptor: &str| DexFieldId {
+            class_descriptor: "Landroid/content/pm/PackageInfo;".to_owned(),
+            type_descriptor: type_descriptor.to_owned(),
+            name: name.to_owned(),
+        };
+        let package_name_text = package_name_text(package_name)?;
+        let fields = [
+            (
+                package_info_field("packageName", "Ljava/lang/String;"),
+                DexValue::String(std::rc::Rc::from(package_name_text.as_str())),
+            ),
+            (
+                package_info_field("versionCode", "I"),
+                DexValue::Int(version_code),
+            ),
+            (
+                package_info_field("versionName", "Ljava/lang/String;"),
+                match &self.manifest_version_name {
+                    Some(name) => DexValue::String(std::rc::Rc::from(name.as_str())),
+                    None => DexValue::Null,
+                },
+            ),
+            (
+                package_info_field("applicationInfo", "Landroid/content/pm/ApplicationInfo;"),
+                application_info.clone(),
+            ),
+        ];
+        for (field, value) in fields {
+            self.write_stored_instance_field(&package_info, &field, value);
+        }
+
+        if flags & PACKAGE_MANAGER_GET_PROVIDERS != 0 {
+            let providers = self.package_info_providers(&package_name_text, &application_info)?;
+            self.write_stored_instance_field(
+                &package_info,
+                &package_info_field("providers", "[Landroid/content/pm/ProviderInfo;"),
+                providers,
+            );
+        }
+
+        Some(DexExecutionResult::Value(package_info))
+    }
+
+    fn package_info_providers(
+        &self,
+        package_name: &str,
+        application_info: &DexValue,
+    ) -> Option<DexValue> {
+        // cite: frameworks-base PackageParser.java#generatePackageInfo, generateProviderInfo, parseProvider
+        let enabled = self
+            .manifest_providers
+            .iter()
+            .filter(|provider| provider.is_enabled())
+            .collect::<Vec<_>>();
+        if enabled.is_empty() {
+            return Some(DexValue::Null);
+        }
+        let array = self.allocate_array(
+            "[Landroid/content/pm/ProviderInfo;".to_owned(),
+            i32::try_from(enabled.len()).ok()?,
+        )?;
+        for (index, provider) in enabled.into_iter().enumerate() {
+            let info = self.provider_info_value(package_name, application_info, provider);
+            self.write_array_value(&array, i32::try_from(index).ok()?, info)?;
+        }
+
+        Some(array)
+    }
+
+    pub(in crate::dex_run) fn provider_info_value(
+        &self,
+        package_name: &str,
+        application_info: &DexValue,
+        provider: &manifest::Provider,
+    ) -> DexValue {
+        // cite: frameworks-base PackageParser.java#generateProviderInfo
+        let exported_default = self.target_sdk_version < ANDROID_SDK_JELLY_BEAN_MR1;
+        let info = self.allocate_object("Landroid/content/pm/ProviderInfo;".to_owned());
+        let info_field = |name: &str, type_descriptor: &str| DexFieldId {
+            class_descriptor: "Landroid/content/pm/ProviderInfo;".to_owned(),
+            type_descriptor: type_descriptor.to_owned(),
+            name: name.to_owned(),
+        };
+        let fields = [
+            (
+                info_field("name", "Ljava/lang/String;"),
+                DexValue::String(std::rc::Rc::from(provider.name.as_str())),
+            ),
+            (
+                info_field("packageName", "Ljava/lang/String;"),
+                DexValue::String(std::rc::Rc::from(package_name)),
+            ),
+            (
+                info_field("authority", "Ljava/lang/String;"),
+                DexValue::String(std::rc::Rc::from(provider.authority.as_str())),
+            ),
+            (
+                info_field("exported", "Z"),
+                DexValue::Int(i32::from(provider.exported.unwrap_or(exported_default))),
+            ),
+            (info_field("enabled", "Z"), DexValue::Int(1)),
+            (
+                info_field("applicationInfo", "Landroid/content/pm/ApplicationInfo;"),
+                application_info.clone(),
+            ),
+        ];
+        for (field, value) in fields {
+            self.write_stored_instance_field(&info, &field, value);
+        }
+        info
     }
 
     fn context_app_dir_file(&self, invocation: &DexInvocation) -> Option<DexExecutionResult> {
@@ -1083,4 +1276,11 @@ fn context_receiver(invocation: &DexInvocation) -> Option<&DexValue> {
     }
     let context = invocation.arguments.first()?;
     dex_value_is_object_like(context).then_some(context)
+}
+
+fn package_name_text(value: &DexValue) -> Option<String> {
+    match value {
+        DexValue::String(name) => Some(name.to_string()),
+        _ => None,
+    }
 }

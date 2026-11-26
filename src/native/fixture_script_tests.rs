@@ -8,12 +8,46 @@ use super::fixture_header::manifest_path;
 
 const VARIANTS: [(&str, u32); 2] = [("16k", 16384), ("4k", 4096)];
 const LIBRARIES: [&str; 20] = [
-    "fx_add", "fx_aps2", "fx_bridge", "fx_cxx", "fx_dep", "fx_dlmain", "fx_io", "fx_jni", "fx_libc", "fx_math", "fx_net", "fx_order_child",
-    "fx_order_parent", "fx_phdr", "fx_reloc", "fx_relr", "fx_relro", "fx_signals", "fx_threads", "fx_unwind",
+    "fx_add",
+    "fx_aps2",
+    "fx_bridge",
+    "fx_cxx",
+    "fx_dep",
+    "fx_dlmain",
+    "fx_io",
+    "fx_jni",
+    "fx_libc",
+    "fx_math",
+    "fx_net",
+    "fx_order_child",
+    "fx_order_parent",
+    "fx_phdr",
+    "fx_reloc",
+    "fx_relr",
+    "fx_relro",
+    "fx_signals",
+    "fx_threads",
+    "fx_unwind",
 ];
 const SOURCES: [&str; 18] = [
-    "fx_add.c", "fx_bridge.c", "fx_cxx.cc", "fx_dep.c", "fx_dlmain.c", "fx_io.c", "fx_jni.c", "fx_libc.c", "fx_math.c", "fx_net.c",
-    "fx_order_child.c", "fx_order_parent.c", "fx_phdr.c", "fx_reloc.c", "fx_relro.c", "fx_signals.c", "fx_threads.c", "fx_unwind.c",
+    "fx_add.c",
+    "fx_bridge.c",
+    "fx_cxx.cc",
+    "fx_dep.c",
+    "fx_dlmain.c",
+    "fx_io.c",
+    "fx_jni.c",
+    "fx_libc.c",
+    "fx_math.c",
+    "fx_net.c",
+    "fx_order_child.c",
+    "fx_order_parent.c",
+    "fx_phdr.c",
+    "fx_reloc.c",
+    "fx_relro.c",
+    "fx_signals.c",
+    "fx_threads.c",
+    "fx_unwind.c",
 ];
 const FAKE_CLANG: &str = r#"#!/bin/sh
 printf 'clang %s\n' "$*" >>"$FAKE_LOG"
@@ -51,7 +85,8 @@ fn write_tool(path: &Path, body: &str) {
 }
 
 fn run_script() -> (String, Vec<String>) {
-    let root = std::env::temp_dir().join(format!("winedroid-fixture-script-{}", std::process::id()));
+    let root =
+        std::env::temp_dir().join(format!("winedroid-fixture-script-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
     write_tool(&root.join("clang"), FAKE_CLANG);
@@ -68,8 +103,15 @@ fn run_script() -> (String, Vec<String>) {
         .env("FAKE_LOG", &log)
         .status()
         .expect("build script should start");
-    assert!(status.success(), "build_native_fixtures.sh failed against the recording tools");
-    let commands = fs::read_to_string(&log).unwrap().lines().map(str::to_owned).collect();
+    assert!(
+        status.success(),
+        "build_native_fixtures.sh failed against the recording tools"
+    );
+    let commands = fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect();
     let manifest = fs::read_to_string(output.join("manifest.txt")).unwrap();
     fs::remove_dir_all(&root).unwrap();
     (manifest, commands)
@@ -83,7 +125,10 @@ fn recorded_commands() -> (&'static str, &'static [String]) {
 
 fn links_of<'a>(commands: &'a [String], variant: &str) -> Vec<&'a String> {
     let marker = format!("/{variant}/lib");
-    commands.iter().filter(|line| line.starts_with("lld ") && line.contains(" -o ") && line.contains(&marker)).collect()
+    commands
+        .iter()
+        .filter(|line| line.starts_with("lld ") && line.contains(" -o ") && line.contains(&marker))
+        .collect()
 }
 
 fn has_pair(line: &str, first: &str, second: &str) -> bool {
@@ -98,16 +143,31 @@ fn fixture_build_script_links_each_variant_with_its_own_page_size_and_hardening_
         let links = links_of(commands, variant);
         assert_eq!(links.len(), LIBRARIES.len(), "{variant} link count");
         for library in LIBRARIES {
-            assert!(links.iter().any(|line| line.contains(&format!("/{variant}/lib{library}.so"))), "{variant} {library}");
+            assert!(
+                links
+                    .iter()
+                    .any(|line| line.contains(&format!("/{variant}/lib{library}.so"))),
+                "{variant} {library}"
+            );
         }
         for line in links {
-            assert!(has_pair(line, "-z", &format!("max-page-size={page}")), "{variant} page size in {line}");
-            assert_eq!(line.matches("max-page-size").count(), 1, "{variant} page size flag count in {line}");
+            assert!(
+                has_pair(line, "-z", &format!("max-page-size={page}")),
+                "{variant} page size in {line}"
+            );
+            assert_eq!(
+                line.matches("max-page-size").count(),
+                1,
+                "{variant} page size flag count in {line}"
+            );
             for flag in ["relro", "now", "noexecstack"] {
                 assert!(has_pair(line, "-z", flag), "{variant} -z {flag} in {line}");
             }
             for flag in ["--hash-style=gnu", "--eh-frame-hdr", "-shared"] {
-                assert!(line.split(' ').any(|word| word == flag), "{variant} {flag} in {line}");
+                assert!(
+                    line.split(' ').any(|word| word == flag),
+                    "{variant} {flag} in {line}"
+                );
             }
         }
     }
@@ -119,7 +179,9 @@ fn fixture_build_script_packs_dynamic_relocations_only_for_the_aps2_and_relr_var
 
     for (variant, _) in VARIANTS {
         for line in links_of(commands, variant) {
-            let packed = line.split(' ').find(|word| word.starts_with("--pack-dyn-relocs="));
+            let packed = line
+                .split(' ')
+                .find(|word| word.starts_with("--pack-dyn-relocs="));
             let expected = if line.contains("/libfx_aps2.so") {
                 Some("--pack-dyn-relocs=android")
             } else if line.contains("/libfx_relr.so") {
@@ -133,20 +195,43 @@ fn fixture_build_script_packs_dynamic_relocations_only_for_the_aps2_and_relr_var
 }
 
 #[test]
-fn fixture_build_script_compiles_every_source_per_variant_with_stack_protector_and_bionic_headers() {
+fn fixture_build_script_compiles_every_source_per_variant_with_stack_protector_and_bionic_headers()
+{
     let (_, commands) = recorded_commands();
-    let compiles: Vec<&String> = commands.iter().filter(|line| line.starts_with("clang ") && line.contains("/src/fx_")).collect();
+    let compiles: Vec<&String> = commands
+        .iter()
+        .filter(|line| line.starts_with("clang ") && line.contains("/src/fx_"))
+        .collect();
 
     assert_eq!(compiles.len(), SOURCES.len() * VARIANTS.len());
     for source in SOURCES {
-        assert_eq!(compiles.iter().filter(|line| line.contains(&format!("/src/{source}"))).count(), VARIANTS.len(), "{source}");
+        assert_eq!(
+            compiles
+                .iter()
+                .filter(|line| line.contains(&format!("/src/{source}")))
+                .count(),
+            VARIANTS.len(),
+            "{source}"
+        );
     }
     for line in compiles {
-        for flag in ["--target=aarch64-linux-android29", "-fstack-protector-strong", "-fno-emulated-tls", "-fPIC", "-ffreestanding"] {
+        for flag in [
+            "--target=aarch64-linux-android29",
+            "-fstack-protector-strong",
+            "-fno-emulated-tls",
+            "-fPIC",
+            "-ffreestanding",
+        ] {
             assert!(line.split(' ').any(|word| word == flag), "{flag} in {line}");
         }
-        assert!(line.contains("/ref/bionic/libc/include"), "bionic include in {line}");
-        assert!(line.contains("tests/native_fixtures/include"), "fixture include in {line}");
+        assert!(
+            line.contains("/ref/bionic/libc/include"),
+            "bionic include in {line}"
+        );
+        assert!(
+            line.contains("tests/native_fixtures/include"),
+            "fixture include in {line}"
+        );
     }
 }
 
@@ -156,14 +241,23 @@ fn fixture_build_script_links_the_dependency_fixtures_against_their_imports() {
 
     for (variant, _) in VARIANTS {
         let links = links_of(commands, variant);
-        let find = |library: &str| links.iter().find(|line| line.contains(&format!("/lib{library}.so"))).unwrap();
+        let find = |library: &str| {
+            links
+                .iter()
+                .find(|line| line.contains(&format!("/lib{library}.so")))
+                .unwrap()
+        };
         assert!(find("fx_dep").split(' ').any(|word| word == "-lfx_add"));
         assert!(find("fx_dep").split(' ').any(|word| word == "-ldl"));
         assert!(find("fx_reloc").split(' ').any(|word| word == "-llog"));
         assert!(find("fx_add").split(' ').all(|word| word != "-lc"));
-        assert!(find("fx_order_parent").split(' ').any(|word| word == "-lfx_order_child"));
+        assert!(find("fx_order_parent")
+            .split(' ')
+            .any(|word| word == "-lfx_order_child"));
         assert!(find("fx_order_parent").contains("-rpath $ORIGIN/dep"));
-        assert!(find("fx_order_child").split(' ').all(|word| word != "-rpath"));
+        assert!(find("fx_order_child")
+            .split(' ')
+            .all(|word| word != "-rpath"));
     }
 }
 
@@ -174,10 +268,21 @@ fn fixture_build_script_manifest_lists_the_tools_sources_and_every_binary_it_bui
 
     assert_eq!(lines[0], "clang clang version 1.2.3");
     assert_eq!(lines[1], "ld.lld LLD 4.5.6");
-    assert_eq!(lines.iter().filter(|line| line.starts_with("source ")).count(), SOURCES.len() + 1);
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.starts_with("source "))
+            .count(),
+        SOURCES.len() + 1
+    );
     for (variant, _) in VARIANTS {
         for library in LIBRARIES {
-            assert!(lines.iter().any(|line| line.starts_with(&format!("binary {variant}/lib{library}.so "))), "{variant} {library}");
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.starts_with(&format!("binary {variant}/lib{library}.so "))),
+                "{variant} {library}"
+            );
         }
     }
 }

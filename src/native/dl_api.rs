@@ -99,7 +99,11 @@ fn find_containing_library(state: &State, address: usize) -> Option<ModuleId> {
             return None;
         }
         let vaddr = address.wrapping_sub(guest.mapped.load_bias()) as u64;
-        guest.elf.loads().any(|load| vaddr >= load.vaddr && vaddr - load.vaddr < load.memsz).then_some(module.id)
+        guest
+            .elf
+            .loads()
+            .any(|load| vaddr >= load.vaddr && vaddr - load.vaddr < load.memsz)
+            .then_some(module.id)
     })
 }
 
@@ -107,61 +111,97 @@ impl Loader {
     pub fn dlsym(&self, handle: DlHandle, name: &str, caller: Option<usize>) -> Result<usize> {
         // cite: bionic dlfcn.cpp#__loader_dlsym
         let guard = self.lock.lock();
-        let result = self.dlsym_locked(&guard, handle, name, caller);
+        let result = self
+            .find_symbol(&guard, handle, name, caller)
+            .and_then(|address| {
+                address.ok_or_else(|| WinedroidError::new(format!("undefined symbol: {name}")))
+            });
         set_dl_error("", result)
     }
 
-    fn dlsym_locked(&self, guard: &Guard, handle: DlHandle, name: &str, caller: Option<usize>) -> Result<usize> {
+    pub(crate) fn lookup_export(&self, handle: u64, name: &str) -> Result<Option<usize>> {
+        let guard = self.lock.lock();
+        self.find_symbol(&guard, DlHandle::Module(handle), name, None)
+    }
+
+    fn find_symbol(
+        &self,
+        guard: &Guard,
+        handle: DlHandle,
+        name: &str,
+        caller: Option<usize>,
+    ) -> Result<Option<usize>> {
         // cite: bionic linker.cpp#do_dlsym, dlsym_linear_lookup, dlsym_handle_lookup_impl
         let state = guard.borrow();
         let caller_module = caller.and_then(|address| find_containing_library(&state, address));
         let found = match handle {
-            DlHandle::Default | DlHandle::Module(MAIN_HANDLE) => self.linear_lookup(&state, name, caller_module, false)?,
+            DlHandle::Default | DlHandle::Module(MAIN_HANDLE) => {
+                self.linear_lookup(&state, name, caller_module, false)?
+            }
             DlHandle::Next => self.linear_lookup(&state, name, caller_module, true)?,
             DlHandle::Module(raw) => {
-                let id = state
-                    .handles
-                    .get(&raw)
-                    .copied()
-                    .ok_or_else(|| WinedroidError::new(format!("dlsym failed: invalid handle: {raw:#x}")))?;
+                let id = state.handles.get(&raw).copied().ok_or_else(|| {
+                    WinedroidError::new(format!("dlsym failed: invalid handle: {raw:#x}"))
+                })?;
                 self.handle_lookup(&state, id, None, name)?
             }
         };
         let Some((id, resolved)) = found else {
-            return Err(WinedroidError::new(format!("undefined symbol: {name}")));
+            return Ok(None);
         };
         match resolved.kind {
             STT_TLS => {
                 if resolved.tls_module == 0 {
                     return Err(WinedroidError::new(format!("TLS symbol \"{name}\" in solib \"{}\" with no TLS segment", state.module(id).path)));
                 }
-                Ok(tls_modules::block_address(resolved.tls_module) + resolved.value as usize)
+                Ok(Some(tls_modules::block_address(resolved.tls_module) + resolved.value as usize))
             }
             STT_GNU_IFUNC => Err(WinedroidError::new(format!(
                 "STT_GNU_IFUNC symbol \"{name}\"; next missing primitive: STT_GNU_IFUNC symbol resolution"
             ))),
-            _ => Ok(resolved.address),
+            _ => Ok(Some(resolved.address)),
         }
     }
 
-    fn linear_lookup(&self, state: &State, name: &str, caller: Option<ModuleId>, next: bool) -> Result<Option<(ModuleId, super::relocate::Resolved)>> {
+    fn linear_lookup(
+        &self,
+        state: &State,
+        name: &str,
+        caller: Option<ModuleId>,
+        next: bool,
+    ) -> Result<Option<(ModuleId, super::relocate::Resolved)>> {
         let after = match (next, caller) {
             (true, None) => return Ok(None),
             (true, Some(caller)) => caller,
             (false, _) => 0,
         };
-        for module in state.modules.values().filter(|module| module.id > after && module.rtld_flags & RTLD_GLOBAL != 0) {
+        for module in state
+            .modules
+            .values()
+            .filter(|module| module.id > after && module.rtld_flags & RTLD_GLOBAL != 0)
+        {
             if let Some(resolved) = lookup_in_module(state, &*self.provider, module.id, name)? {
                 return Ok(Some((module.id, resolved)));
             }
         }
         match caller {
-            Some(caller) => self.handle_lookup(state, state.module(caller).group_root, next.then_some(caller), name),
+            Some(caller) => self.handle_lookup(
+                state,
+                state.module(caller).group_root,
+                next.then_some(caller),
+                name,
+            ),
             None => Ok(None),
         }
     }
 
-    fn handle_lookup(&self, state: &State, root: ModuleId, skip_until: Option<ModuleId>, name: &str) -> Result<Option<(ModuleId, super::relocate::Resolved)>> {
+    fn handle_lookup(
+        &self,
+        state: &State,
+        root: ModuleId,
+        skip_until: Option<ModuleId>,
+        name: &str,
+    ) -> Result<Option<(ModuleId, super::relocate::Resolved)>> {
         let mut skipping = skip_until.is_some();
         for id in state.local_group(root) {
             if skipping {
@@ -179,7 +219,9 @@ impl Loader {
         // cite: bionic dlfcn.cpp#__loader_dlvsym
         set_dl_error(
             "",
-            Err(WinedroidError::new(format!("dlvsym({name}, {version}) is not implemented; next missing primitive: dlvsym"))),
+            Err(WinedroidError::new(format!(
+                "dlvsym({name}, {version}) is not implemented; next missing primitive: dlvsym"
+            ))),
         )
     }
 
@@ -200,11 +242,20 @@ impl Loader {
         let guest = module.guest.as_ref()?;
         let bias = guest.mapped.load_bias();
         let soaddr = (address & ADDRESS_TAG_MASK).wrapping_sub(bias) as u64;
-        let symbol = guest.symbols.find_by_address(&guest.mapped, soaddr).ok().flatten().and_then(|sym| {
-            let name = guest.symbols.name(&guest.mapped, &sym).ok()?;
-            Some((name, bias.wrapping_add(sym.value as usize)))
-        });
-        Some(DlInfo { path: module.path.clone(), base: guest.mapped.region(), symbol })
+        let symbol = guest
+            .symbols
+            .find_by_address(&guest.mapped, soaddr)
+            .ok()
+            .flatten()
+            .and_then(|sym| {
+                let name = guest.symbols.name(&guest.mapped, &sym).ok()?;
+                Some((name, bias.wrapping_add(sym.value as usize)))
+            });
+        Some(DlInfo {
+            path: module.path.clone(),
+            base: guest.mapped.region(),
+            symbol,
+        })
     }
 
     pub fn dl_iterate_phdr(&self, callback: &mut dyn FnMut(&PhdrInfo) -> i32) -> i32 {
@@ -228,10 +279,14 @@ impl Loader {
                     };
                     if let Some(guest) = &module.guest {
                         info.addr = guest.mapped.load_bias();
-                        info.phdr = guest.elf.phdr_vaddr().map_or(0, |vaddr| guest.mapped.address(vaddr));
+                        info.phdr = guest
+                            .elf
+                            .phdr_vaddr()
+                            .map_or(0, |vaddr| guest.mapped.address(vaddr));
                         info.phnum = guest.elf.phdrs.len() as u16;
                         info.tls_modid = guest.tls_module as usize;
-                        info.tls_data = tls_modules::existing_block_address(guest.tls_module).unwrap_or(0);
+                        info.tls_data =
+                            tls_modules::existing_block_address(guest.tls_module).unwrap_or(0);
                     }
                     (info, module.guest.clone())
                 })
@@ -252,7 +307,12 @@ impl Loader {
         state
             .modules
             .values()
-            .filter_map(|module| module.guest.clone().map(|guest| (module.id, guest, module.path.clone())))
+            .filter_map(|module| {
+                module
+                    .guest
+                    .clone()
+                    .map(|guest| (module.id, guest, module.path.clone()))
+            })
             .collect()
     }
 
@@ -272,7 +332,11 @@ impl Loader {
             linked: module.linked,
             tls: guest.elf.tls(),
             tls_module: guest.tls_module,
-            children: module.children.iter().map(|child| state.module(*child).soname.clone()).collect(),
+            children: module
+                .children
+                .iter()
+                .map(|child| state.module(*child).soname.clone())
+                .collect(),
             phdr_count: guest.elf.phdrs.len() as u16,
             eh_frame_hdr_vaddr: guest.elf.eh_frame_hdr().map_or(0, |header| header.vaddr),
         })

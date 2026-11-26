@@ -1,8 +1,8 @@
 use crate::error::{Result, WinedroidError};
 
 use super::dl_api::set_dl_error;
-use super::host_log;
 use super::guest_call::call_destructor;
+use super::host_log;
 use super::init_fini::destructor_addresses;
 use super::loader::{Guard, Loader};
 use super::module::ModuleId;
@@ -59,7 +59,10 @@ impl Loader {
                 local.push(id);
                 let children = std::mem::take(&mut state.module_mut(id).children);
                 for child in children {
-                    state.module_mut(child).parents.retain(|parent| *parent != id);
+                    state
+                        .module_mut(child)
+                        .parents
+                        .retain(|parent| *parent != id);
                     if local.contains(&child) {
                         continue;
                     }
@@ -74,7 +77,10 @@ impl Loader {
             if !was_linked {
                 external.clear();
             }
-            let destructors: Vec<usize> = local.iter().flat_map(|id| destructor_addresses(&state, *id)).collect();
+            let destructors: Vec<usize> = local
+                .iter()
+                .flat_map(|id| destructor_addresses(&state, *id))
+                .collect();
             (local, external, destructors)
         };
         for address in destructors {

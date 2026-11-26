@@ -36,14 +36,21 @@ pub fn take_probe() -> Vec<Seen> {
 }
 
 pub fn take_logged() -> Vec<(i32, String, String)> {
-    let records = take_capture().into_iter().map(|record| (record.priority, record.tag, record.message)).collect();
+    let records = take_capture()
+        .into_iter()
+        .map(|record| (record.priority, record.tag, record.message))
+        .collect();
     start_capture();
     records
 }
 
 fn probe_value_list(context: &mut CallContext) {
     let mut va = context.varargs(1, 0);
-    let mut seen = vec![Seen::Int(va.next_i64()), Seen::Real(va.next_f64()), Seen::Int(i64::from(va.next_i32()))];
+    let mut seen = vec![
+        Seen::Int(va.next_i64()),
+        Seen::Real(va.next_f64()),
+        Seen::Int(i64::from(va.next_i32())),
+    ];
     seen.push(Seen::Real(va.next_f64()));
     seen.push(Seen::Quad(va.next_quad()));
     for _ in 0..13 {
@@ -94,10 +101,15 @@ fn register_fixture_handlers() {
         context.ret_i64(shapes.len() as i64);
     });
     register_handler("fx_get_s24", |context| {
-        let bytes: Vec<u8> = [1i64, 2, 3].iter().flat_map(|value| value.to_le_bytes()).collect();
+        let bytes: Vec<u8> = [1i64, 2, 3]
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
         context.ret_sret(&bytes);
     });
-    register_handler("fx_get_hfa4", |context| context.ret_hfa_f32(&[1.0, 2.0, 3.0, 4.0]));
+    register_handler("fx_get_hfa4", |context| {
+        context.ret_hfa_f32(&[1.0, 2.0, 3.0, 4.0])
+    });
     register_handler("fx_get_ld", |context| context.ret_quad(f64_to_quad(2.5)));
     register_handler("fx_get_pair", |context| context.ret_pair(7, 9));
     register_handler("fx_take_narrow", |context| {
@@ -106,7 +118,11 @@ fn register_fixture_handlers() {
         let int = context.arg_i32(2);
         let boolean = context.arg_u32(3) as u8 != 0;
         let byte = context.arg_u32(4) as u8;
-        let sum = i32::from(character) + i32::from(short) + int + i32::from(byte) + if boolean { 1000 } else { 0 };
+        let sum = i32::from(character)
+            + i32::from(short)
+            + int
+            + i32::from(byte)
+            + if boolean { 1000 } else { 0 };
         context.ret_i32(sum);
     });
     register_handler("fx_nest_host", |context| {
@@ -170,13 +186,19 @@ impl Bridged {
     pub fn load(variant: &str, library: &str) -> Self {
         register_all();
         start_capture();
-        let loader = Arc::new(Loader::new(vec![fixture_dir(variant)], Box::new(BridgeProvider)).with_strict(false));
-        let handle = loader.dlopen(Some(library), 2, None).unwrap_or_else(|error| panic!("{variant}/{library}: {error}"));
+        let loader = Arc::new(
+            Loader::new(vec![fixture_dir(variant)], Box::new(BridgeProvider)).with_strict(false),
+        );
+        let handle = loader
+            .dlopen(Some(library), 2, None)
+            .unwrap_or_else(|error| panic!("{variant}/{library}: {error}"));
         Self { loader, handle }
     }
 
     pub fn symbol(&self, name: &str) -> usize {
-        self.loader.dlsym(DlHandle::Module(self.handle), name, None).unwrap_or_else(|error| panic!("{name}: {error}"))
+        self.loader
+            .dlsym(DlHandle::Module(self.handle), name, None)
+            .unwrap_or_else(|error| panic!("{name}: {error}"))
     }
 
     pub fn call(&self, name: &str) -> CallBuilder {

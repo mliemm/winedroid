@@ -2,6 +2,47 @@ use super::super::*;
 use super::helpers::*;
 
 #[test]
+fn libcore_string_trim_removes_ascii_controls_and_preserves_other_whitespace() {
+    // cite: libcore String.java#trim
+    let program = DexProgram::new(Vec::new());
+    let method = DexMethodId {
+        class_descriptor: "Ljava/lang/String;".to_owned(),
+        name: "trim".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "L".to_owned(),
+            return_type: "Ljava/lang/String;".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    for (input, expected) in [
+        ("\0 \t😀 x\n ", "😀 x"),
+        ("\u{a0}x\u{a0}", "\u{a0}x\u{a0}"),
+        ("\t \n", ""),
+        ("", ""),
+    ] {
+        let result = program.invoke_builtin_method(
+            &method,
+            Some(&test_invocation(vec![DexValue::String(Rc::from(input))])),
+        );
+        assert_eq!(
+            result,
+            Some(DexExecutionResult::Value(DexValue::String(Rc::from(
+                expected
+            ))))
+        );
+    }
+    let original: Rc<str> = Rc::from("unchanged");
+    let result = program.invoke_builtin_method(
+        &method,
+        Some(&test_invocation(vec![DexValue::String(original.clone())])),
+    );
+    let Some(DexExecutionResult::Value(DexValue::String(returned))) = result else {
+        panic!("String.trim did not return a string");
+    };
+    assert!(Rc::ptr_eq(&original, &returned));
+}
+
+#[test]
 fn builtin_char_sequence_to_string_returns_the_underlying_text() {
     let program = DexProgram::new(Vec::new());
     let method = DexMethodId {
@@ -818,6 +859,44 @@ fn builtin_string_char_at_uses_utf16_code_unit_index() {
         program.invoke_builtin_method(&method, Some(&invocation)),
         Some(DexExecutionResult::Int(0xd83d))
     );
+}
+
+// cite: libcore String.java#toCharArray
+#[test]
+fn builtin_string_to_char_array_copies_utf16_code_units_into_a_new_char_array() {
+    let program = DexProgram::new(Vec::new());
+    let method = DexMethodId {
+        class_descriptor: "Ljava/lang/String;".to_owned(),
+        name: "toCharArray".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "L".to_owned(),
+            return_type: "[C".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let invocation = test_invocation(vec![DexValue::String(std::rc::Rc::from("a\u{1f600}"))]);
+
+    let Some(DexExecutionResult::Value(array)) =
+        program.invoke_builtin_method(&method, Some(&invocation))
+    else {
+        panic!("toCharArray returned no array");
+    };
+
+    assert_eq!(program.array_length(&array), Some(3));
+    assert_eq!(
+        program.read_array_value(&array, 0),
+        Some(DexValue::Int(0x61))
+    );
+    assert_eq!(
+        program.read_array_value(&array, 1),
+        Some(DexValue::Int(0xd83d))
+    );
+    assert_eq!(
+        program.read_array_value(&array, 2),
+        Some(DexValue::Int(0xde00))
+    );
+    let again = program.invoke_builtin_method(&method, Some(&invocation));
+    assert_ne!(again, Some(DexExecutionResult::Value(array)));
 }
 
 #[test]
@@ -2067,4 +2146,191 @@ fn builtin_string_builder_append_long_formats_decimal_value() {
             std::rc::Rc::from("-42")
         )))
     );
+}
+
+fn pattern_split(input: &str, regex: &str, limit: Option<i32>) -> Vec<String> {
+    pattern_split_for_sdk(BOOTSTRAP_ANDROID_SDK_INT, input, regex, limit)
+}
+
+fn pattern_split_for_sdk(
+    target_sdk_version: i32,
+    input: &str,
+    regex: &str,
+    limit: Option<i32>,
+) -> Vec<String> {
+    let mut program = DexProgram::new(Vec::new());
+    program.target_sdk_version = target_sdk_version;
+    let mut parameters = vec!["Ljava/lang/String;".to_owned()];
+    let mut arguments = vec![
+        DexValue::String(std::rc::Rc::from(input)),
+        DexValue::String(std::rc::Rc::from(regex)),
+    ];
+    if let Some(limit) = limit {
+        parameters.push("I".to_owned());
+        arguments.push(DexValue::Int(limit));
+    }
+    let method = DexMethodId {
+        class_descriptor: "Ljava/lang/String;".to_owned(),
+        name: "split".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: String::new(),
+            return_type: "[Ljava/lang/String;".to_owned(),
+            parameters,
+        },
+    };
+    let Some(DexExecutionResult::Value(array)) =
+        program.invoke_builtin_method(&method, Some(&test_invocation(arguments)))
+    else {
+        panic!("split should return an array for {regex}");
+    };
+    (0..program.array_length(&array).expect("array length"))
+        .map(|index| match program.read_array_value(&array, index) {
+            Some(DexValue::String(part)) => part.to_string(),
+            other => panic!("split element should be a string, got {other:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn libcore_string_split_regex_character_class_matches_the_javadoc_boo_and_foo_table() {
+    // cite: libcore String.java#split
+    // cite: libcore Pattern.java#split
+    assert_eq!(
+        pattern_split("boo:and:foo", "[:]", None),
+        ["boo", "and", "foo"]
+    );
+    assert_eq!(
+        pattern_split("boo:and:foo", "[:]", Some(2)),
+        ["boo", "and:foo"]
+    );
+    assert_eq!(
+        pattern_split("boo:and:foo", "[:]", Some(5)),
+        ["boo", "and", "foo"]
+    );
+    assert_eq!(
+        pattern_split("boo:and:foo", "[o]", Some(0)),
+        ["b", "", ":and:f"]
+    );
+    assert_eq!(
+        pattern_split("boo:and:foo", "[o]", Some(-2)),
+        ["b", "", ":and:f", "", ""]
+    );
+}
+
+#[test]
+fn libcore_pattern_split_java_version_property_splits_on_dot_and_underscore() {
+    // cite: libcore Pattern.java#split
+    assert_eq!(
+        pattern_split("1.8.0_292", "[._]", None),
+        ["1", "8", "0", "292"]
+    );
+    assert_eq!(pattern_split("17", "[._]", None), ["17"]);
+    assert_eq!(pattern_split("", "[._]", None), [""]);
+}
+
+#[test]
+fn libcore_pattern_split_skips_the_leading_empty_string_of_a_zero_width_match() {
+    // cite: libcore Pattern.java#split
+    assert_eq!(pattern_split("abc", "x*", None), ["a", "b", "c"]);
+}
+
+#[test]
+fn libcore_pattern_split_keeps_the_leading_empty_string_for_target_sdk_28() {
+    // cite: libcore Pattern.java#split
+    assert_eq!(
+        pattern_split_for_sdk(28, "abc", "x*", None),
+        ["", "a", "b", "c"]
+    );
+    assert_eq!(
+        pattern_split_for_sdk(29, "abc", "x*", None),
+        ["a", "b", "c"]
+    );
+}
+
+#[test]
+fn art_hardcoded_java_version_property_is_zero() {
+    // cite: art ti_properties.cc#kProperties
+    let program = DexProgram::new(Vec::new());
+    let method = DexMethodId {
+        class_descriptor: "Ljava/lang/System;".to_owned(),
+        name: "getProperty".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "LL".to_owned(),
+            return_type: "Ljava/lang/String;".to_owned(),
+            parameters: vec!["Ljava/lang/String;".to_owned()],
+        },
+    };
+    let invocation = test_invocation(vec![DexValue::String(std::rc::Rc::from("java.version"))]);
+
+    assert_eq!(
+        program.invoke_builtin_method(&method, Some(&invocation)),
+        Some(DexExecutionResult::Value(DexValue::String(
+            std::rc::Rc::from("0")
+        )))
+    );
+}
+
+fn string_replace_sequences(
+    program: &DexProgram,
+    receiver: &str,
+    target: DexValue,
+    replacement: DexValue,
+) -> Option<DexExecutionResult> {
+    program.invoke_builtin_method(
+        &builtin_method(
+            "Ljava/lang/String;",
+            "replace",
+            "Ljava/lang/String;",
+            &["Ljava/lang/CharSequence;", "Ljava/lang/CharSequence;"],
+        ),
+        Some(&test_invocation(vec![
+            DexValue::String(std::rc::Rc::from(receiver)),
+            target,
+            replacement,
+        ])),
+    )
+}
+
+#[test]
+fn libcore_string_replace_char_sequence_replaces_every_match() {
+    // cite: libcore String.java#replace
+    let program = DexProgram::new(Vec::new());
+    let text = |value: &str| DexValue::String(std::rc::Rc::from(value));
+    let cases = [
+        ("a.b.c", ".", "::", "a::b::c"),
+        ("aaaa", "aa", "b", "bb"),
+        ("abc", "x", "y", "abc"),
+        ("abc", "", "-", "-a-b-c-"),
+        ("", "", "-", "-"),
+        ("abc", "abc", "", ""),
+        ("aXbX", "X", "", "ab"),
+    ];
+
+    for (receiver, target, replacement, expected) in cases {
+        assert_eq!(
+            string_replace_sequences(&program, receiver, text(target), text(replacement)),
+            Some(DexExecutionResult::Value(text(expected))),
+            "{receiver:?}.replace({target:?}, {replacement:?})"
+        );
+    }
+}
+
+#[test]
+fn libcore_string_replace_char_sequence_rejects_null_arguments() {
+    // cite: libcore String.java#replace
+    let program = DexProgram::new(Vec::new());
+    let text = DexValue::String(std::rc::Rc::from("x"));
+
+    for (target, replacement) in [
+        (DexValue::Null, text.clone()),
+        (text.clone(), DexValue::Null),
+    ] {
+        let exception = thrown_exception(string_replace_sequences(
+            &program,
+            "abc",
+            target,
+            replacement,
+        ));
+        assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
+    }
 }

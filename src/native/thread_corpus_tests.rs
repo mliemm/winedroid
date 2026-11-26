@@ -5,12 +5,20 @@ fn libcxx() -> Option<Bridged> {
     use std::sync::Arc;
     let dir = super::loader_test_support::corpus_dir();
     if !dir.join("libc++_shared.so").exists() {
-        eprintln!("skipped: TikTok library extraction not found at {}", dir.display());
+        eprintln!(
+            "skipped: TikTok library extraction not found at {}",
+            dir.display()
+        );
         return None;
     }
     super::bridge_test_support::register_all();
-    let loader = Arc::new(super::loader::Loader::new(vec![dir], Box::new(super::bridge::BridgeProvider)).with_strict(false));
-    let handle = loader.dlopen(Some("libc++_shared.so"), 2, None).unwrap_or_else(|error| panic!("libc++_shared.so: {error}"));
+    let loader = Arc::new(
+        super::loader::Loader::new(vec![dir], Box::new(super::bridge::BridgeProvider))
+            .with_strict(false),
+    );
+    let handle = loader
+        .dlopen(Some("libc++_shared.so"), 2, None)
+        .unwrap_or_else(|error| panic!("libc++_shared.so: {error}"));
     Some(Bridged { loader, handle })
 }
 
@@ -55,7 +63,7 @@ bounded_test! {
             return;
         }
         super::bridge_test_support::register_all();
-        let loader = super::loader::Loader::new(vec![dir], Box::new(super::bridge::BridgeProvider)).with_strict(false);
+        let loader = super::loader::Loader::new(vec![dir], Box::new(super::bridge::BridgeProvider)).with_strict(true);
 
         let handle = loader.dlopen(Some("libkeva.so"), 2, None);
 

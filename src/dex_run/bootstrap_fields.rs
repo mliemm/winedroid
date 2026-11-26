@@ -26,6 +26,14 @@ pub(in crate::dex_run) fn bootstrap_declared_fields(
     class_descriptor: &str,
 ) -> Option<&'static [BootstrapDeclaredField]> {
     match class_descriptor {
+        // cite: libcore Object.java#Object
+        "Ljava/lang/Object;" => Some(&[]),
+        "Landroid/content/Context;" => {
+            Some(super::bootstrap_context_fields::CONTEXT_DECLARED_FIELDS)
+        }
+        "Landroid/content/pm/ApplicationInfo;" => {
+            Some(super::bootstrap_application_info_fields::APPLICATION_INFO_DECLARED_FIELDS)
+        }
         // cite: frameworks-base ContextWrapper.java#mBase, mCallbacksRegisteredToSuper, mLock
         "Landroid/content/ContextWrapper;" => Some(&[
             BootstrapDeclaredField {
@@ -352,6 +360,69 @@ pub(in crate::dex_run) fn bootstrap_declared_fields(
             BootstrapDeclaredField {
                 name: "mDeviceIdChangeListeners",
                 type_descriptor: "Ljava/util/ArrayList;",
+                access_flags: ACCESS_PRIVATE,
+            },
+        ]),
+        // cite: frameworks-base Looper.java#TAG, sThreadLocal, sMainLooper, sObserver, mQueue, mThread, mInLoop, mLogging, mTraceTag, mSlowDispatchThresholdMs, mSlowDeliveryThresholdMs, mSlowDeliveryDetected
+        "Landroid/os/Looper;" => Some(&[
+            BootstrapDeclaredField {
+                name: "TAG",
+                type_descriptor: "Ljava/lang/String;",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "sThreadLocal",
+                type_descriptor: "Ljava/lang/ThreadLocal;",
+                access_flags: ACCESS_PACKAGE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "sMainLooper",
+                type_descriptor: "Landroid/os/Looper;",
+                access_flags: ACCESS_PRIVATE_STATIC,
+            },
+            BootstrapDeclaredField {
+                name: "sObserver",
+                type_descriptor: "Landroid/os/Looper$Observer;",
+                access_flags: ACCESS_PRIVATE_STATIC,
+            },
+            BootstrapDeclaredField {
+                name: "mQueue",
+                type_descriptor: "Landroid/os/MessageQueue;",
+                access_flags: ACCESS_PACKAGE_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "mThread",
+                type_descriptor: "Ljava/lang/Thread;",
+                access_flags: ACCESS_PACKAGE_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "mInLoop",
+                type_descriptor: "Z",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mLogging",
+                type_descriptor: "Landroid/util/Printer;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mTraceTag",
+                type_descriptor: "J",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mSlowDispatchThresholdMs",
+                type_descriptor: "J",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mSlowDeliveryThresholdMs",
+                type_descriptor: "J",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mSlowDeliveryDetected",
+                type_descriptor: "Z",
                 access_flags: ACCESS_PRIVATE,
             },
         ]),
@@ -1355,6 +1426,19 @@ pub(in crate::dex_run) fn bootstrap_enum_reference_ordinal(value: &DexValue) -> 
 }
 
 pub(in crate::dex_run) fn bootstrap_static_field(field: &DexFieldId) -> Option<DexValue> {
+    // cite: libcore Collections.java#EMPTY_MAP, EMPTY_LIST, EMPTY_SET
+    if field.class_descriptor == "Ljava/util/Collections;" {
+        let reference = match (field.name.as_str(), field.type_descriptor.as_str()) {
+            ("EMPTY_MAP", "Ljava/util/Map;") => "Ljava/util/Map;:collections:emptyMap",
+            ("EMPTY_LIST", "Ljava/util/List;") => "Ljava/util/List;:collections:emptyList",
+            ("EMPTY_SET", "Ljava/util/Set;") => "Ljava/util/Set;:collections:emptySet",
+            _ => "",
+        };
+        if !reference.is_empty() {
+            return Some(DexValue::Reference(std::rc::Rc::from(reference)));
+        }
+    }
+
     // cite: frameworks-base Typeface.java#DEFAULT, DEFAULT_BOLD, SANS_SERIF, SERIF, MONOSPACE
     if field.class_descriptor == "Landroid/graphics/Typeface;"
         && field.type_descriptor == "Landroid/graphics/Typeface;"
@@ -1712,6 +1796,10 @@ pub(in crate::dex_run) fn bootstrap_static_field(field: &DexFieldId) -> Option<D
             "Ljava/util/Locale;:{}",
             field.name
         ))));
+    }
+
+    if let Some(value) = super::builtins::java_nio::byte_order_static_field(field) {
+        return Some(value);
     }
 
     if field.class_descriptor == "Ljava/lang/System;"

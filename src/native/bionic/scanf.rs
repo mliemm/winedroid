@@ -24,11 +24,21 @@ struct Scanner {
 
 impl Scanner {
     fn stream(stream: Arc<Stream>) -> Self {
-        Self { source: Source::Stream(stream), position: 0, pushback: Vec::new(), consumed: 0 }
+        Self {
+            source: Source::Stream(stream),
+            position: 0,
+            pushback: Vec::new(),
+            consumed: 0,
+        }
     }
 
     fn memory(base: usize, length: usize) -> Self {
-        Self { source: Source::Memory { base, length }, position: 0, pushback: Vec::new(), consumed: 0 }
+        Self {
+            source: Source::Memory { base, length },
+            position: 0,
+            pushback: Vec::new(),
+            consumed: 0,
+        }
     }
 
     fn next(&mut self) -> Option<u8> {
@@ -82,17 +92,27 @@ struct Conversion {
 }
 
 fn parse_conversion(cursor: &mut usize, format: &[u8]) -> Conversion {
-    let mut conversion = Conversion { suppressed: false, width: None, length: 0, kind: 0 };
+    let mut conversion = Conversion {
+        suppressed: false,
+        width: None,
+        length: 0,
+        kind: 0,
+    };
     if format.get(*cursor) == Some(&b'*') {
         conversion.suppressed = true;
         *cursor += 1;
     }
     let start = *cursor;
-    while format.get(*cursor).is_some_and(|byte| byte.is_ascii_digit()) {
+    while format
+        .get(*cursor)
+        .is_some_and(|byte| byte.is_ascii_digit())
+    {
         *cursor += 1;
     }
     if *cursor > start {
-        conversion.width = std::str::from_utf8(&format[start..*cursor]).ok().and_then(|text| text.parse().ok());
+        conversion.width = std::str::from_utf8(&format[start..*cursor])
+            .ok()
+            .and_then(|text| text.parse().ok());
     }
     conversion.length = match format.get(*cursor) {
         Some(b'h') => {
@@ -132,7 +152,11 @@ fn parse_conversion(cursor: &mut usize, format: &[u8]) -> Conversion {
 
 fn store_integer(pointer: usize, length: i32, signed: bool, magnitude: u128, negative: bool) {
     if signed {
-        let value = if negative { -(magnitude as i128) } else { magnitude as i128 };
+        let value = if negative {
+            -(magnitude as i128)
+        } else {
+            magnitude as i128
+        };
         match length {
             -2 => write_value::<i8>(pointer, value as i8),
             -1 => write_value::<i16>(pointer, value as i16),
@@ -140,7 +164,11 @@ fn store_integer(pointer: usize, length: i32, signed: bool, magnitude: u128, neg
             _ => write_value::<i64>(pointer, value as i64),
         }
     } else {
-        let value = if negative { (magnitude as i128).wrapping_neg() as u128 } else { magnitude };
+        let value = if negative {
+            (magnitude as i128).wrapping_neg() as u128
+        } else {
+            magnitude
+        };
         match length {
             -2 => write_value::<u8>(pointer, value as u8),
             -1 => write_value::<u16>(pointer, value as u16),
@@ -150,7 +178,12 @@ fn store_integer(pointer: usize, length: i32, signed: bool, magnitude: u128, neg
     }
 }
 
-fn scanned_integer(scanner: &mut Scanner, conversion: Conversion, pointer: usize, signed: bool) -> Option<bool> {
+fn scanned_integer(
+    scanner: &mut Scanner,
+    conversion: Conversion,
+    pointer: usize,
+    signed: bool,
+) -> Option<bool> {
     scanner.skip_space();
     let limit = conversion.width.unwrap_or(usize::MAX);
     let mut negative = false;
@@ -195,7 +228,9 @@ fn scanned_integer(scanner: &mut Scanner, conversion: Conversion, pointer: usize
             scanner.unread(byte);
             break;
         };
-        value = value.saturating_mul(radix as u128).saturating_add(u128::from(digit));
+        value = value
+            .saturating_mul(radix as u128)
+            .saturating_add(u128::from(digit));
         has_digit = true;
         digits += 1;
     }
@@ -222,7 +257,8 @@ fn scanned_float(scanner: &mut Scanner, conversion: Conversion, pointer: usize) 
     let mut collected = Vec::new();
     while collected.len() < limit {
         let Some(byte) = scanner.next() else { break };
-        let plausible = byte.is_ascii_digit() || matches!(byte, b'+' | b'-' | b'.' | b'x' | b'X' | b'p' | b'P' | b'a'..=b'f' | b'A'..=b'F' | b'i' | b'n' | b't' | b'y');
+        let plausible = byte.is_ascii_digit()
+            || matches!(byte, b'+' | b'-' | b'.' | b'x' | b'X' | b'p' | b'P' | b'a'..=b'f' | b'A'..=b'F' | b'i' | b'n' | b't' | b'y');
         if !plausible {
             scanner.unread(byte);
             break;
@@ -250,7 +286,10 @@ fn scanned_float(scanner: &mut Scanner, conversion: Conversion, pointer: usize) 
         if conversion.length == 1 {
             write_value::<f64>(pointer, value);
         } else if conversion.length == 3 {
-            missing("scanf", "%Lf needs a binary128 conversion the host libc does not expose");
+            missing(
+                "scanf",
+                "%Lf needs a binary128 conversion the host libc does not expose",
+            );
             return None;
         } else {
             write_value::<f32>(pointer, value as f32);
@@ -293,7 +332,9 @@ fn scanset(format: &[u8], cursor: &mut usize) -> [u64; 4] {
             break;
         }
         first = false;
-        if format.get(*cursor + 1) == Some(&b'-') && format.get(*cursor + 2).is_some_and(|end| *end != b']') {
+        if format.get(*cursor + 1) == Some(&b'-')
+            && format.get(*cursor + 2).is_some_and(|end| *end != b']')
+        {
             let end = format[*cursor + 2];
             let mut character = *byte;
             while character <= end {
@@ -315,7 +356,12 @@ fn scanset(format: &[u8], cursor: &mut usize) -> [u64; 4] {
     set
 }
 
-fn scanned_set(scanner: &mut Scanner, set: &[u64; 4], width: Option<usize>, pointer: usize) -> Option<bool> {
+fn scanned_set(
+    scanner: &mut Scanner,
+    set: &[u64; 4],
+    width: Option<usize>,
+    pointer: usize,
+) -> Option<bool> {
     let limit = width.unwrap_or(usize::MAX);
     let mut written = 0usize;
     while written < limit {
@@ -372,12 +418,26 @@ fn run(format: &[u8], scanner: &mut Scanner, args: &mut GuestVaList) -> Result<i
         if conversion.kind == 0 {
             break;
         }
-        let pointer = if !conversion.suppressed && conversion.kind != b'%' { args.next_ptr() } else { 0 };
-        let mut scratch = if conversion.suppressed { vec![0u8; conversion.width.unwrap_or(64).clamp(1, 1 << 20)] } else { Vec::new() };
-        let target = if conversion.suppressed { scratch.as_mut_ptr() as usize } else { pointer };
+        let pointer = if !conversion.suppressed && conversion.kind != b'%' {
+            args.next_ptr()
+        } else {
+            0
+        };
+        let mut scratch = if conversion.suppressed {
+            vec![0u8; conversion.width.unwrap_or(64).clamp(1, 1 << 20)]
+        } else {
+            Vec::new()
+        };
+        let target = if conversion.suppressed {
+            scratch.as_mut_ptr() as usize
+        } else {
+            pointer
+        };
         let outcome = match conversion.kind {
             b'%' => {
-                let Some(input) = scanner.next() else { return Ok(if assigned == 0 { EOF_VALUE } else { assigned }) };
+                let Some(input) = scanner.next() else {
+                    return Ok(if assigned == 0 { EOF_VALUE } else { assigned });
+                };
                 if input != b'%' {
                     scanner.unread(input);
                     return Ok(assigned);
@@ -386,33 +446,54 @@ fn run(format: &[u8], scanner: &mut Scanner, args: &mut GuestVaList) -> Result<i
             }
             b'n' => {
                 if !conversion.suppressed && pointer != 0 {
-                    store_integer(pointer, conversion.length, true, scanner.consumed as u128, false);
+                    store_integer(
+                        pointer,
+                        conversion.length,
+                        true,
+                        scanner.consumed as u128,
+                        false,
+                    );
                 }
                 None
             }
-            b'd' | b'i' | b'o' | b'u' | b'x' | b'X' | b'p' => scanned_integer(scanner, conversion, target, matches!(conversion.kind, b'd' | b'i')),
-            b'e' | b'E' | b'f' | b'F' | b'g' | b'G' | b'a' | b'A' => scanned_float(scanner, conversion, target),
+            b'd' | b'i' | b'o' | b'u' | b'x' | b'X' | b'p' => scanned_integer(
+                scanner,
+                conversion,
+                target,
+                matches!(conversion.kind, b'd' | b'i'),
+            ),
+            b'e' | b'E' | b'f' | b'F' | b'g' | b'G' | b'a' | b'A' => {
+                scanned_float(scanner, conversion, target)
+            }
             b's' => {
                 if conversion.length >= 1 {
-                    return Err(format!("scanf %ls; next missing primitive: wide scanf strings"));
+                    return Err(format!(
+                        "scanf %ls; next missing primitive: wide scanf strings"
+                    ));
                 }
                 scanned_string(scanner, conversion, target)
             }
             b'c' => {
                 if conversion.length >= 1 {
-                    return Err(format!("scanf %lc; next missing primitive: wide scanf characters"));
+                    return Err(format!(
+                        "scanf %lc; next missing primitive: wide scanf characters"
+                    ));
                 }
                 scanned_chars(scanner, conversion.width, target)
             }
             b'[' => {
                 if conversion.length >= 1 {
-                    return Err(format!("scanf %l[; next missing primitive: wide scanf sets"));
+                    return Err(format!(
+                        "scanf %l[; next missing primitive: wide scanf sets"
+                    ));
                 }
                 let set = scanset(format, &mut cursor);
                 scanned_set(scanner, &set, conversion.width, target)
             }
             other => {
-                let Some(input) = scanner.next() else { return Ok(if assigned == 0 { EOF_VALUE } else { assigned }) };
+                let Some(input) = scanner.next() else {
+                    return Ok(if assigned == 0 { EOF_VALUE } else { assigned });
+                };
                 if input != other {
                     scanner.unread(input);
                     return Ok(assigned);
@@ -510,7 +591,9 @@ pub fn register() {
             scan_memory(context, source, format, args);
         }
     });
-    for name in ["swscanf", "fwscanf", "wscanf", "vswscanf", "vfwscanf", "vwscanf"] {
+    for name in [
+        "swscanf", "fwscanf", "wscanf", "vswscanf", "vfwscanf", "vwscanf",
+    ] {
         in_libc(name, move |context: &mut CallContext| {
             missing(name, "wide scanf needs the wide character source pipeline");
             context.set_errno(EINVAL);

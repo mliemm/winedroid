@@ -37,7 +37,14 @@ fn convert(context: &mut CallContext, single: bool) {
     }
     let consumed = ascii_end as usize - text.as_ptr() as usize;
     if end != 0 {
-        write_value::<usize>(end, if consumed == 0 { string } else { start + consumed * 4 });
+        write_value::<usize>(
+            end,
+            if consumed == 0 {
+                string
+            } else {
+                start + consumed * 4
+            },
+        );
     }
 }
 

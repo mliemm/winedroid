@@ -85,8 +85,14 @@ fn ilogb_bionic(value: f64) -> i32 {
 }
 
 fn nan_words(text: &[u8], words: usize) -> Vec<u32> {
-    let body = text.strip_prefix(b"0x").or_else(|| text.strip_prefix(b"0X")).unwrap_or(text);
-    let digits: Vec<u32> = body.iter().map_while(|byte| (*byte as char).to_digit(16)).collect();
+    let body = text
+        .strip_prefix(b"0x")
+        .or_else(|| text.strip_prefix(b"0X"))
+        .unwrap_or(text);
+    let digits: Vec<u32> = body
+        .iter()
+        .map_while(|byte| (*byte as char).to_digit(16))
+        .collect();
     let mut array = vec![0u32; words];
     for (position, digit) in digits.iter().rev().enumerate() {
         let (word, shift) = (position / 8, (position % 8) * 4);
@@ -114,42 +120,72 @@ fn classify(value: f64) -> i32 {
 }
 
 fn register_classification() {
-    in_libc("__fpclassify", |context| context.ret_i32(classify(context.arg_f64(0))));
-    in_libc("__fpclassifyd", |context| context.ret_i32(classify(context.arg_f64(0))));
-    in_libc("__fpclassifyf", |context| context.ret_i32(classify(f64::from(context.arg_f32(0)))));
+    in_libc("__fpclassify", |context| {
+        context.ret_i32(classify(context.arg_f64(0)))
+    });
+    in_libc("__fpclassifyd", |context| {
+        context.ret_i32(classify(context.arg_f64(0)))
+    });
+    in_libc("__fpclassifyf", |context| {
+        context.ret_i32(classify(f64::from(context.arg_f32(0))))
+    });
     for name in ["isnan", "__isnan"] {
-        in_libc(name, |context| context.ret_i32(i32::from(context.arg_f64(0).is_nan())));
+        in_libc(name, |context| {
+            context.ret_i32(i32::from(context.arg_f64(0).is_nan()))
+        });
     }
     for name in ["isnanf", "__isnanf"] {
-        in_libc(name, |context| context.ret_i32(i32::from(context.arg_f32(0).is_nan())));
+        in_libc(name, |context| {
+            context.ret_i32(i32::from(context.arg_f32(0).is_nan()))
+        });
     }
     for name in ["isinf", "__isinf"] {
-        in_libc(name, |context| context.ret_i32(i32::from(context.arg_f64(0).is_infinite())));
+        in_libc(name, |context| {
+            context.ret_i32(i32::from(context.arg_f64(0).is_infinite()))
+        });
     }
     for name in ["isinff", "__isinff"] {
-        in_libc(name, |context| context.ret_i32(i32::from(context.arg_f32(0).is_infinite())));
+        in_libc(name, |context| {
+            context.ret_i32(i32::from(context.arg_f32(0).is_infinite()))
+        });
     }
     for name in ["isfinite", "__isfinite"] {
-        in_libc(name, |context| context.ret_i32(i32::from(context.arg_f64(0).is_finite())));
+        in_libc(name, |context| {
+            context.ret_i32(i32::from(context.arg_f64(0).is_finite()))
+        });
     }
     for name in ["isfinitef", "__isfinitef"] {
-        in_libc(name, |context| context.ret_i32(i32::from(context.arg_f32(0).is_finite())));
+        in_libc(name, |context| {
+            context.ret_i32(i32::from(context.arg_f32(0).is_finite()))
+        });
     }
-    in_libc("ldexp", |context| context.ret_f64(unsafe { host::ldexp(context.arg_f64(0), context.arg_i32(0)) }));
+    in_libc("ldexp", |context| {
+        context.ret_f64(unsafe { host::ldexp(context.arg_f64(0), context.arg_i32(0)) })
+    });
 }
 
 fn register_adapted() {
     let _ = SIGNGAM.set(data_in_libm("signgam", 4));
-    in_libm("ilogb", |context| context.ret_i32(ilogb_bionic(context.arg_f64(0))));
-    in_libm("ilogbf", |context| context.ret_i32(ilogb_bionic(f64::from(context.arg_f32(0)))));
+    in_libm("ilogb", |context| {
+        context.ret_i32(ilogb_bionic(context.arg_f64(0)))
+    });
+    in_libm("ilogbf", |context| {
+        context.ret_i32(ilogb_bionic(f64::from(context.arg_f32(0))))
+    });
     in_libm("nan", |context| {
         // cite: bionic math.h#nan
-        let words = nan_words(super::guest_mem::optional_cstr(context.arg_ptr(0)).unwrap_or(b""), 2);
+        let words = nan_words(
+            super::guest_mem::optional_cstr(context.arg_ptr(0)).unwrap_or(b""),
+            2,
+        );
         let bits = (u64::from(words[1] | 0x7FF8_0000) << 32) | u64::from(words[0]);
         context.ret_f64(f64::from_bits(bits));
     });
     in_libm("nanf", |context| {
-        let words = nan_words(super::guest_mem::optional_cstr(context.arg_ptr(0)).unwrap_or(b""), 1);
+        let words = nan_words(
+            super::guest_mem::optional_cstr(context.arg_ptr(0)).unwrap_or(b""),
+            1,
+        );
         context.ret_f32(f32::from_bits(words[0] | 0x7FC0_0000));
     });
     for name in ["lgamma", "gamma"] {
@@ -189,26 +225,63 @@ fn register_adapted() {
         write_value::<f64>(context.arg_ptr(1), unsafe { host::cos(context.arg_f64(0)) });
     });
     in_libm("sincosf", |context| {
-        write_value::<f32>(context.arg_ptr(0), unsafe { host::sinf(context.arg_f32(0)) });
-        write_value::<f32>(context.arg_ptr(1), unsafe { host::cosf(context.arg_f32(0)) });
+        write_value::<f32>(context.arg_ptr(0), unsafe {
+            host::sinf(context.arg_f32(0))
+        });
+        write_value::<f32>(context.arg_ptr(1), unsafe {
+            host::cosf(context.arg_f32(0))
+        });
     });
-    in_libm("drem", |context| context.ret_f64(unsafe { host::remainder(context.arg_f64(0), context.arg_f64(1)) }));
-    in_libm("dremf", |context| context.ret_f32(unsafe { host::remainderf(context.arg_f32(0), context.arg_f32(1)) }));
-    in_libm("finite", |context| context.ret_i32(i32::from(context.arg_f64(0).is_finite())));
-    in_libm("finitef", |context| context.ret_i32(i32::from(context.arg_f32(0).is_finite())));
-    in_libm("__signbit", |context| context.ret_i32(i32::from(context.arg_f64(0).is_sign_negative())));
-    in_libm("__signbitf", |context| context.ret_i32(i32::from(context.arg_f32(0).is_sign_negative())));
-    in_libm("fabsl", |context| context.ret_quad(context.arg_quad(0) & !(1u128 << 127)));
-    in_libm("copysignl", |context| context.ret_quad((context.arg_quad(0) & !(1u128 << 127)) | (context.arg_quad(1) & (1u128 << 127))));
-    for (name, host_function) in [("j0f", host::j0 as unsafe extern "C" fn(f64) -> f64), ("j1f", host::j1), ("y0f", host::y0), ("y1f", host::y1)] {
-        in_libm(name, move |context| context.ret_f32(unsafe { host_function(f64::from(context.arg_f32(0))) } as f32));
+    in_libm("drem", |context| {
+        context.ret_f64(unsafe { host::remainder(context.arg_f64(0), context.arg_f64(1)) })
+    });
+    in_libm("dremf", |context| {
+        context.ret_f32(unsafe { host::remainderf(context.arg_f32(0), context.arg_f32(1)) })
+    });
+    in_libm("finite", |context| {
+        context.ret_i32(i32::from(context.arg_f64(0).is_finite()))
+    });
+    in_libm("finitef", |context| {
+        context.ret_i32(i32::from(context.arg_f32(0).is_finite()))
+    });
+    in_libm("__signbit", |context| {
+        context.ret_i32(i32::from(context.arg_f64(0).is_sign_negative()))
+    });
+    in_libm("__signbitf", |context| {
+        context.ret_i32(i32::from(context.arg_f32(0).is_sign_negative()))
+    });
+    in_libm("fabsl", |context| {
+        context.ret_quad(context.arg_quad(0) & !(1u128 << 127))
+    });
+    in_libm("copysignl", |context| {
+        context.ret_quad(
+            (context.arg_quad(0) & !(1u128 << 127)) | (context.arg_quad(1) & (1u128 << 127)),
+        )
+    });
+    for (name, host_function) in [
+        ("j0f", host::j0 as unsafe extern "C" fn(f64) -> f64),
+        ("j1f", host::j1),
+        ("y0f", host::y0),
+        ("y1f", host::y1),
+    ] {
+        in_libm(name, move |context| {
+            context.ret_f32(unsafe { host_function(f64::from(context.arg_f32(0))) } as f32)
+        });
     }
-    in_libm("jnf", |context| context.ret_f32(unsafe { host::jn(context.arg_i32(0), f64::from(context.arg_f32(0))) } as f32));
-    in_libm("ynf", |context| context.ret_f32(unsafe { host::yn(context.arg_i32(0), f64::from(context.arg_f32(0))) } as f32));
+    in_libm("jnf", |context| {
+        context
+            .ret_f32(unsafe { host::jn(context.arg_i32(0), f64::from(context.arg_f32(0))) } as f32)
+    });
+    in_libm("ynf", |context| {
+        context
+            .ret_f32(unsafe { host::yn(context.arg_i32(0), f64::from(context.arg_f32(0))) } as f32)
+    });
 }
 
 fn signgam_address() -> usize {
-    *SIGNGAM.get().expect("signgam is registered before first use")
+    *SIGNGAM
+        .get()
+        .expect("signgam is registered before first use")
 }
 
 fn register_pointer_results() {
@@ -238,32 +311,66 @@ fn register_pointer_results() {
     });
     in_libm("remquo", |context| {
         let mut quotient = 0i32;
-        let remainder = unsafe { host::remquo(context.arg_f64(0), context.arg_f64(1), &mut quotient) };
+        let remainder =
+            unsafe { host::remquo(context.arg_f64(0), context.arg_f64(1), &mut quotient) };
         write_value::<i32>(context.arg_ptr(0), quotient);
         context.ret_f64(remainder);
     });
     in_libm("remquof", |context| {
         let mut quotient = 0i32;
-        let remainder = unsafe { host::remquof(context.arg_f32(0), context.arg_f32(1), &mut quotient) };
+        let remainder =
+            unsafe { host::remquof(context.arg_f32(0), context.arg_f32(1), &mut quotient) };
         write_value::<i32>(context.arg_ptr(0), quotient);
         context.ret_f32(remainder);
     });
-    in_libm("ldexpf", |context| context.ret_f32(unsafe { host::ldexpf(context.arg_f32(0), context.arg_i32(0)) }));
-    in_libm("scalbn", |context| context.ret_f64(unsafe { host::scalbn(context.arg_f64(0), context.arg_i32(0)) }));
-    in_libm("scalbnf", |context| context.ret_f32(unsafe { host::scalbnf(context.arg_f32(0), context.arg_i32(0)) }));
-    in_libm("scalbln", |context| context.ret_f64(unsafe { host::scalbln(context.arg_f64(0), context.arg_u64(0) as i64) }));
-    in_libm("scalblnf", |context| context.ret_f32(unsafe { host::scalblnf(context.arg_f32(0), context.arg_u64(0) as i64) }));
-    in_libm("jn", |context| context.ret_f64(unsafe { host::jn(context.arg_i32(0), context.arg_f64(0)) }));
-    in_libm("yn", |context| context.ret_f64(unsafe { host::yn(context.arg_i32(0), context.arg_f64(0)) }));
+    in_libm("ldexpf", |context| {
+        context.ret_f32(unsafe { host::ldexpf(context.arg_f32(0), context.arg_i32(0)) })
+    });
+    in_libm("scalbn", |context| {
+        context.ret_f64(unsafe { host::scalbn(context.arg_f64(0), context.arg_i32(0)) })
+    });
+    in_libm("scalbnf", |context| {
+        context.ret_f32(unsafe { host::scalbnf(context.arg_f32(0), context.arg_i32(0)) })
+    });
+    in_libm("scalbln", |context| {
+        context.ret_f64(unsafe { host::scalbln(context.arg_f64(0), context.arg_u64(0) as i64) })
+    });
+    in_libm("scalblnf", |context| {
+        context.ret_f32(unsafe { host::scalblnf(context.arg_f32(0), context.arg_u64(0) as i64) })
+    });
+    in_libm("jn", |context| {
+        context.ret_f64(unsafe { host::jn(context.arg_i32(0), context.arg_f64(0)) })
+    });
+    in_libm("yn", |context| {
+        context.ret_f64(unsafe { host::yn(context.arg_i32(0), context.arg_f64(0)) })
+    });
 }
 
 pub fn register() {
-    unary_f64!(acos, asin, atan, cos, sin, tan, acosh, asinh, atanh, cosh, sinh, tanh, exp, exp2, expm1, log, log10, log1p, log2, logb, cbrt, fabs, sqrt, erf, erfc, tgamma, ceil, floor, nearbyint, rint, round, trunc, j0, j1, y0, y1);
-    unary_f32!(acosf, asinf, atanf, cosf, sinf, tanf, acoshf, asinhf, atanhf, coshf, sinhf, tanhf, expf, exp2f, expm1f, logf, log10f, log1pf, log2f, logbf, cbrtf, fabsf, sqrtf, erff, erfcf, tgammaf, ceilf, floorf, nearbyintf, rintf, roundf, truncf);
+    unary_f64!(
+        acos, asin, atan, cos, sin, tan, acosh, asinh, atanh, cosh, sinh, tanh, exp, exp2, expm1,
+        log, log10, log1p, log2, logb, cbrt, fabs, sqrt, erf, erfc, tgamma, ceil, floor, nearbyint,
+        rint, round, trunc, j0, j1, y0, y1
+    );
+    unary_f32!(
+        acosf, asinf, atanf, cosf, sinf, tanf, acoshf, asinhf, atanhf, coshf, sinhf, tanhf, expf,
+        exp2f, expm1f, logf, log10f, log1pf, log2f, logbf, cbrtf, fabsf, sqrtf, erff, erfcf,
+        tgammaf, ceilf, floorf, nearbyintf, rintf, roundf, truncf
+    );
     binary_f64!(atan2, hypot, pow, fmod, remainder, copysign, nextafter, fdim, fmax, fmin);
-    binary_f32!(atan2f, hypotf, powf, fmodf, remainderf, copysignf, nextafterf, fdimf, fmaxf, fminf);
-    in_libm("fma", |context| context.ret_f64(unsafe { host::fma(context.arg_f64(0), context.arg_f64(1), context.arg_f64(2)) }));
-    in_libm("fmaf", |context| context.ret_f32(unsafe { host::fmaf(context.arg_f32(0), context.arg_f32(1), context.arg_f32(2)) }));
+    binary_f32!(
+        atan2f, hypotf, powf, fmodf, remainderf, copysignf, nextafterf, fdimf, fmaxf, fminf
+    );
+    in_libm("fma", |context| {
+        context.ret_f64(unsafe {
+            host::fma(context.arg_f64(0), context.arg_f64(1), context.arg_f64(2))
+        })
+    });
+    in_libm("fmaf", |context| {
+        context.ret_f32(unsafe {
+            host::fmaf(context.arg_f32(0), context.arg_f32(1), context.arg_f32(2))
+        })
+    });
     to_integer!(lrint: arg_f64, llrint: arg_f64, lround: arg_f64, llround: arg_f64, lrintf: arg_f32, llrintf: arg_f32, lroundf: arg_f32, llroundf: arg_f32);
     register_adapted();
     register_pointer_results();

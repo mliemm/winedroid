@@ -28,14 +28,20 @@ static BLOCK: OnceLock<ThreadBlock> = OnceLock::new();
 fn create_key() -> libc::pthread_key_t {
     let mut key: libc::pthread_key_t = 0;
     let status = unsafe { libc::pthread_key_create(&mut key, None) };
-    assert_eq!(status, 0, "thread block key allocation failed with {status}");
+    assert_eq!(
+        status, 0,
+        "thread block key allocation failed with {status}"
+    );
     key
 }
 
 fn consecutive_run(keys: &[libc::pthread_key_t]) -> Option<usize> {
     let mut sorted: Vec<usize> = keys.iter().map(|key| *key as usize).collect();
     sorted.sort_unstable();
-    sorted.windows(SLOT_COUNT).find(|window| window[SLOT_COUNT - 1] - window[0] == SLOT_COUNT - 1).map(|window| window[0])
+    sorted
+        .windows(SLOT_COUNT)
+        .find(|window| window[SLOT_COUNT - 1] - window[0] == SLOT_COUNT - 1)
+        .map(|window| window[0])
 }
 
 fn random_canary() -> u64 {
@@ -50,19 +56,31 @@ fn allocate() -> ThreadBlock {
     // cite: bionic tls_defines.h#TLS_SLOT_BIONIC_TLS, TLS_SLOT_ART_THREAD_SELF, MAX_TLS_SLOT
     let mut created: Vec<libc::pthread_key_t> = Vec::new();
     let first_key = loop {
-        assert!(created.len() < KEY_ATTEMPTS, "no run of {SLOT_COUNT} consecutive thread specific keys");
+        assert!(
+            created.len() < KEY_ATTEMPTS,
+            "no run of {SLOT_COUNT} consecutive thread specific keys"
+        );
         created.push(create_key());
         if let Some(first) = consecutive_run(&created) {
             break first;
         }
     };
-    for key in created.iter().filter(|key| (**key as usize) < first_key || (**key as usize) >= first_key + SLOT_COUNT) {
+    for key in created
+        .iter()
+        .filter(|key| (**key as usize) < first_key || (**key as usize) >= first_key + SLOT_COUNT)
+    {
         unsafe { libc::pthread_key_delete(*key) };
     }
     let bias = 8 * (first_key + (0 - MIN_SLOT) as usize);
-    assert!(bias < 1 << 24, "thread block does not fit the two add veneer");
+    assert!(
+        bias < 1 << 24,
+        "thread block does not fit the two add veneer"
+    );
     GUEST_TP_BIAS.store(bias, Ordering::SeqCst);
-    ThreadBlock { first_key, canary: random_canary() }
+    ThreadBlock {
+        first_key,
+        canary: random_canary(),
+    }
 }
 
 pub fn block() -> &'static ThreadBlock {
@@ -71,7 +89,10 @@ pub fn block() -> &'static ThreadBlock {
 
 impl ThreadBlock {
     pub fn key(&self, slot: isize) -> usize {
-        assert!((MIN_SLOT..=MAX_SLOT).contains(&slot), "Bionic TLS slot {slot} is outside the thread block");
+        assert!(
+            (MIN_SLOT..=MAX_SLOT).contains(&slot),
+            "Bionic TLS slot {slot} is outside the thread block"
+        );
         self.first_key + (slot - MIN_SLOT) as usize
     }
 
@@ -86,7 +107,9 @@ impl ThreadBlock {
 
 pub fn host_thread_pointer() -> usize {
     let value: usize;
-    unsafe { std::arch::asm!("mrs {}, tpidrro_el0", out(reg) value, options(nomem, nostack, preserves_flags)) };
+    unsafe {
+        std::arch::asm!("mrs {}, tpidrro_el0", out(reg) value, options(nomem, nostack, preserves_flags))
+    };
     value
 }
 
@@ -99,6 +122,14 @@ pub fn slot_word(slot: isize) -> u64 {
 }
 
 pub fn set_slot(slot: isize, value: u64) {
-    let status = unsafe { libc::pthread_setspecific(block().key(slot) as libc::pthread_key_t, value as *const libc::c_void) };
-    assert_eq!(status, 0, "thread block slot {slot} store failed with {status}");
+    let status = unsafe {
+        libc::pthread_setspecific(
+            block().key(slot) as libc::pthread_key_t,
+            value as *const libc::c_void,
+        )
+    };
+    assert_eq!(
+        status, 0,
+        "thread block slot {slot} store failed with {status}"
+    );
 }

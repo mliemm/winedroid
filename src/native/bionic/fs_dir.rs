@@ -38,7 +38,11 @@ fn tag_of(pointer: usize) -> u64 {
 
 fn allocate(fd: i32) -> Result<usize, i32> {
     let entry = fd_table::get(fd).ok_or(EBADF)?;
-    let pointer = Box::into_raw(Box::new(DirStream { fd, entry, buffer: Mutex::new(DirentBuffer([0u8; layout::DIRENT_SIZE])) })) as usize;
+    let pointer = Box::into_raw(Box::new(DirStream {
+        fd,
+        entry,
+        buffer: Mutex::new(DirentBuffer([0u8; layout::DIRENT_SIZE])),
+    })) as usize;
     fdsan::exchange_owner_tag(fd, 0, tag_of(pointer));
     Ok(pointer)
 }
@@ -62,8 +66,14 @@ fn host_items(fd: i32) -> Result<Vec<DirItem>, i32> {
         }
         let record = unsafe { &*record };
         let length = record.d_namlen as usize;
-        let name = unsafe { std::slice::from_raw_parts(record.d_name.as_ptr() as *const u8, length) }.to_vec();
-        items.push(DirItem { inode: record.d_ino, name, kind: record.d_type });
+        let name =
+            unsafe { std::slice::from_raw_parts(record.d_name.as_ptr() as *const u8, length) }
+                .to_vec();
+        items.push(DirItem {
+            inode: record.d_ino,
+            name,
+            kind: record.d_type,
+        });
     }
     unsafe { libc::closedir(directory) };
     Ok(items)
@@ -75,7 +85,9 @@ fn next_record(directory: &DirStream) -> Result<Option<usize>, i32> {
         state.items = Some(host_items(directory.fd)?);
     }
     let position = state.position;
-    let Some(item) = state.items.as_ref().and_then(|items| items.get(position)) else { return Ok(None) };
+    let Some(item) = state.items.as_ref().and_then(|items| items.get(position)) else {
+        return Ok(None);
+    };
     let mut buffer = directory.buffer.lock().expect("dirent buffer");
     buffer.0.fill(0);
     let name = &item.name[..item.name.len().min(super::linux_abi::misc::NAME_MAX)];
@@ -83,7 +95,8 @@ fn next_record(directory: &DirStream) -> Result<Option<usize>, i32> {
     buffer.0[0..8].copy_from_slice(&item.inode.to_le_bytes());
     buffer.0[8..16].copy_from_slice(&((position + 1) as i64).to_le_bytes());
     let reclen = (layout::DIRENT_NAME + name.len() + 1).div_ceil(8) * 8;
-    buffer.0[layout::DIRENT_RECLEN..layout::DIRENT_RECLEN + 2].copy_from_slice(&(reclen as u16).to_le_bytes());
+    buffer.0[layout::DIRENT_RECLEN..layout::DIRENT_RECLEN + 2]
+        .copy_from_slice(&(reclen as u16).to_le_bytes());
     buffer.0[layout::DIRENT_TYPE] = item.kind;
     buffer.0[layout::DIRENT_NAME..layout::DIRENT_NAME + name.len()].copy_from_slice(name);
     state.position += 1;
@@ -91,7 +104,12 @@ fn next_record(directory: &DirStream) -> Result<Option<usize>, i32> {
 }
 
 fn open_directory(path: &[u8]) -> Result<usize, i32> {
-    let fd = open_at(at::FDCWD, path, open::CLOEXEC | open::DIRECTORY | open::RDONLY, 0);
+    let fd = open_at(
+        at::FDCWD,
+        path,
+        open::CLOEXEC | open::DIRECTORY | open::RDONLY,
+        0,
+    );
     if fd < 0 {
         return Err((-fd) as i32);
     }
@@ -110,8 +128,14 @@ fn directory_of_fd(fd: i32) -> Result<usize, i32> {
 
 fn read_into(pointer: usize, target: usize, record: usize) {
     let _ = pointer;
-    let reclen = u16::from_le_bytes(unsafe { std::slice::from_raw_parts((record + layout::DIRENT_RECLEN) as *const u8, 2) }.try_into().expect("2 bytes"));
-    write_bytes(target, unsafe { std::slice::from_raw_parts(record as *const u8, reclen as usize) });
+    let reclen = u16::from_le_bytes(
+        unsafe { std::slice::from_raw_parts((record + layout::DIRENT_RECLEN) as *const u8, 2) }
+            .try_into()
+            .expect("2 bytes"),
+    );
+    write_bytes(target, unsafe {
+        std::slice::from_raw_parts(record as *const u8, reclen as usize)
+    });
 }
 
 fn entry_name(pointer: usize) -> Vec<u8> {
@@ -130,24 +154,39 @@ fn scan(path: &[u8], filter: usize, compare: usize) -> Result<(usize, i32), i32>
             Err(errno) => return Err(errno),
         };
         if filter != 0 {
-            let verdict = CallBuilder::new(filter).ptr(record).invoke().map(|result| result.i32()).unwrap_or(0);
+            let verdict = CallBuilder::new(filter)
+                .ptr(record)
+                .invoke()
+                .map(|result| result.i32())
+                .unwrap_or(0);
             if verdict == 0 {
                 continue;
             }
         }
-        let reclen = u16::from_le_bytes(unsafe { std::slice::from_raw_parts((record + layout::DIRENT_RECLEN) as *const u8, 2) }.try_into().expect("2 bytes")) as usize;
+        let reclen = u16::from_le_bytes(
+            unsafe { std::slice::from_raw_parts((record + layout::DIRENT_RECLEN) as *const u8, 2) }
+                .try_into()
+                .expect("2 bytes"),
+        ) as usize;
         let copy = unsafe { libc::malloc(reclen) } as usize;
         if copy == 0 {
             return Err(ENOMEM);
         }
-        write_bytes(copy, unsafe { std::slice::from_raw_parts(record as *const u8, reclen) });
+        write_bytes(copy, unsafe {
+            std::slice::from_raw_parts(record as *const u8, reclen)
+        });
         kept.push(copy);
     }
     close_stream(directory);
     if compare != 0 {
         kept.sort_by(|left, right| {
             let (left_cell, right_cell) = (Box::new(*left), Box::new(*right));
-            let outcome = CallBuilder::new(compare).ptr(&*left_cell as *const usize as usize).ptr(&*right_cell as *const usize as usize).invoke().map(|result| result.i32()).unwrap_or(0);
+            let outcome = CallBuilder::new(compare)
+                .ptr(&*left_cell as *const usize as usize)
+                .ptr(&*right_cell as *const usize as usize)
+                .invoke()
+                .map(|result| result.i32())
+                .unwrap_or(0);
             outcome.cmp(&0)
         });
     }
@@ -164,26 +203,32 @@ fn close_stream(pointer: usize) -> i64 {
 }
 
 pub fn register() {
-    in_libc("opendir", |context| match path_argument(context.arg_ptr(0)).and_then(open_directory) {
-        Ok(pointer) => context.ret_ptr(pointer),
-        Err(errno) => {
-            context.set_errno(errno);
-            context.ret_ptr(0);
-        }
-    });
-    in_libc("fdopendir", |context| match directory_of_fd(context.arg_i32(0)) {
-        Ok(pointer) => context.ret_ptr(pointer),
-        Err(errno) => {
-            context.set_errno(errno);
-            context.ret_ptr(0);
-        }
-    });
-    for name in ["readdir", "readdir64"] {
-        in_libc(name, |context| match next_record(stream(context.arg_ptr(0), "readdir")) {
-            Ok(record) => context.ret_ptr(record.unwrap_or(0)),
+    in_libc("opendir", |context| {
+        match path_argument(context.arg_ptr(0)).and_then(open_directory) {
+            Ok(pointer) => context.ret_ptr(pointer),
             Err(errno) => {
                 context.set_errno(errno);
                 context.ret_ptr(0);
+            }
+        }
+    });
+    in_libc("fdopendir", |context| {
+        match directory_of_fd(context.arg_i32(0)) {
+            Ok(pointer) => context.ret_ptr(pointer),
+            Err(errno) => {
+                context.set_errno(errno);
+                context.ret_ptr(0);
+            }
+        }
+    });
+    for name in ["readdir", "readdir64"] {
+        in_libc(name, |context| {
+            match next_record(stream(context.arg_ptr(0), "readdir")) {
+                Ok(record) => context.ret_ptr(record.unwrap_or(0)),
+                Err(errno) => {
+                    context.set_errno(errno);
+                    context.ret_ptr(0);
+                }
             }
         });
     }
@@ -229,7 +274,9 @@ pub fn register() {
         let position = directory.entry.dir.lock().expect("dir state").position;
         context.ret_i64(position as i64);
     });
-    in_libc("dirfd", |context| context.ret_i32(stream(context.arg_ptr(0), "dirfd").fd));
+    in_libc("dirfd", |context| {
+        context.ret_i32(stream(context.arg_ptr(0), "dirfd").fd)
+    });
     for name in ["alphasort", "alphasort64"] {
         in_libc(name, |context| {
             // cite: bionic dirent.cpp#alphasort
@@ -240,7 +287,8 @@ pub fn register() {
     }
     for name in ["scandir", "scandir64"] {
         in_libc(name, |context| {
-            let outcome = path_argument(context.arg_ptr(0)).and_then(|path| scan(path, context.arg_ptr(2), context.arg_ptr(3)));
+            let outcome = path_argument(context.arg_ptr(0))
+                .and_then(|path| scan(path, context.arg_ptr(2), context.arg_ptr(3)));
             match outcome {
                 Ok((list, count)) => {
                     write_value::<usize>(context.arg_ptr(1), list);

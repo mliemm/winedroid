@@ -1,14 +1,18 @@
 use std::ffi::c_void;
 
-use super::super::call_assign::CallBuilder;
 use super::super::bionic::guest_mem::read_value;
+use super::super::call_assign::CallBuilder;
 use super::cfi::{self, CfaRule, Rule, RuleSet};
 use super::dwarf_expr::{self, AddressReader};
 use super::fde::{self, Found};
-use super::registers::{register_value, UnwindContext, UnwindRegs, SHADOW_CALL_STACK_REGISTER, STACK_POINTER_REGISTER, VECTOR_FIRST_REGISTER, VECTOR_REGISTER_COUNT};
+use super::registers::{
+    register_value, UnwindContext, UnwindRegs, SHADOW_CALL_STACK_REGISTER, STACK_POINTER_REGISTER,
+    VECTOR_FIRST_REGISTER, VECTOR_REGISTER_COUNT,
+};
 use super::{
-    refuse, URC_CONTINUE_UNWIND, URC_END_OF_STACK, URC_FATAL_PHASE1_ERROR, URC_FATAL_PHASE2_ERROR, URC_HANDLER_FOUND, URC_INSTALL_CONTEXT, URC_NO_REASON,
-    UA_CLEANUP_PHASE, UA_FORCE_UNWIND, UA_HANDLER_FRAME, UA_SEARCH_PHASE, UNWIND_VERSION,
+    refuse, UA_CLEANUP_PHASE, UA_FORCE_UNWIND, UA_HANDLER_FRAME, UA_SEARCH_PHASE, UNWIND_VERSION,
+    URC_CONTINUE_UNWIND, URC_END_OF_STACK, URC_FATAL_PHASE1_ERROR, URC_FATAL_PHASE2_ERROR,
+    URC_HANDLER_FOUND, URC_INSTALL_CONTEXT, URC_NO_REASON,
 };
 
 extern "C" {
@@ -32,18 +36,27 @@ impl Space {
         if high == 0 || size == 0 {
             return Err("the current thread has no readable stack bounds; next missing primitive: thread stack bounds".to_string());
         }
-        Ok(Self { stack_low: high - size, stack_high: high })
+        Ok(Self {
+            stack_low: high - size,
+            stack_high: high,
+        })
     }
 
     fn contains(&self, address: u64, len: u64) -> bool {
-        address >= self.stack_low && address.checked_add(len).is_some_and(|end| end <= self.stack_high)
+        address >= self.stack_low
+            && address
+                .checked_add(len)
+                .is_some_and(|end| end <= self.stack_high)
     }
 }
 
 impl AddressReader for Space {
     fn read_u64(&self, address: u64) -> Result<u64, String> {
         if !self.contains(address, 8) {
-            return Err(format!("unwind read of {address:#x} is outside the thread stack {:#x}..{:#x}", self.stack_low, self.stack_high));
+            return Err(format!(
+                "unwind read of {address:#x} is outside the thread stack {:#x}..{:#x}",
+                self.stack_low, self.stack_high
+            ));
         }
         Ok(read_value::<u64>(address as usize))
     }
@@ -69,14 +82,21 @@ fn frame_at(space: &Space, regs: &UnwindRegs) -> Result<Option<(Found, RuleSet, 
     if regs.pc == 0 {
         return Ok(None);
     }
-    let Some(found) = fde::lookup(regs.pc)? else { return Ok(None) };
+    let Some(found) = fde::lookup(regs.pc)? else {
+        return Ok(None);
+    };
     let rules = cfi::execute(&found.memory, &found.fde, regs.pc)?;
     let cfa = compute_cfa(space, &found, &rules, regs)?;
     guard(space, regs, cfa, &found)?;
     Ok(Some((found, rules, cfa)))
 }
 
-fn compute_cfa(space: &Space, found: &Found, rules: &RuleSet, regs: &UnwindRegs) -> Result<u64, String> {
+fn compute_cfa(
+    space: &Space,
+    found: &Found,
+    rules: &RuleSet,
+    regs: &UnwindRegs,
+) -> Result<u64, String> {
     match rules.cfa {
         Some(CfaRule::Register(register, offset)) => {
             let value = register_value(regs, u32::from(register)).ok_or_else(|| {
@@ -87,12 +107,22 @@ fn compute_cfa(space: &Space, found: &Found, rules: &RuleSet, regs: &UnwindRegs)
             })?;
             Ok(value.wrapping_add(offset as u64))
         }
-        Some(CfaRule::Expression(start, length)) => dwarf_expr::evaluate(space, &found.memory, (start, length), regs),
-        None => Err(format!("no CFA rule for {:#x} in {}; next missing primitive: DWARF CFA rule", regs.pc, found.name)),
+        Some(CfaRule::Expression(start, length)) => {
+            dwarf_expr::evaluate(space, &found.memory, (start, length), regs)
+        }
+        None => Err(format!(
+            "no CFA rule for {:#x} in {}; next missing primitive: DWARF CFA rule",
+            regs.pc, found.name
+        )),
     }
 }
 
-pub(crate) fn guard(space: &Space, regs: &UnwindRegs, cfa: u64, found: &Found) -> Result<(), String> {
+pub(crate) fn guard(
+    space: &Space,
+    regs: &UnwindRegs,
+    cfa: u64,
+    found: &Found,
+) -> Result<(), String> {
     if cfa < regs.sp {
         return Err(format!(
             "the CFA {cfa:#x} of {:#x} in {} is below its stack pointer {:#x}; next missing primitive: unwind stack direction",
@@ -154,14 +184,28 @@ impl Restorer<'_> {
         let factor = self.found.fde.cie.data_align;
         match rule {
             Rule::Undefined | Rule::SameValue => Ok(None),
-            Rule::Offset(offset) => Ok(Some(self.read(self.cfa.wrapping_add(offset.wrapping_mul(factor) as u64))?)),
-            Rule::ValueOffset(offset) => Ok(Some(self.cfa.wrapping_add(offset.wrapping_mul(factor) as u64))),
+            Rule::Offset(offset) => Ok(Some(
+                self.read(self.cfa.wrapping_add(offset.wrapping_mul(factor) as u64))?,
+            )),
+            Rule::ValueOffset(offset) => Ok(Some(
+                self.cfa.wrapping_add(offset.wrapping_mul(factor) as u64),
+            )),
             Rule::Register(other) => self.value(u32::from(other)),
             Rule::Expression(start, length) => {
-                let address = dwarf_expr::evaluate(self.space, &self.found.memory, (start, length), self.regs)?;
+                let address = dwarf_expr::evaluate(
+                    self.space,
+                    &self.found.memory,
+                    (start, length),
+                    self.regs,
+                )?;
                 Ok(Some(self.read(address)?))
             }
-            Rule::ValueExpression(start, length) => Ok(Some(dwarf_expr::evaluate(self.space, &self.found.memory, (start, length), self.regs)?)),
+            Rule::ValueExpression(start, length) => Ok(Some(dwarf_expr::evaluate(
+                self.space,
+                &self.found.memory,
+                (start, length),
+                self.regs,
+            )?)),
         }
     }
 
@@ -170,7 +214,13 @@ impl Restorer<'_> {
     }
 }
 
-fn restore(space: &Space, found: &Found, rules: &RuleSet, regs: &UnwindRegs, cfa: u64) -> Result<Option<UnwindRegs>, String> {
+fn restore(
+    space: &Space,
+    found: &Found,
+    rules: &RuleSet,
+    regs: &UnwindRegs,
+    cfa: u64,
+) -> Result<Option<UnwindRegs>, String> {
     let return_register = found.fde.cie.return_register;
     if return_register >= 31 {
         return Err(format!(
@@ -181,11 +231,21 @@ fn restore(space: &Space, found: &Found, rules: &RuleSet, regs: &UnwindRegs, cfa
     if rules.rule(return_register) == Rule::Undefined {
         return Ok(None);
     }
-    let mut restorer = Restorer { space, found, rules, cfa, regs, resolved: [None; 31], visiting: [false; 31] };
+    let mut restorer = Restorer {
+        space,
+        found,
+        rules,
+        cfa,
+        regs,
+        resolved: [None; 31],
+        visiting: [false; 31],
+    };
     let mut next = *regs;
     next.x[SHADOW_CALL_STACK_REGISTER] = regs.x[SHADOW_CALL_STACK_REGISTER];
     for register in 0..31u32 {
-        if register as usize == SHADOW_CALL_STACK_REGISTER || rules.rule(register) == Rule::Undefined {
+        if register as usize == SHADOW_CALL_STACK_REGISTER
+            || rules.rule(register) == Rule::Undefined
+        {
             continue;
         }
         if let Some(value) = restorer.value(register)? {
@@ -201,17 +261,26 @@ fn restore(space: &Space, found: &Found, rules: &RuleSet, regs: &UnwindRegs, cfa
             next.q[slot] = u128::from(value);
         }
     }
-    let Some(return_address) = restorer.value(return_register)? else { return Ok(None) };
+    let Some(return_address) = restorer.value(return_register)? else {
+        return Ok(None);
+    };
     next.sp = cfa;
     next.pc = return_address;
     Ok(Some(next))
 }
 
 fn step(space: &Space, regs: &mut UnwindRegs, budget: &mut usize) -> Result<Step, String> {
-    let Some((found, rules, cfa)) = frame_at(space, regs)? else { return Ok(Step::EndOfStack) };
-    let Some(next) = restore(space, &found, &rules, regs, cfa)? else { return Ok(Step::EndOfStack) };
+    let Some((found, rules, cfa)) = frame_at(space, regs)? else {
+        return Ok(Step::EndOfStack);
+    };
+    let Some(next) = restore(space, &found, &rules, regs, cfa)? else {
+        return Ok(Step::EndOfStack);
+    };
     if *budget == 0 {
-        return Err("unwind frame budget exceeded; next missing primitive: deeper unwind frame budget".to_string());
+        return Err(
+            "unwind frame budget exceeded; next missing primitive: deeper unwind frame budget"
+                .to_string(),
+        );
     }
     *budget -= 1;
     *regs = next;
@@ -246,7 +315,11 @@ fn make_context(found: &Found, regs: &UnwindRegs, cfa: u64, actions: i32) -> Unw
     context
 }
 
-fn call_personality(context: &mut UnwindContext, exception: u64, actions: i32) -> Result<i32, String> {
+fn call_personality(
+    context: &mut UnwindContext,
+    exception: u64,
+    actions: i32,
+) -> Result<i32, String> {
     let outcome = CallBuilder::new(context.personality as usize)
         .int(UNWIND_VERSION as u64)
         .int(actions as u64)
@@ -258,7 +331,12 @@ fn call_personality(context: &mut UnwindContext, exception: u64, actions: i32) -
     Ok(outcome.i32())
 }
 
-fn call_stop(stop: u64, exception: u64, frame: &UnwindContext, argument: u64) -> Result<i32, String> {
+fn call_stop(
+    stop: u64,
+    exception: u64,
+    frame: &UnwindContext,
+    argument: u64,
+) -> Result<i32, String> {
     let outcome = CallBuilder::new(stop as usize)
         .int(1)
         .int((UA_FORCE_UNWIND | UA_CLEANUP_PHASE) as u64)
@@ -271,12 +349,20 @@ fn call_stop(stop: u64, exception: u64, frame: &UnwindContext, argument: u64) ->
     Ok(outcome.i32())
 }
 
-fn cleanup(space: &Space, start: &UnwindRegs, exception: u64, handler: Option<usize>, stop: Option<(u64, u64)>) -> Result<Phase, String> {
+fn cleanup(
+    space: &Space,
+    start: &UnwindRegs,
+    exception: u64,
+    handler: Option<usize>,
+    stop: Option<(u64, u64)>,
+) -> Result<Phase, String> {
     let mut cursor = *start;
     let mut budget = super::FRAME_BUDGET;
     let mut index = 0usize;
     loop {
-        let Some((found, rules, cfa)) = frame_at(space, &cursor)? else { return Ok(Phase::End) };
+        let Some((found, rules, cfa)) = frame_at(space, &cursor)? else {
+            return Ok(Phase::End);
+        };
         let _ = rules;
         if let Some((function, argument)) = stop {
             let frame = make_context(&found, &cursor, cfa, UA_FORCE_UNWIND | UA_CLEANUP_PHASE);
@@ -286,7 +372,13 @@ fn cleanup(space: &Space, start: &UnwindRegs, exception: u64, handler: Option<us
                 _ => return Ok(Phase::Fatal),
             }
         }
-        let actions = UA_CLEANUP_PHASE | if stop.is_some() { UA_FORCE_UNWIND } else { 0 } | if handler == Some(index) { UA_HANDLER_FRAME } else { 0 };
+        let actions = UA_CLEANUP_PHASE
+            | if stop.is_some() { UA_FORCE_UNWIND } else { 0 }
+            | if handler == Some(index) {
+                UA_HANDLER_FRAME
+            } else {
+                0
+            };
         if personality_for(&found)? != 0 {
             let mut context = make_context(&found, &cursor, cfa, actions);
             match call_personality(&mut context, exception, actions)? {
@@ -325,7 +417,9 @@ fn run(selector: u64, regs: &UnwindRegs) -> Result<Outcome, String> {
         1 => resume(&space, regs),
         2 => forced(&space, regs),
         3 => backtrace(&space, regs),
-        other => Err(format!("unknown unwind entry selector {other}; next missing primitive: unwind entry")),
+        other => Err(format!(
+            "unknown unwind entry selector {other}; next missing primitive: unwind entry"
+        )),
     }
 }
 
@@ -336,7 +430,9 @@ fn raise(space: &Space, start: &UnwindRegs) -> Result<Outcome, String> {
     let mut index = 0usize;
     let mut handler = None;
     loop {
-        let Some((found, _rules, cfa)) = frame_at(space, &cursor)? else { break };
+        let Some((found, _rules, cfa)) = frame_at(space, &cursor)? else {
+            break;
+        };
         if personality_for(&found)? != 0 {
             let mut context = make_context(&found, &cursor, cfa, UA_SEARCH_PHASE);
             match call_personality(&mut context, exception, UA_SEARCH_PHASE)? {
@@ -360,7 +456,9 @@ fn raise(space: &Space, start: &UnwindRegs) -> Result<Outcome, String> {
         }
         index += 1;
     }
-    let Some(handler) = handler else { return Ok(Outcome::Return(URC_END_OF_STACK)) };
+    let Some(handler) = handler else {
+        return Ok(Outcome::Return(URC_END_OF_STACK));
+    };
     match cleanup(space, start, exception, Some(handler), None)? {
         Phase::Install(regs) => Ok(Outcome::Install(regs)),
         Phase::End | Phase::Fatal => Ok(Outcome::Return(URC_FATAL_PHASE2_ERROR)),
@@ -397,7 +495,9 @@ fn backtrace(space: &Space, start: &UnwindRegs) -> Result<Outcome, String> {
     let mut cursor = *start;
     let mut budget = super::FRAME_BUDGET;
     loop {
-        let Some((found, _rules, cfa)) = frame_at(space, &cursor)? else { return Ok(Outcome::Return(URC_END_OF_STACK)) };
+        let Some((found, _rules, cfa)) = frame_at(space, &cursor)? else {
+            return Ok(Outcome::Return(URC_END_OF_STACK));
+        };
         let mut context = make_context(&found, &cursor, cfa, 0);
         let outcome = CallBuilder::new(trace as usize)
             .ptr((&mut context as *mut UnwindContext) as usize)

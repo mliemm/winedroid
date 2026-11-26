@@ -66,7 +66,9 @@ pub struct State {
 fn generate_handle(state: &State) -> u64 {
     // cite: bionic linker_soinfo.cpp#generate_handle
     loop {
-        let value = (u64::from(unsafe { libc::arc4random() }) << 32 | u64::from(unsafe { libc::arc4random() })) | 1;
+        let value = (u64::from(unsafe { libc::arc4random() }) << 32
+            | u64::from(unsafe { libc::arc4random() }))
+            | 1;
         if value != u64::MAX && value != 1 && !state.handles.contains_key(&value) {
             return value;
         }
@@ -75,9 +77,18 @@ fn generate_handle(state: &State) -> u64 {
 
 impl State {
     pub fn with_system_modules() -> Self {
-        let mut state = Self { next_id: 1, ..Self::default() };
+        let mut state = Self {
+            next_id: 1,
+            ..Self::default()
+        };
         for soname in SYSTEM_SONAMES {
-            let id = state.allocate(system_library_path(soname), soname.to_string(), RTLD_GLOBAL | RTLD_NODELETE, None, None);
+            let id = state.allocate(
+                system_library_path(soname),
+                soname.to_string(),
+                RTLD_GLOBAL | RTLD_NODELETE,
+                None,
+                None,
+            );
             let module = state.modules.get_mut(&id).expect("just allocated");
             module.linked = true;
             module.constructors_called = true;
@@ -86,7 +97,14 @@ impl State {
         state
     }
 
-    pub fn allocate(&mut self, path: String, soname: String, rtld_flags: i32, identity: Option<(u64, u64)>, guest: Option<Arc<GuestImage>>) -> ModuleId {
+    pub fn allocate(
+        &mut self,
+        path: String,
+        soname: String,
+        rtld_flags: i32,
+        identity: Option<(u64, u64)>,
+        guest: Option<Arc<GuestImage>>,
+    ) -> ModuleId {
         // cite: bionic linker.cpp#soinfo_alloc
         let id = self.next_id;
         self.next_id += 1;
@@ -128,12 +146,18 @@ impl State {
         if name.contains('/') {
             return None;
         }
-        self.modules.values().find(|module| !module.soname.is_empty() && module.soname == name).map(|module| module.id)
+        self.modules
+            .values()
+            .find(|module| !module.soname.is_empty() && module.soname == name)
+            .map(|module| module.id)
     }
 
     pub fn find_by_identity(&self, identity: (u64, u64)) -> Option<ModuleId> {
         // cite: bionic linker.cpp#find_loaded_library_by_inode
-        self.modules.values().find(|module| module.identity == Some(identity)).map(|module| module.id)
+        self.modules
+            .values()
+            .find(|module| module.identity == Some(identity))
+            .map(|module| module.id)
     }
 
     pub fn add_child(&mut self, parent: ModuleId, child: ModuleId) {
@@ -160,7 +184,10 @@ impl State {
     pub fn global_group(&self) -> Vec<ModuleId> {
         // cite: bionic linker_namespaces.cpp#get_global_group
         let system = self.modules.values().filter(|module| module.is_system());
-        let flagged = self.modules.values().filter(|module| module.guest.is_some() && module.dt_flags_1 & DF_1_GLOBAL != 0);
+        let flagged = self
+            .modules
+            .values()
+            .filter(|module| module.guest.is_some() && module.dt_flags_1 & DF_1_GLOBAL != 0);
         system.chain(flagged).map(|module| module.id).collect()
     }
 

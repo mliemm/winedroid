@@ -69,7 +69,8 @@ fn get_delimiter(line_pointer: usize, size_pointer: usize, delimiter: i32, file:
             Ok(Some(byte)) => {
                 if length + 1 >= capacity {
                     let grown = capacity.saturating_mul(2).max(length + 2);
-                    let resized = unsafe { libc::realloc(allocation as *mut libc::c_void, grown) } as usize;
+                    let resized =
+                        unsafe { libc::realloc(allocation as *mut libc::c_void, grown) } as usize;
                     if resized == 0 {
                         return error(ENOMEM);
                     }
@@ -108,7 +109,15 @@ fn open_stream(path: &[u8], mode: &[u8]) -> Result<usize, i32> {
         super::fs_io::lseek_fd(fd, 0, super::linux_abi::seek::END);
     }
     let buffering = stream::buffering_for(fd);
-    let file_flags = (if readable { super::linux_abi::stdio::SRD } else { 0 }) | (if writable { super::linux_abi::stdio::SWR } else { 0 });
+    let file_flags = (if readable {
+        super::linux_abi::stdio::SRD
+    } else {
+        0
+    }) | (if writable {
+        super::linux_abi::stdio::SWR
+    } else {
+        0
+    });
     let stream = stream::create(fd, readable, writable, buffering, false, file_flags);
     let file = stream::allocate(&stream);
     if file == 0 {
@@ -134,17 +143,22 @@ pub extern "C" fn flush_all_streams() {
 pub fn register() {
     super::atexit::set_stdio_cleanup(flush_all_streams);
     for name in ["fopen", "fopen64"] {
-        in_libc(name, move |context: &mut CallContext| match (path_argument(context.arg_ptr(0)), path_argument(context.arg_ptr(1))) {
-            (Ok(path), Ok(mode)) => match open_stream(path, mode) {
-                Ok(file) => context.ret_ptr(file),
-                Err(errno) => {
+        in_libc(name, move |context: &mut CallContext| {
+            match (
+                path_argument(context.arg_ptr(0)),
+                path_argument(context.arg_ptr(1)),
+            ) {
+                (Ok(path), Ok(mode)) => match open_stream(path, mode) {
+                    Ok(file) => context.ret_ptr(file),
+                    Err(errno) => {
+                        context.set_errno(errno);
+                        context.ret_ptr(0);
+                    }
+                },
+                (Err(errno), _) | (_, Err(errno)) => {
                     context.set_errno(errno);
                     context.ret_ptr(0);
                 }
-            },
-            (Err(errno), _) | (_, Err(errno)) => {
-                context.set_errno(errno);
-                context.ret_ptr(0);
             }
         });
     }
@@ -185,13 +199,23 @@ pub fn register() {
             context.ret_ptr(0);
             return;
         }
-        if wanted == super::linux_abi::open::RDWR && current_access == super::linux_abi::open::RDONLY {
+        if wanted == super::linux_abi::open::RDWR
+            && current_access == super::linux_abi::open::RDONLY
+        {
             context.set_errno(EINVAL);
             context.ret_ptr(0);
             return;
         }
         let buffering = stream::buffering_for(fd);
-        let file_flags = (if readable { super::linux_abi::stdio::SRD } else { 0 }) | (if writable { super::linux_abi::stdio::SWR } else { 0 });
+        let file_flags = (if readable {
+            super::linux_abi::stdio::SRD
+        } else {
+            0
+        }) | (if writable {
+            super::linux_abi::stdio::SWR
+        } else {
+            0
+        });
         let stream = stream::create(fd, readable, writable, buffering, false, file_flags);
         let file = stream::allocate(&stream);
         if file == 0 {
@@ -205,7 +229,10 @@ pub fn register() {
         in_libc(name, move |context: &mut CallContext| {
             let file = context.arg_ptr(2);
             if context.arg_ptr(0) == 0 {
-                missing("freopen", "a null path means changing the mode of the current descriptor");
+                missing(
+                    "freopen",
+                    "a null path means changing the mode of the current descriptor",
+                );
                 context.set_errno(EINVAL);
                 context.ret_ptr(0);
                 return;
@@ -215,7 +242,10 @@ pub fn register() {
                 context.ret_ptr(0);
                 return;
             }
-            let (path, mode) = match (path_argument(context.arg_ptr(0)), path_argument(context.arg_ptr(1))) {
+            let (path, mode) = match (
+                path_argument(context.arg_ptr(0)),
+                path_argument(context.arg_ptr(1)),
+            ) {
                 (Ok(path), Ok(mode)) => (path, mode),
                 (Err(errno), _) | (_, Err(errno)) => {
                     context.set_errno(errno);
@@ -240,7 +270,9 @@ pub fn register() {
             }
         });
     }
-    in_libc("fclose", |context| finish_int(context, stream::close_file(context.arg_ptr(0))));
+    in_libc("fclose", |context| {
+        finish_int(context, stream::close_file(context.arg_ptr(0)))
+    });
     for name in ["fread", "fread_unlocked"] {
         in_libc(name, move |context: &mut CallContext| {
             let stream = match file_of(context, 3) {
@@ -497,11 +529,21 @@ pub fn register() {
         }
     });
     in_libc("getline", |context| {
-        let result = get_delimiter(context.arg_ptr(0), context.arg_ptr(1), i32::from(b'\n'), context.arg_ptr(2));
+        let result = get_delimiter(
+            context.arg_ptr(0),
+            context.arg_ptr(1),
+            i32::from(b'\n'),
+            context.arg_ptr(2),
+        );
         finish_long(context, result);
     });
     in_libc("getdelim", |context| {
-        let result = get_delimiter(context.arg_ptr(0), context.arg_ptr(1), context.arg_i32(2), context.arg_ptr(3));
+        let result = get_delimiter(
+            context.arg_ptr(0),
+            context.arg_ptr(1),
+            context.arg_i32(2),
+            context.arg_ptr(3),
+        );
         finish_long(context, result);
     });
     in_libc("ungetc", |context| {
@@ -605,18 +647,26 @@ pub fn register() {
             }
         }
     });
-    in_libc("fpurge", |context| finish_int(context, stream::purge(context.arg_ptr(0))));
-    in_libc("__fpurge", |context| finish_int(context, stream::purge(context.arg_ptr(0))));
+    in_libc("fpurge", |context| {
+        finish_int(context, stream::purge(context.arg_ptr(0)))
+    });
+    in_libc("__fpurge", |context| {
+        finish_int(context, stream::purge(context.arg_ptr(0)))
+    });
     for name in ["feof", "feof_unlocked"] {
-        in_libc(name, move |context: &mut CallContext| match file_of(context, 0) {
-            Ok(stream) => context.ret_i32(i32::from(stream::is_eof(&stream))),
-            Err(failure) => finish_int(context, failure),
+        in_libc(name, move |context: &mut CallContext| {
+            match file_of(context, 0) {
+                Ok(stream) => context.ret_i32(i32::from(stream::is_eof(&stream))),
+                Err(failure) => finish_int(context, failure),
+            }
         });
     }
     for name in ["ferror", "ferror_unlocked"] {
-        in_libc(name, move |context: &mut CallContext| match file_of(context, 0) {
-            Ok(stream) => context.ret_i32(i32::from(stream::has_error(&stream))),
-            Err(failure) => finish_int(context, failure),
+        in_libc(name, move |context: &mut CallContext| {
+            match file_of(context, 0) {
+                Ok(stream) => context.ret_i32(i32::from(stream::has_error(&stream))),
+                Err(failure) => finish_int(context, failure),
+            }
         });
     }
     in_libc("clearerr", |context| match file_of(context, 0) {
@@ -628,21 +678,46 @@ pub fn register() {
         Err(failure) => return finish_int(context, failure),
     });
     for name in ["fileno", "fileno_unlocked"] {
-        in_libc(name, move |context: &mut CallContext| match file_of(context, 0) {
-            Ok(stream) => context.ret_i32(stream.fd),
-            Err(failure) => finish_int(context, failure),
+        in_libc(name, move |context: &mut CallContext| {
+            match file_of(context, 0) {
+                Ok(stream) => context.ret_i32(stream.fd),
+                Err(failure) => finish_int(context, failure),
+            }
         });
     }
     in_libc("setvbuf", |context| {
-        let result = stream::set_buffer(context.arg_ptr(0), context.arg_ptr(1), context.arg_i32(2), context.arg_u64(3) as usize);
+        let result = stream::set_buffer(
+            context.arg_ptr(0),
+            context.arg_ptr(1),
+            context.arg_i32(2),
+            context.arg_u64(3) as usize,
+        );
         finish_int(context, if result == 0 { 0 } else { -1 });
     });
     in_libc("setbuf", |context| {
-        let result = stream::set_buffer(context.arg_ptr(0), context.arg_ptr(1), if context.arg_ptr(1) == 0 { stream::IONBF } else { stream::IOFBF }, stream::BUFSIZ);
+        let result = stream::set_buffer(
+            context.arg_ptr(0),
+            context.arg_ptr(1),
+            if context.arg_ptr(1) == 0 {
+                stream::IONBF
+            } else {
+                stream::IOFBF
+            },
+            stream::BUFSIZ,
+        );
         finish_int(context, if result == 0 { 0 } else { -1 });
     });
     in_libc("setbuffer", |context| {
-        let result = stream::set_buffer(context.arg_ptr(0), context.arg_ptr(1), if context.arg_ptr(1) == 0 { stream::IONBF } else { stream::IOFBF }, context.arg_u64(2) as usize);
+        let result = stream::set_buffer(
+            context.arg_ptr(0),
+            context.arg_ptr(1),
+            if context.arg_ptr(1) == 0 {
+                stream::IONBF
+            } else {
+                stream::IOFBF
+            },
+            context.arg_u64(2) as usize,
+        );
         finish_int(context, if result == 0 { 0 } else { -1 });
     });
     in_libc("setlinebuf", |context| {
@@ -650,9 +725,14 @@ pub fn register() {
         finish_int(context, if result == 0 { 0 } else { -1 });
     });
     in_libc("perror", |context| {
-        let prefix = if context.arg_ptr(0) == 0 { Vec::new() } else { cstr_bytes(context.arg_ptr(0)).to_vec() };
+        let prefix = if context.arg_ptr(0) == 0 {
+            Vec::new()
+        } else {
+            cstr_bytes(context.arg_ptr(0)).to_vec()
+        };
         let code = super::errno::guest_errno();
-        let message = super::errno::message(code).map_or_else(|| format!("Unknown error {code}"), str::to_string);
+        let message = super::errno::message(code)
+            .map_or_else(|| format!("Unknown error {code}"), str::to_string);
         let mut line = prefix;
         if !line.is_empty() {
             line.extend_from_slice(b": ");
@@ -663,16 +743,21 @@ pub fn register() {
             let _ = stream::write_bytes(&stream, line.as_ptr() as usize, line.len());
         }
     });
-    in_libc("remove", |context| match path_argument(context.arg_ptr(0)) {
-        Ok(path) => {
-            let result = super::fs_ops::unlink_at(at::FDCWD, path, 0);
-            if result == error(21) {
-                finish_int(context, super::fs_ops::unlink_at(at::FDCWD, path, at::REMOVEDIR));
-            } else {
-                finish_int(context, result);
+    in_libc("remove", |context| {
+        match path_argument(context.arg_ptr(0)) {
+            Ok(path) => {
+                let result = super::fs_ops::unlink_at(at::FDCWD, path, 0);
+                if result == error(21) {
+                    finish_int(
+                        context,
+                        super::fs_ops::unlink_at(at::FDCWD, path, at::REMOVEDIR),
+                    );
+                } else {
+                    finish_int(context, result);
+                }
             }
+            Err(errno) => finish_int(context, error(errno)),
         }
-        Err(errno) => finish_int(context, error(errno)),
     });
     for name in ["tmpfile", "tmpfile64"] {
         in_libc(name, move |context: &mut CallContext| {
@@ -682,7 +767,14 @@ pub fn register() {
                 context.ret_ptr(0);
                 return;
             }
-            let stream = stream::create(fd as i32, true, true, stream::IOFBF, false, super::linux_abi::stdio::SRD | super::linux_abi::stdio::SWR);
+            let stream = stream::create(
+                fd as i32,
+                true,
+                true,
+                stream::IOFBF,
+                false,
+                super::linux_abi::stdio::SRD | super::linux_abi::stdio::SWR,
+            );
             let file = stream::allocate(&stream);
             if file == 0 {
                 super::fs_close_dup::close_fd(fd as i32);

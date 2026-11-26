@@ -2198,8 +2198,7 @@ fn libcore_count_down_latch_count_down_decrements_to_zero_and_stops() {
     );
     for expected in [1, 0, 0] {
         assert_eq!(
-            program
-                .invoke_builtin_method(&count_down, Some(&test_invocation(vec![latch.clone()]))),
+            program.invoke_builtin_method(&count_down, Some(&test_invocation(vec![latch.clone()]))),
             Some(DexExecutionResult::Void)
         );
         assert_eq!(
@@ -2398,7 +2397,10 @@ fn libcore_thread_pool_executor_seven_argument_constructor_stores_and_validates_
     assert_eq!(
         program.read_stored_instance_field(
             &executor,
-            &thread_pool_executor_field("handler", "Ljava/util/concurrent/RejectedExecutionHandler;")
+            &thread_pool_executor_field(
+                "handler",
+                "Ljava/util/concurrent/RejectedExecutionHandler;"
+            )
         ),
         Some(handler.clone())
     );
@@ -2446,6 +2448,26 @@ fn libcore_thread_pool_executor_abort_policy_constructor_returns_void() {
 }
 
 #[test]
+fn libcore_thread_pool_executor_discard_oldest_policy_constructor_returns_void() {
+    // cite: libcore ThreadPoolExecutor.java#DiscardOldestPolicy
+    let program = DexProgram::new(Vec::new());
+    let constructor = builtin_method(
+        "Ljava/util/concurrent/ThreadPoolExecutor$DiscardOldestPolicy;",
+        "<init>",
+        "V",
+        &[],
+    );
+    let policy = program.allocate_object(
+        "Ljava/util/concurrent/ThreadPoolExecutor$DiscardOldestPolicy;".to_owned(),
+    );
+
+    assert_eq!(
+        program.invoke_builtin_method(&constructor, Some(&test_invocation(vec![policy]))),
+        Some(DexExecutionResult::Void)
+    );
+}
+
+#[test]
 fn libcore_thread_pool_executor_constructor_rejects_invalid_arguments_in_source_order() {
     // cite: libcore ThreadPoolExecutor.java#ThreadPoolExecutor
     let program = DexProgram::new(Vec::new());
@@ -2462,24 +2484,83 @@ fn libcore_thread_pool_executor_constructor_rejects_invalid_arguments_in_source_
         let invocation = thread_pool_executor_arguments(
             &executor, core, maximum, keep_alive, unit, queue, factory,
         );
-        let Some(DexExecutionResult::Throw(exception)) = program
-            .invoke_builtin_method(&thread_pool_executor_constructor(), Some(&invocation))
+        let Some(DexExecutionResult::Throw(exception)) =
+            program.invoke_builtin_method(&thread_pool_executor_constructor(), Some(&invocation))
         else {
             panic!("constructor should throw {expected}");
         };
 
-        assert!(program.value_matches_type(&exception, expected), "{expected}");
+        assert!(
+            program.value_matches_type(&exception, expected),
+            "{expected}"
+        );
     };
     let illegal = "Ljava/lang/IllegalArgumentException;";
     let null_pointer = "Ljava/lang/NullPointerException;";
 
-    throws(-1, 4, 1, seconds_unit(), queue.clone(), factory.clone(), illegal);
-    throws(1, 0, 1, seconds_unit(), queue.clone(), factory.clone(), illegal);
-    throws(5, 4, 1, seconds_unit(), queue.clone(), factory.clone(), illegal);
-    throws(1, 4, -1, seconds_unit(), queue.clone(), factory.clone(), illegal);
-    throws(1, 4, 1, seconds_unit(), DexValue::Null, factory.clone(), null_pointer);
-    throws(1, 4, 1, seconds_unit(), queue.clone(), DexValue::Null, null_pointer);
-    throws(1, 4, 1, DexValue::Null, queue.clone(), factory.clone(), null_pointer);
+    throws(
+        -1,
+        4,
+        1,
+        seconds_unit(),
+        queue.clone(),
+        factory.clone(),
+        illegal,
+    );
+    throws(
+        1,
+        0,
+        1,
+        seconds_unit(),
+        queue.clone(),
+        factory.clone(),
+        illegal,
+    );
+    throws(
+        5,
+        4,
+        1,
+        seconds_unit(),
+        queue.clone(),
+        factory.clone(),
+        illegal,
+    );
+    throws(
+        1,
+        4,
+        -1,
+        seconds_unit(),
+        queue.clone(),
+        factory.clone(),
+        illegal,
+    );
+    throws(
+        1,
+        4,
+        1,
+        seconds_unit(),
+        DexValue::Null,
+        factory.clone(),
+        null_pointer,
+    );
+    throws(
+        1,
+        4,
+        1,
+        seconds_unit(),
+        queue.clone(),
+        DexValue::Null,
+        null_pointer,
+    );
+    throws(
+        1,
+        4,
+        1,
+        DexValue::Null,
+        queue.clone(),
+        factory.clone(),
+        null_pointer,
+    );
     throws(-1, 4, 1, seconds_unit(), DexValue::Null, factory, illegal);
 }
 
@@ -2624,7 +2705,10 @@ fn libcore_scheduled_thread_pool_executor_constructor_stores_default_pool_state(
     };
     assert_eq!(field("corePoolSize", "I"), Some(DexValue::Int(2)));
     assert_eq!(field("maximumPoolSize", "I"), Some(DexValue::Int(i32::MAX)));
-    assert_eq!(field("keepAliveTime", "J"), Some(DexValue::Long(10_000_000)));
+    assert_eq!(
+        field("keepAliveTime", "J"),
+        Some(DexValue::Long(10_000_000))
+    );
     assert_eq!(
         field("threadFactory", "Ljava/util/concurrent/ThreadFactory;"),
         Some(factory)
@@ -2636,7 +2720,9 @@ fn libcore_scheduled_thread_pool_executor_constructor_stores_default_pool_state(
         Some("Ljava/util/concurrent/ScheduledThreadPoolExecutor$DelayedWorkQueue;")
     );
     assert!(program.is_thread_pool_executor(&executor));
-    assert!(program.value_matches_type(&executor, "Ljava/util/concurrent/ScheduledExecutorService;"));
+    assert!(
+        program.value_matches_type(&executor, "Ljava/util/concurrent/ScheduledExecutorService;")
+    );
     assert!(program.value_matches_type(&executor, "Ljava/util/concurrent/Executor;"));
 }
 
@@ -2656,7 +2742,11 @@ fn libcore_scheduled_thread_pool_executor_constructor_checks_core_size_before_fa
             .allocate_object("Ljava/util/concurrent/ScheduledThreadPoolExecutor;".to_owned());
         thrown_exception(program.invoke_builtin_method(
             &constructor,
-            Some(&test_invocation(vec![executor, DexValue::Int(core), factory])),
+            Some(&test_invocation(vec![
+                executor,
+                DexValue::Int(core),
+                factory,
+            ])),
         ))
     };
 
@@ -2684,7 +2774,8 @@ fn libcore_abstract_executor_service_constructor_is_a_no_op_on_an_abstract_class
         "V",
         &[],
     );
-    let receiver = program.allocate_object("Ljava/util/concurrent/AbstractExecutorService;".to_owned());
+    let receiver =
+        program.allocate_object("Ljava/util/concurrent/AbstractExecutorService;".to_owned());
 
     assert_eq!(
         program.invoke_builtin_method(&constructor, Some(&test_invocation(vec![receiver.clone()]))),
@@ -2698,4 +2789,280 @@ fn libcore_abstract_executor_service_constructor_is_a_no_op_on_an_abstract_class
         bootstrap_new_instance_kind("Ljava/util/concurrent/AbstractExecutorService;"),
         Some(BootstrapNewInstanceKind::Abstract)
     );
+}
+
+#[test]
+fn libcore_thread_pool_executor_set_keep_alive_time_rewrites_nanos_and_guards_core_time_out() {
+    // cite: libcore ThreadPoolExecutor.java#setKeepAliveTime
+    let program = DexProgram::new(Vec::new());
+    let method = DexMethodId {
+        class_descriptor: THREAD_POOL_EXECUTOR.to_owned(),
+        name: "setKeepAliveTime".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VJL".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec!["J".to_owned(), "Ljava/util/concurrent/TimeUnit;".to_owned()],
+        },
+    };
+    let keep_alive = thread_pool_executor_field("keepAliveTime", "J");
+    let executor = construct_thread_pool_executor(&program, 1, 2, 5);
+    let call = |time: i64| {
+        program.invoke_builtin_method(
+            &method,
+            Some(&test_invocation(vec![
+                executor.clone(),
+                DexValue::Long(time),
+                DexValue::Long(time),
+                seconds_unit(),
+            ])),
+        )
+    };
+
+    assert_eq!(call(7), Some(DexExecutionResult::Void));
+    assert_eq!(
+        program.read_stored_instance_field(&executor, &keep_alive),
+        Some(DexValue::Long(7_000_000_000))
+    );
+    let Some(DexExecutionResult::Throw(exception)) = call(-1) else {
+        panic!("negative keep alive should throw");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/lang/IllegalArgumentException;"));
+    assert_eq!(
+        program.invoke_builtin_method(
+            &allow_core_thread_time_out_method(),
+            Some(&test_invocation(vec![executor.clone(), DexValue::Int(1)]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    let Some(DexExecutionResult::Throw(exception)) = call(0) else {
+        panic!("zero keep alive with core time out should throw");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/lang/IllegalArgumentException;"));
+    assert_eq!(
+        program.read_stored_instance_field(&executor, &keep_alive),
+        Some(DexValue::Long(7_000_000_000))
+    );
+}
+
+#[test]
+fn libcore_scheduled_thread_pool_executor_submit_schedules_runnable_immediately() {
+    // cite: libcore ScheduledThreadPoolExecutor.java#submit, schedule
+    let program = DexProgram::new(Vec::new());
+    let executor =
+        program.allocate_object("Ljava/util/concurrent/ScheduledThreadPoolExecutor;".to_owned());
+    let command = program.allocate_object("Lcom/example/Task;".to_owned());
+    let method = builtin_method(
+        "Ljava/util/concurrent/ScheduledThreadPoolExecutor;",
+        "submit",
+        "Ljava/util/concurrent/Future;",
+        &["Ljava/lang/Runnable;"],
+    );
+    let result = program.invoke_builtin_method(
+        &method,
+        Some(&test_invocation(vec![executor.clone(), command.clone()])),
+    );
+    let Some(DexExecutionResult::Value(task)) = result else {
+        panic!("submit should return a future");
+    };
+    assert_eq!(
+        program.read_stored_instance_field(&task, &future_task_runnable_field()),
+        Some(command)
+    );
+    let posts = program.runtime.borrow().handler_posts.clone();
+    assert!(posts
+        .iter()
+        .any(|post| post.runnable == task && post.delay_millis == 0));
+    for null in [DexValue::Null, DexValue::Int(0)] {
+        let result = program.invoke_builtin_method(
+            &method,
+            Some(&test_invocation(vec![executor.clone(), null])),
+        );
+        assert!(program.value_matches_type(
+            &thrown_exception(result),
+            "Ljava/lang/NullPointerException;"
+        ));
+    }
+}
+
+#[test]
+fn libcore_scheduled_thread_pool_executor_schedule_posts_a_delayed_future_task() {
+    // cite: libcore ScheduledThreadPoolExecutor.java#schedule, triggerTime
+    let program = DexProgram::new(Vec::new());
+    let constructor = builtin_method(
+        "Ljava/util/concurrent/ScheduledThreadPoolExecutor;",
+        "<init>",
+        "V",
+        &["I", "Ljava/util/concurrent/ThreadFactory;"],
+    );
+    let schedule = builtin_method(
+        "Ljava/util/concurrent/ScheduledThreadPoolExecutor;",
+        "schedule",
+        "Ljava/util/concurrent/ScheduledFuture;",
+        &[
+            "Ljava/lang/Runnable;",
+            "J",
+            "Ljava/util/concurrent/TimeUnit;",
+        ],
+    );
+    let executor =
+        program.allocate_object("Ljava/util/concurrent/ScheduledThreadPoolExecutor;".to_owned());
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![
+                executor.clone(),
+                DexValue::Int(1),
+                thread_pool_executor_dependency("Ljava/util/concurrent/ThreadFactory;:factory")
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    let command = program.allocate_object("Lcom/example/Task;".to_owned());
+    let call = |command: DexValue, delay: i64, unit: DexValue| {
+        program.invoke_builtin_method(
+            &schedule,
+            Some(&test_invocation(vec![
+                executor.clone(),
+                command,
+                DexValue::Long(delay),
+                DexValue::Long(delay),
+                unit,
+            ])),
+        )
+    };
+
+    let Some(DexExecutionResult::Value(task)) = call(command.clone(), 3, seconds_unit()) else {
+        panic!("schedule should return the task");
+    };
+    assert!(program.value_matches_type(&task, "Ljava/util/concurrent/ScheduledFuture;"));
+    assert!(program.value_matches_type(&task, "Ljava/util/concurrent/FutureTask;"));
+    let posts = program.runtime.borrow().handler_posts.clone();
+    let [post] = posts.as_slice() else {
+        panic!("one post expected");
+    };
+    assert_eq!(post.runnable, task);
+    assert_eq!(post.delay_millis, 3000);
+    assert_eq!(
+        program.read_stored_instance_field(&task, &future_task_runnable_field()),
+        Some(command.clone())
+    );
+
+    let Some(DexExecutionResult::Value(immediate)) = call(command.clone(), -5, seconds_unit())
+    else {
+        panic!("negative delay runs as zero");
+    };
+    assert_eq!(
+        program
+            .runtime
+            .borrow()
+            .handler_posts
+            .iter()
+            .find(|post| post.runnable == immediate)
+            .map(|post| post.delay_millis),
+        Some(0)
+    );
+    let nanoseconds = DexValue::Reference(std::rc::Rc::from(
+        "Ljava/util/concurrent/TimeUnit;.NANOSECONDS",
+    ));
+    let Some(DexExecutionResult::Value(sub_millisecond)) = call(command.clone(), 1, nanoseconds)
+    else {
+        panic!("sub millisecond delay should schedule");
+    };
+    assert_eq!(
+        program
+            .runtime
+            .borrow()
+            .handler_posts
+            .iter()
+            .find(|post| post.runnable == sub_millisecond)
+            .map(|post| post.delay_millis),
+        Some(1)
+    );
+    for result in [
+        call(DexValue::Null, 1, seconds_unit()),
+        call(command, 1, DexValue::Null),
+    ] {
+        assert!(program.value_matches_type(
+            &thrown_exception(result),
+            "Ljava/lang/NullPointerException;"
+        ));
+    }
+}
+
+#[test]
+fn libcore_scheduled_future_task_runs_its_runnable_through_future_task_run() {
+    // cite: libcore ScheduledThreadPoolExecutor.java#ScheduledFutureTask
+    // cite: libcore FutureTask.java#run
+    let program = DexProgram::new(Vec::new());
+    let command = program.allocate_object("Ljava/util/concurrent/FutureTask;".to_owned());
+    assert!(program.write_stored_instance_field(
+        &command,
+        &future_task_done_field(),
+        DexValue::Int(1)
+    ));
+    let task = program.allocate_object(
+        "Ljava/util/concurrent/ScheduledThreadPoolExecutor$ScheduledFutureTask;".to_owned(),
+    );
+    assert!(program.write_stored_instance_field(&task, &future_task_runnable_field(), command));
+
+    program
+        .dispatch_runnable(&task, "ScheduledFutureTask.run", 0)
+        .expect("ScheduledFutureTask should run as a FutureTask");
+
+    assert_eq!(
+        program.read_stored_instance_field(&task, &future_task_done_field()),
+        Some(DexValue::Int(1))
+    );
+}
+
+// cite: libcore ReentrantReadWriteLock.java#ReentrantReadWriteLock, readLock, writeLock, readerLock, writerLock
+#[test]
+fn reentrant_read_write_lock_hands_out_the_same_read_and_write_lock_per_instance() {
+    let program = DexProgram::new(Vec::new());
+    let lock_class = "Ljava/util/concurrent/locks/ReentrantReadWriteLock;";
+    let method = |name: &str, return_type: &str| DexMethodId {
+        class_descriptor: lock_class.to_owned(),
+        name: name.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: if name == "<init>" { "V" } else { "L" }.to_owned(),
+            return_type: return_type.to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let init = method("<init>", "V");
+    let read_lock = method(
+        "readLock",
+        "Ljava/util/concurrent/locks/ReentrantReadWriteLock$ReadLock;",
+    );
+    let write_lock = method(
+        "writeLock",
+        "Ljava/util/concurrent/locks/ReentrantReadWriteLock$WriteLock;",
+    );
+    let lock = program.allocate_object(lock_class.to_owned());
+    let call = |method: &DexMethodId| {
+        program.invoke_builtin_method(method, Some(&test_invocation(vec![lock.clone()])))
+    };
+
+    assert_eq!(call(&read_lock), None);
+    assert_eq!(call(&init), Some(DexExecutionResult::Void));
+    let Some(DexExecutionResult::Value(reader)) = call(&read_lock) else {
+        panic!("readLock should return the reader lock");
+    };
+    let Some(DexExecutionResult::Value(writer)) = call(&write_lock) else {
+        panic!("writeLock should return the writer lock");
+    };
+
+    assert!(program.value_matches_type(
+        &reader,
+        "Ljava/util/concurrent/locks/ReentrantReadWriteLock$ReadLock;"
+    ));
+    assert!(program.value_matches_type(&writer, "Ljava/util/concurrent/locks/Lock;"));
+    assert_ne!(reader, writer);
+    let bridge_read_lock = method("readLock", "Ljava/util/concurrent/locks/Lock;");
+    assert_eq!(
+        call(&bridge_read_lock),
+        Some(DexExecutionResult::Value(reader.clone()))
+    );
+    assert_eq!(call(&read_lock), Some(DexExecutionResult::Value(reader)));
+    assert_eq!(call(&write_lock), Some(DexExecutionResult::Value(writer)));
 }

@@ -77,7 +77,7 @@ impl DexProgram {
             && method.name == "add"
             && method.proto.descriptor_is("(Ljava/lang/Object;)Z")
         {
-            if method.class_descriptor == "Ljava/util/TreeSet;" {
+            if is_sorted_set_class(&method.class_descriptor) {
                 return None;
             }
 
@@ -740,8 +740,22 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
-        if method.class_descriptor == "Ljava/util/Map$Entry;"
-            && method.name == "getKey"
+        if method.class_descriptor == "Ljava/util/AbstractMap$SimpleEntry;"
+            && method.name == "<init>"
+            && (method
+                .proto
+                .descriptor_is("(Ljava/lang/Object;Ljava/lang/Object;)V")
+                || method.proto.descriptor_is("(Ljava/util/Map$Entry;)V"))
+        {
+            let invocation = invocation?;
+
+            return self.simple_entry_init(invocation);
+        }
+
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/util/Map$Entry;" | "Ljava/util/AbstractMap$SimpleEntry;"
+        ) && method.name == "getKey"
             && method.proto.descriptor_is("()Ljava/lang/Object;")
         {
             let invocation = invocation?;
@@ -750,8 +764,10 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(value));
         }
 
-        if method.class_descriptor == "Ljava/util/Map$Entry;"
-            && method.name == "getValue"
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/util/Map$Entry;" | "Ljava/util/AbstractMap$SimpleEntry;"
+        ) && method.name == "getValue"
             && method.proto.descriptor_is("()Ljava/lang/Object;")
         {
             let invocation = invocation?;
@@ -909,6 +925,14 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        if method.class_descriptor == "Landroid/util/ArrayMap;"
+            && method.name == "<init>"
+            && method.proto.descriptor_is("()V")
+        {
+            // cite: frameworks-base ArrayMap.java#ArrayMap
+            return Some(DexExecutionResult::Void);
+        }
+
         if method.class_descriptor == "Ljava/util/IdentityHashMap;"
             && method.name == "<init>"
             && method.proto.descriptor_is("()V")
@@ -999,7 +1023,7 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
-        if method.class_descriptor == "Ljava/util/TreeSet;"
+        if is_sorted_set_class(&method.class_descriptor)
             && method.name == "<init>"
             && matches!(
                 method.proto.descriptor().as_str(),

@@ -101,7 +101,11 @@ fn read_segments(data: &[u8]) -> Vec<Segment> {
 fn vaddr_to_offset(segments: &[Segment], vaddr: u64) -> usize {
     let load = segments
         .iter()
-        .find(|segment| segment.kind == PT_LOAD && vaddr >= segment.vaddr && vaddr < segment.vaddr + segment.filesz)
+        .find(|segment| {
+            segment.kind == PT_LOAD
+                && vaddr >= segment.vaddr
+                && vaddr < segment.vaddr + segment.filesz
+        })
         .unwrap_or_else(|| panic!("vaddr {vaddr:#x} is not file backed"));
     (vaddr - load.vaddr + load.offset) as usize
 }
@@ -116,7 +120,9 @@ fn read_dynamic_symbols(data: &[u8]) -> Vec<Symbol> {
     let section_table = u64_at(data, 40) as usize;
     let entry_size = usize::from(u16_at(data, 58));
     let count = usize::from(u16_at(data, 60));
-    let sections: Vec<usize> = (0..count).map(|index| section_table + index * entry_size).collect();
+    let sections: Vec<usize> = (0..count)
+        .map(|index| section_table + index * entry_size)
+        .collect();
     let dynsym = sections
         .iter()
         .copied()
@@ -136,8 +142,18 @@ fn read_dynamic_symbols(data: &[u8]) -> Vec<Symbol> {
         .collect()
 }
 
-fn read_relocations(data: &[u8], segments: &[Segment], symbols: &[Symbol], dynamic: &[(u64, u64)]) -> Vec<Relocation> {
-    let value = |tag: u64| dynamic.iter().find(|entry| entry.0 == tag).map(|entry| entry.1);
+fn read_relocations(
+    data: &[u8],
+    segments: &[Segment],
+    symbols: &[Symbol],
+    dynamic: &[(u64, u64)],
+) -> Vec<Relocation> {
+    let value = |tag: u64| {
+        dynamic
+            .iter()
+            .find(|entry| entry.0 == tag)
+            .map(|entry| entry.1)
+    };
     let ranges = [(DT_RELA, DT_RELASZ), (DT_JMPREL, DT_PLTRELSZ)];
     let mut relocations = Vec::new();
     for (start_tag, size_tag) in ranges {
@@ -178,7 +194,12 @@ impl FixtureElf {
             }
             dynamic.push((tag, u64_at(data, base + index * 16 + 8)));
         }
-        let value = |tag: u64| dynamic.iter().find(|entry| entry.0 == tag).map(|entry| entry.1);
+        let value = |tag: u64| {
+            dynamic
+                .iter()
+                .find(|entry| entry.0 == tag)
+                .map(|entry| entry.1)
+        };
         let array_len = |array_tag: u64, size_tag: u64| match (value(array_tag), value(size_tag)) {
             (Some(_), Some(size)) => (size / 8) as usize,
             _ => 0,
@@ -215,7 +236,10 @@ impl FixtureElf {
     }
 
     pub fn tag(&self, tag: u64) -> Option<u64> {
-        self.dynamic.iter().find(|entry| entry.0 == tag).map(|entry| entry.1)
+        self.dynamic
+            .iter()
+            .find(|entry| entry.0 == tag)
+            .map(|entry| entry.1)
     }
 
     pub fn has_segment(&self, kind: u32) -> bool {
@@ -223,7 +247,10 @@ impl FixtureElf {
     }
 
     pub fn count(&self, kind: u32) -> usize {
-        self.relocations.iter().filter(|relocation| relocation.kind == kind).count()
+        self.relocations
+            .iter()
+            .filter(|relocation| relocation.kind == kind)
+            .count()
     }
 
     pub fn symbols_of(&self, kind: u32) -> BTreeSet<String> {

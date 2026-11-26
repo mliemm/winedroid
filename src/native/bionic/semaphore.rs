@@ -39,7 +39,12 @@ fn update(count: &AtomicU32, stop: impl Fn(i32) -> bool, next: impl Fn(u32) -> u
         if stop(to_value(old)) {
             break;
         }
-        match count.compare_exchange_weak(old, next(old) | shared, Ordering::SeqCst, Ordering::SeqCst) {
+        match count.compare_exchange_weak(
+            old,
+            next(old) | shared,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
             Ok(_) => break,
             Err(current) => old = current,
         }
@@ -65,7 +70,11 @@ fn inc(count: &AtomicU32) -> i32 {
         if to_value(old) == SEM_VALUE_MAX {
             break;
         }
-        let next = if to_value(old) < 0 { ONE | shared } else { increment(old) | shared };
+        let next = if to_value(old) < 0 {
+            ONE | shared
+        } else {
+            increment(old) | shared
+        };
         match count.compare_exchange_weak(old, next, Ordering::SeqCst, Ordering::SeqCst) {
             Ok(_) => break,
             Err(current) => old = current,
@@ -90,7 +99,14 @@ fn timed_wait(context: &mut CallContext, sem: usize, timeout: usize, realtime: b
         return fail(context, status);
     }
     let shared = count.load(Ordering::Relaxed) & SHARED_MASK;
-    let deadline = deadline_at(timeout, if realtime { CLOCK_REALTIME } else { CLOCK_MONOTONIC });
+    let deadline = deadline_at(
+        timeout,
+        if realtime {
+            CLOCK_REALTIME
+        } else {
+            CLOCK_MONOTONIC
+        },
+    );
     loop {
         if dec(count) > 0 {
             return context.ret_i32(0);

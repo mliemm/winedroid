@@ -1,5 +1,7 @@
 use super::bridge_test_support::Bridged;
-use super::guest_thread::{attach_current, current_record, is_primary, is_record_live, set_primary};
+use super::guest_thread::{
+    attach_current, current_record, is_primary, is_record_live, set_primary,
+};
 use super::pthread_internal::PthreadInternal;
 use super::test_deadline::bounded_test;
 use super::thread_block::block;

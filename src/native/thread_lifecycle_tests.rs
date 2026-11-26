@@ -1,7 +1,9 @@
 use super::call_assign::CallBuilder;
 use super::loader_test_support::child_result;
 use super::test_deadline::bounded_test;
-use super::thread_test_support::{each_variant, shim, threads_in, wait_until_last_thread_is_released, word};
+use super::thread_test_support::{
+    each_variant, shim, threads_in, wait_until_last_thread_is_released, word,
+};
 
 bounded_test! {
     fn bionic_thread_return_values_arrive_through_join_for_return_and_pthread_exit() {
@@ -112,9 +114,30 @@ extern "C" fn report_host_stack_size(_argument: usize) -> usize {
 }
 
 fn host_stack_size_of_a_guest_thread(attribute: usize) -> usize {
-    let (thread, result) = (Box::leak(Box::new(0u64)) as *mut u64 as usize, Box::leak(Box::new(0usize)) as *mut usize as usize);
-    assert_eq!(shim("pthread_create").ptr(thread).ptr(attribute).ptr(report_host_stack_size as *const () as usize).ptr(0).invoke().unwrap().i32(), 0);
-    assert_eq!(shim("pthread_join").ptr(unsafe { *(thread as *const u64) } as usize).ptr(result).invoke().unwrap().i32(), 0);
+    let (thread, result) = (
+        Box::leak(Box::new(0u64)) as *mut u64 as usize,
+        Box::leak(Box::new(0usize)) as *mut usize as usize,
+    );
+    assert_eq!(
+        shim("pthread_create")
+            .ptr(thread)
+            .ptr(attribute)
+            .ptr(report_host_stack_size as *const () as usize)
+            .ptr(0)
+            .invoke()
+            .unwrap()
+            .i32(),
+        0
+    );
+    assert_eq!(
+        shim("pthread_join")
+            .ptr(unsafe { *(thread as *const u64) } as usize)
+            .ptr(result)
+            .invoke()
+            .unwrap()
+            .i32(),
+        0
+    );
     unsafe { *(result as *const usize) }
 }
 

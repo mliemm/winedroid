@@ -1,5 +1,5 @@
 use super::test_deadline::bounded_test;
-use super::thread_test_support::{each_variant};
+use super::thread_test_support::each_variant;
 
 bounded_test! {
     fn bionic_rwlock_readers_share_writers_exclude_and_unlock_checks_ownership() {

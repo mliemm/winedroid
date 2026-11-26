@@ -21,7 +21,10 @@ struct Table {
     appends: u64,
 }
 
-static TABLE: Mutex<Table> = Mutex::new(Table { entries: Vec::new(), appends: 0 });
+static TABLE: Mutex<Table> = Mutex::new(Table {
+    entries: Vec::new(),
+    appends: 0,
+});
 static DEPTH: AtomicUsize = AtomicUsize::new(0);
 static EXIT_FUNCTION: Mutex<extern "C" fn(i32)> = Mutex::new(host_exit);
 static STDIO_CLEANUP: Mutex<Option<extern "C" fn()>> = Mutex::new(None);
@@ -39,13 +42,26 @@ pub fn set_stdio_cleanup(function: extern "C" fn()) {
 }
 
 pub fn registration_count() -> usize {
-    TABLE.lock().expect("atexit table").entries.iter().flatten().count()
+    TABLE
+        .lock()
+        .expect("atexit table")
+        .entries
+        .iter()
+        .flatten()
+        .count()
 }
 
 #[cfg(test)]
 pub fn retain_within(since: u64, start: usize, length: usize) {
     let mut table = TABLE.lock().expect("atexit table");
-    table.entries.retain(|entry| entry.is_some_and(|entry| entry.thread == std::thread::current().id() && entry.sequence >= since && entry.dso as usize >= start && (entry.dso as usize) < start + length));
+    table.entries.retain(|entry| {
+        entry.is_some_and(|entry| {
+            entry.thread == std::thread::current().id()
+                && entry.sequence >= since
+                && entry.dso as usize >= start
+                && (entry.dso as usize) < start + length
+        })
+    });
 }
 
 #[cfg(test)]
@@ -60,7 +76,12 @@ pub fn registrations_within(since: u64, start: usize, length: usize) -> Vec<(u64
         .entries
         .iter()
         .flatten()
-        .filter(|entry| entry.thread == std::thread::current().id() && entry.sequence >= since && entry.dso as usize >= start && (entry.dso as usize) < start + length)
+        .filter(|entry| {
+            entry.thread == std::thread::current().id()
+                && entry.sequence >= since
+                && entry.dso as usize >= start
+                && (entry.dso as usize) < start + length
+        })
         .map(|entry| (entry.function, entry.argument, entry.dso))
         .collect()
 }
@@ -87,7 +108,11 @@ fn register_exit_handler(function: u64, argument: u64, dso: u64) -> i32 {
 }
 
 fn call_registered(registration: Registration) -> Result<(), String> {
-    CallBuilder::new(registration.function as usize).int(registration.argument).invoke().map(|_| ()).map_err(|error| error.to_string())
+    CallBuilder::new(registration.function as usize)
+        .int(registration.argument)
+        .invoke()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 pub fn finalize(dso: u64) -> Result<(), String> {
@@ -97,7 +122,11 @@ pub fn finalize(dso: u64) -> Result<(), String> {
     let outermost = DEPTH.fetch_sub(1, Ordering::SeqCst) == 1;
     if outermost {
         if dso != 0 {
-            TABLE.lock().expect("atexit table").entries.retain(Option::is_some);
+            TABLE
+                .lock()
+                .expect("atexit table")
+                .entries
+                .retain(Option::is_some);
         }
         finish_dso(dso);
     }
@@ -163,7 +192,13 @@ fn exit_process(context: &mut CallContext) {
 }
 
 pub fn register() {
-    in_libc("__cxa_atexit", |context| context.ret_i32(register_exit_handler(context.arg_u64(0), context.arg_u64(1), context.arg_u64(2))));
+    in_libc("__cxa_atexit", |context| {
+        context.ret_i32(register_exit_handler(
+            context.arg_u64(0),
+            context.arg_u64(1),
+            context.arg_u64(2),
+        ))
+    });
     in_libc("__cxa_finalize", |context| {
         if let Err(message) = finalize(context.arg_u64(0)) {
             context.fail(message);
@@ -171,8 +206,14 @@ pub fn register() {
     });
     in_libc("__cxa_thread_atexit_impl", |context| {
         // cite: bionic __cxa_thread_atexit_impl.cpp#__cxa_thread_atexit_impl
-        let (function, argument, dso) = (context.arg_u64(0), context.arg_u64(1), context.arg_u64(2));
-        super::super::thread_exit::add_thread_local_destructor(super::current_thread::record(), function, argument, dso);
+        let (function, argument, dso) =
+            (context.arg_u64(0), context.arg_u64(1), context.arg_u64(2));
+        super::super::thread_exit::add_thread_local_destructor(
+            super::current_thread::record(),
+            function,
+            argument,
+            dso,
+        );
         context.ret_i32(0);
     });
     in_libc("exit", exit_process);

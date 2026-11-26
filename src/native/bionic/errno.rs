@@ -26,7 +26,10 @@ pub fn guest_errno() -> i32 {
 
 pub fn message(error: i32) -> Option<&'static str> {
     // cite: bionic strerror.cpp#__sys_error_strings
-    usize::try_from(error).ok().filter(|index| *index < COUNT).and_then(|index| TABLE[index])
+    usize::try_from(error)
+        .ok()
+        .filter(|index| *index < COUNT)
+        .and_then(|index| TABLE[index])
 }
 
 fn unknown(error: i32) -> String {
@@ -34,11 +37,18 @@ fn unknown(error: i32) -> String {
 }
 
 fn text_for(error: i32) -> String {
-    message(error).map(str::to_string).unwrap_or_else(|| unknown(error))
+    message(error)
+        .map(str::to_string)
+        .unwrap_or_else(|| unknown(error))
 }
 
 fn names() -> &'static Vec<Option<CString>> {
-    NAMES.get_or_init(|| TABLE.iter().map(|entry| entry.map(|text| CString::new(text).expect("no interior nul"))).collect())
+    NAMES.get_or_init(|| {
+        TABLE
+            .iter()
+            .map(|entry| entry.map(|text| CString::new(text).expect("no interior nul")))
+            .collect()
+    })
 }
 
 fn strerror_r(error: i32, buffer: usize, length: usize) -> i32 {
@@ -55,7 +65,9 @@ fn strerror_r(error: i32, buffer: usize, length: usize) -> i32 {
 fn strerror(error: i32) -> usize {
     // cite: bionic strerror.cpp#strerror
     if message(error).is_some() {
-        return names()[error as usize].as_ref().map_or(0, |name| name.as_ptr() as usize);
+        return names()[error as usize]
+            .as_ref()
+            .map_or(0, |name| name.as_ptr() as usize);
     }
     BUFFER.with(|buffer| {
         let mut buffer = buffer.borrow_mut();
@@ -67,17 +79,29 @@ fn strerror(error: i32) -> usize {
 }
 
 fn handle_strerror_r(context: &mut CallContext) {
-    let result = strerror_r(context.arg_i32(0), context.arg_ptr(1), context.arg_u64(2) as usize);
+    let result = strerror_r(
+        context.arg_i32(0),
+        context.arg_ptr(1),
+        context.arg_u64(2) as usize,
+    );
     context.ret_i32(result);
 }
 
 pub fn register() {
-    in_libc("strerror", |context| context.ret_ptr(strerror(context.arg_i32(0))));
-    in_libc("strerror_l", |context| context.ret_ptr(strerror(context.arg_i32(0))));
+    in_libc("strerror", |context| {
+        context.ret_ptr(strerror(context.arg_i32(0)))
+    });
+    in_libc("strerror_l", |context| {
+        context.ret_ptr(strerror(context.arg_i32(0)))
+    });
     in_libc("strerror_r", handle_strerror_r);
     in_libc("__gnu_strerror_r", |context| {
         // cite: bionic strerror.cpp#__gnu_strerror_r
-        strerror_r(context.arg_i32(0), context.arg_ptr(1), context.arg_u64(2) as usize);
+        strerror_r(
+            context.arg_i32(0),
+            context.arg_ptr(1),
+            context.arg_u64(2) as usize,
+        );
         context.ret_ptr(context.arg_ptr(1));
     });
 }

@@ -22,13 +22,25 @@ static NAMES: Mutex<BTreeMap<usize, [u8; COMM_BYTES]>> = Mutex::new(BTreeMap::ne
 static CLEAR_TIDS: Mutex<BTreeMap<usize, usize>> = Mutex::new(BTreeMap::new());
 
 pub(super) fn hold_for_fork(held: &mut Vec<Box<dyn Any>>) {
-    held.push(Box::new(HOSTS.lock().unwrap_or_else(PoisonError::into_inner)));
-    held.push(Box::new(NAMES.lock().unwrap_or_else(PoisonError::into_inner)));
-    held.push(Box::new(CLEAR_TIDS.lock().unwrap_or_else(PoisonError::into_inner)));
+    held.push(Box::new(
+        HOSTS.lock().unwrap_or_else(PoisonError::into_inner),
+    ));
+    held.push(Box::new(
+        NAMES.lock().unwrap_or_else(PoisonError::into_inner),
+    ));
+    held.push(Box::new(
+        CLEAR_TIDS.lock().unwrap_or_else(PoisonError::into_inner),
+    ));
 }
 
 pub fn remember(record: usize, handle: libc::pthread_t, created: bool) {
-    HOSTS.lock().expect("thread hosts").insert(record, HostThread { handle: handle as usize, created });
+    HOSTS.lock().expect("thread hosts").insert(
+        record,
+        HostThread {
+            handle: handle as usize,
+            created,
+        },
+    );
 }
 
 pub fn forget(record: usize) {
@@ -52,11 +64,19 @@ pub fn take_clear_tid(record: usize) -> Option<usize> {
 }
 
 pub fn host_of(record: usize) -> Option<libc::pthread_t> {
-    HOSTS.lock().expect("thread hosts").get(&record).map(|host| host.handle as libc::pthread_t)
+    HOSTS
+        .lock()
+        .expect("thread hosts")
+        .get(&record)
+        .map(|host| host.handle as libc::pthread_t)
 }
 
 pub fn was_created_by_guest(record: usize) -> bool {
-    HOSTS.lock().expect("thread hosts").get(&record).is_some_and(|host| host.created)
+    HOSTS
+        .lock()
+        .expect("thread hosts")
+        .get(&record)
+        .is_some_and(|host| host.created)
 }
 
 pub fn lookup(thread: usize) -> Option<usize> {
@@ -72,7 +92,10 @@ pub fn find(thread: usize, caller: &str) -> Option<usize> {
         if thread == 0 {
             host_log::line(&format!("invalid pthread_t (0) passed to {caller}"));
         } else {
-            fatal(None, &format!("invalid pthread_t {thread:#x} passed to {caller}"));
+            fatal(
+                None,
+                &format!("invalid pthread_t {thread:#x} passed to {caller}"),
+            );
         }
     }
     None
@@ -85,12 +108,18 @@ pub fn set_name(record: usize, name: &[u8]) {
 }
 
 pub fn name_of(record: usize) -> [u8; COMM_BYTES] {
-    NAMES.lock().expect("thread names").get(&record).copied().unwrap_or_else(|| {
-        let mut comm = [0u8; COMM_BYTES];
-        let program = PROGRAM_NAME.as_bytes();
-        comm[..program.len().min(COMM_BYTES - 1)].copy_from_slice(&program[..program.len().min(COMM_BYTES - 1)]);
-        comm
-    })
+    NAMES
+        .lock()
+        .expect("thread names")
+        .get(&record)
+        .copied()
+        .unwrap_or_else(|| {
+            let mut comm = [0u8; COMM_BYTES];
+            let program = PROGRAM_NAME.as_bytes();
+            comm[..program.len().min(COMM_BYTES - 1)]
+                .copy_from_slice(&program[..program.len().min(COMM_BYTES - 1)]);
+            comm
+        })
 }
 
 pub fn inherit_name(parent: usize, child: usize) {
@@ -99,7 +128,11 @@ pub fn inherit_name(parent: usize, child: usize) {
 }
 
 fn first_other(hosts: &BTreeMap<usize, HostThread>, me: usize) -> Option<libc::pthread_t> {
-    hosts.values().map(|host| host.handle).find(|handle| *handle != me).map(|handle| handle as libc::pthread_t)
+    hosts
+        .values()
+        .map(|host| host.handle)
+        .find(|handle| *handle != me)
+        .map(|handle| handle as libc::pthread_t)
 }
 
 pub fn try_other_host() -> Option<libc::pthread_t> {
@@ -114,7 +147,19 @@ mod tests {
     use crate::native::test_deadline::bounded_test;
 
     fn hosts(handles: &[usize]) -> BTreeMap<usize, HostThread> {
-        handles.iter().enumerate().map(|(index, handle)| (index + 1, HostThread { handle: *handle, created: false })).collect()
+        handles
+            .iter()
+            .enumerate()
+            .map(|(index, handle)| {
+                (
+                    index + 1,
+                    HostThread {
+                        handle: *handle,
+                        created: false,
+                    },
+                )
+            })
+            .collect()
     }
 
     bounded_test! {

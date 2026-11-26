@@ -1,8 +1,10 @@
 use std::ffi::CString;
 use std::sync::OnceLock;
 
-use super::abi_types::{ENAMETOOLONG, ENOENT, EINVAL, PAGE_SIZE, UTSNAME_FIELD, UTSNAME_SIZE};
-use super::device_profile::{APP_GID, APP_UID, DOMAIN_NAME, HOST_NAME, KERNEL_RELEASE, KERNEL_VERSION};
+use super::abi_types::{EINVAL, ENAMETOOLONG, ENOENT, PAGE_SIZE, UTSNAME_FIELD, UTSNAME_SIZE};
+use super::device_profile::{
+    APP_GID, APP_UID, DOMAIN_NAME, HOST_NAME, KERNEL_RELEASE, KERNEL_VERSION,
+};
 use super::export::in_libc;
 use super::guest_mem::write_bytes;
 use super::sysconf_table::CONSTANTS;
@@ -71,7 +73,15 @@ pub fn sysctl_u64(name: &str) -> Option<u64> {
     let name = CString::new(name).ok()?;
     let mut buffer = [0u8; 8];
     let mut length = buffer.len();
-    let status = unsafe { libc::sysctlbyname(name.as_ptr(), buffer.as_mut_ptr() as *mut libc::c_void, &mut length, std::ptr::null_mut(), 0) };
+    let status = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            buffer.as_mut_ptr() as *mut libc::c_void,
+            &mut length,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
     (status == 0).then(|| match length {
         4 => u64::from(u32::from_le_bytes(buffer[..4].try_into().expect("4 bytes"))),
         8 => u64::from_le_bytes(buffer),
@@ -80,11 +90,17 @@ pub fn sysctl_u64(name: &str) -> Option<u64> {
 }
 
 fn capability_mask(table: &[(u32, &str)]) -> u64 {
-    table.iter().filter(|(_, name)| sysctl_u64(name) == Some(1)).fold(0, |mask, (bit, _)| mask | (1u64 << bit))
+    table
+        .iter()
+        .filter(|(_, name)| sysctl_u64(name) == Some(1))
+        .fold(0, |mask, (bit, _)| mask | (1u64 << bit))
 }
 
 fn host_limit(resource: i32) -> u64 {
-    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
     unsafe { libc::getrlimit(resource as _, &mut limit) };
     if limit.rlim_cur == libc::RLIM_INFINITY {
         u64::MAX
@@ -94,7 +110,10 @@ fn host_limit(resource: i32) -> u64 {
 }
 
 fn raise_open_file_limit() {
-    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
     unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) };
     let per_process = sysctl_u64("kern.maxfilesperproc").unwrap_or(OPEN_FILES_TARGET);
     let wanted = OPEN_FILES_TARGET.min(per_process).min(limit.rlim_max);
@@ -121,13 +140,21 @@ fn dynamic_sysconf(name: i32) -> Option<i64> {
         0x60 => sysctl_u64("hw.logicalcpu_max")? as i64,
         0x61 => sysctl_u64("hw.logicalcpu")? as i64,
         0x62 => (sysctl_u64("hw.memsize")? / PAGE_SIZE as u64) as i64,
-        0x63 => (sysctl_u64("vm.page_free_count")? * sysctl_u64("hw.pagesize")? / PAGE_SIZE as u64) as i64,
+        0x63 => {
+            (sysctl_u64("vm.page_free_count")? * sysctl_u64("hw.pagesize")? / PAGE_SIZE as u64)
+                as i64
+        }
         _ => return None,
     })
 }
 
 pub fn sysconf(name: i32) -> Option<i64> {
-    dynamic_sysconf(name).or_else(|| CONSTANTS.iter().find(|(number, _)| *number == name).map(|(_, value)| *value))
+    dynamic_sysconf(name).or_else(|| {
+        CONSTANTS
+            .iter()
+            .find(|(number, _)| *number == name)
+            .map(|(_, value)| *value)
+    })
 }
 
 pub fn auxiliary(kind: u64) -> Option<u64> {
@@ -140,7 +167,9 @@ pub fn auxiliary(kind: u64) -> Option<u64> {
         AT_SECURE | AT_FLAGS => Some(0),
         AT_UID | AT_EUID => Some(u64::from(APP_UID)),
         AT_GID | AT_EGID => Some(u64::from(APP_GID)),
-        AT_PLATFORM => Some(*PLATFORM.get_or_init(|| Box::leak(Box::new(CString::new("aarch64").expect("no nul"))).as_ptr() as usize) as u64),
+        AT_PLATFORM => Some(*PLATFORM.get_or_init(|| {
+            Box::leak(Box::new(CString::new("aarch64").expect("no nul"))).as_ptr() as usize
+        }) as u64),
         AT_RANDOM => Some(*RANDOM_BYTES.get_or_init(|| {
             let bytes: &'static mut [u8; 16] = Box::leak(Box::new([0u8; 16]));
             unsafe { libc::getentropy(bytes.as_mut_ptr() as *mut libc::c_void, 16) };
@@ -153,8 +182,19 @@ pub fn auxiliary(kind: u64) -> Option<u64> {
 fn write_utsname(address: usize) {
     // cite: bionic utsname.h#utsname
     let mut block = vec![0u8; UTSNAME_SIZE];
-    for (index, field) in ["Linux", HOST_NAME, KERNEL_RELEASE, KERNEL_VERSION, "aarch64", DOMAIN_NAME].iter().enumerate() {
-        block[index * UTSNAME_FIELD..index * UTSNAME_FIELD + field.len()].copy_from_slice(field.as_bytes());
+    for (index, field) in [
+        "Linux",
+        HOST_NAME,
+        KERNEL_RELEASE,
+        KERNEL_VERSION,
+        "aarch64",
+        DOMAIN_NAME,
+    ]
+    .iter()
+    .enumerate()
+    {
+        block[index * UTSNAME_FIELD..index * UTSNAME_FIELD + field.len()]
+            .copy_from_slice(field.as_bytes());
     }
     write_bytes(address, &block);
 }

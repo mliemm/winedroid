@@ -81,7 +81,10 @@ pub fn register() {
         context.ret_i32(0);
     });
     in_libc("pthread_attr_getdetachstate", |context| {
-        write_value::<i32>(context.arg_ptr(1), i32::from(flags(context.arg_ptr(0)) & FLAG_DETACHED != 0));
+        write_value::<i32>(
+            context.arg_ptr(1),
+            i32::from(flags(context.arg_ptr(0)) & FLAG_DETACHED != 0),
+        );
         context.ret_i32(0);
     });
     in_libc("pthread_attr_setschedpolicy", |context| {
@@ -89,15 +92,24 @@ pub fn register() {
         context.ret_i32(0);
     });
     in_libc("pthread_attr_getschedpolicy", |context| {
-        write_value::<i32>(context.arg_ptr(1), read_value::<i32>(context.arg_ptr(0) + POLICY));
+        write_value::<i32>(
+            context.arg_ptr(1),
+            read_value::<i32>(context.arg_ptr(0) + POLICY),
+        );
         context.ret_i32(0);
     });
     in_libc("pthread_attr_setschedparam", |context| {
-        write_value::<i32>(context.arg_ptr(0) + PRIORITY, read_value::<i32>(context.arg_ptr(1)));
+        write_value::<i32>(
+            context.arg_ptr(0) + PRIORITY,
+            read_value::<i32>(context.arg_ptr(1)),
+        );
         context.ret_i32(0);
     });
     in_libc("pthread_attr_getschedparam", |context| {
-        write_value::<i32>(context.arg_ptr(1), read_value::<i32>(context.arg_ptr(0) + PRIORITY));
+        write_value::<i32>(
+            context.arg_ptr(1),
+            read_value::<i32>(context.arg_ptr(0) + PRIORITY),
+        );
         context.ret_i32(0);
     });
     in_libc("pthread_attr_setstacksize", |context| {
@@ -110,7 +122,10 @@ pub fn register() {
         context.ret_i32(0);
     });
     in_libc("pthread_attr_getstacksize", |context| {
-        write_value::<u64>(context.arg_ptr(1), read_value::<u64>(context.arg_ptr(0) + STACK_SIZE));
+        write_value::<u64>(
+            context.arg_ptr(1),
+            read_value::<u64>(context.arg_ptr(0) + STACK_SIZE),
+        );
         context.ret_i32(0);
     });
     in_libc("pthread_attr_setstack", |context| {
@@ -134,7 +149,10 @@ pub fn register() {
         context.ret_i32(0);
     });
     in_libc("pthread_attr_getguardsize", |context| {
-        write_value::<u64>(context.arg_ptr(1), read_value::<u64>(context.arg_ptr(0) + GUARD_SIZE));
+        write_value::<u64>(
+            context.arg_ptr(1),
+            read_value::<u64>(context.arg_ptr(0) + GUARD_SIZE),
+        );
         context.ret_i32(0);
     });
     in_libc("pthread_attr_setscope", |context| {

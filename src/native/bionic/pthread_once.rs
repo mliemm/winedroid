@@ -19,7 +19,9 @@ pub fn register() {
             if old == COMPLETE {
                 return context.ret_i32(0);
             }
-            if let Err(current) = word.compare_exchange_weak(old, UNDERWAY, Ordering::Acquire, Ordering::Acquire) {
+            if let Err(current) =
+                word.compare_exchange_weak(old, UNDERWAY, Ordering::Acquire, Ordering::Acquire)
+            {
                 old = current;
                 continue;
             }

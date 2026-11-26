@@ -103,7 +103,9 @@ extern "C" {
 extern "C" fn dispatch_entry(block: *mut UnwindRegs, selector: u64) {
     let start = unsafe { std::ptr::read(block) };
     signal_state::set_in_guest(false);
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| walk::dispatch(selector, &start)));
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        walk::dispatch(selector, &start)
+    }));
     match outcome {
         Ok(Outcome::Return(code)) => unsafe { (*block).x[0] = code as u64 },
         Ok(Outcome::Install(updated)) => unsafe { std::ptr::write(block, updated) },

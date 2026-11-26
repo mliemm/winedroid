@@ -15,7 +15,9 @@ const CLOCK_TAI: i32 = 11;
 pub fn host_clock(guest: i32) -> Option<libc::clockid_t> {
     // cite: bionic time.h#CLOCK_REALTIME, CLOCK_MONOTONIC, CLOCK_BOOTTIME
     Some(match guest {
-        CLOCK_REALTIME | CLOCK_REALTIME_COARSE | CLOCK_REALTIME_ALARM | CLOCK_TAI => libc::CLOCK_REALTIME,
+        CLOCK_REALTIME | CLOCK_REALTIME_COARSE | CLOCK_REALTIME_ALARM | CLOCK_TAI => {
+            libc::CLOCK_REALTIME
+        }
         CLOCK_MONOTONIC | CLOCK_MONOTONIC_COARSE => libc::CLOCK_UPTIME_RAW,
         CLOCK_MONOTONIC_RAW => libc::CLOCK_MONOTONIC_RAW,
         CLOCK_BOOTTIME | CLOCK_BOOTTIME_ALARM => libc::CLOCK_MONOTONIC,
@@ -31,7 +33,10 @@ pub fn is_thread_cpu_clock(guest: i32) -> bool {
 
 pub fn now(guest: i32) -> Result<libc::timespec, i32> {
     let host = host_clock(guest).ok_or(EINVAL)?;
-    let mut value = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut value = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     if unsafe { libc::clock_gettime(host, &mut value) } != 0 {
         return Err(EINVAL);
     }
@@ -40,7 +45,10 @@ pub fn now(guest: i32) -> Result<libc::timespec, i32> {
 
 pub fn resolution(guest: i32) -> Result<libc::timespec, i32> {
     let host = host_clock(guest).ok_or(EINVAL)?;
-    let mut value = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut value = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     if unsafe { libc::clock_getres(host, &mut value) } != 0 {
         return Err(EINVAL);
     }

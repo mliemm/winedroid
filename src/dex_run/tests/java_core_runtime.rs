@@ -904,10 +904,8 @@ fn builtin_print_stream_printf_returns_receiver_per_libcore_print_stream_java() 
         },
     };
     let receiver = DexValue::Reference(std::rc::Rc::from("Ljava/io/PrintStream;:System.out"));
-    let arguments = program.allocate_filled_array(
-        "[Ljava/lang/Object;".to_owned(),
-        vec![DexValue::Int(7)],
-    );
+    let arguments =
+        program.allocate_filled_array("[Ljava/lang/Object;".to_owned(), vec![DexValue::Int(7)]);
     let with_arguments = test_invocation(vec![
         receiver.clone(),
         DexValue::String(std::rc::Rc::from("value=%d")),
@@ -2724,6 +2722,19 @@ fn builtin_system_clock_methods_return_runtime_uptime() {
 }
 
 #[test]
+fn frameworks_system_clock_elapsed_realtime_nanos_is_the_elapsed_realtime_clock_in_nanoseconds() {
+    // cite: frameworks-base SystemClock.java#elapsedRealtimeNanos, elapsedRealtime
+    let program = DexProgram::new(Vec::new());
+    program.runtime.borrow_mut().main_thread_uptime_millis = 456;
+    let nanos = builtin_method("Landroid/os/SystemClock;", "elapsedRealtimeNanos", "J", &[]);
+
+    assert_eq!(
+        program.invoke_builtin_method(&nanos, None),
+        Some(DexExecutionResult::Value(DexValue::Long(456_000_000)))
+    );
+}
+
+#[test]
 fn builtin_process_get_start_uptime_millis_is_frozen_sample_per_frameworks_base_process_java() {
     let program = DexProgram::new(Vec::new());
     let start_uptime = DexMethodId {
@@ -2761,6 +2772,26 @@ fn builtin_process_get_start_uptime_millis_is_frozen_sample_per_frameworks_base_
 
     assert_eq!(
         program.invoke_builtin_method(&start_uptime, None),
+        Some(DexExecutionResult::Value(DexValue::Long(123)))
+    );
+}
+
+#[test]
+fn frameworks_process_get_start_elapsed_realtime_is_the_frozen_start_sample() {
+    // cite: frameworks-base Process.java#getStartElapsedRealtime, setStartTimes
+    let program = DexProgram::new(Vec::new());
+    let start = builtin_method("Landroid/os/Process;", "getStartElapsedRealtime", "J", &[]);
+
+    assert_eq!(
+        program.invoke_builtin_method(&start, None),
+        Some(DexExecutionResult::Value(DexValue::Long(0)))
+    );
+
+    program.runtime.borrow_mut().main_thread_uptime_millis = 456;
+    program.runtime.borrow_mut().process_start_uptime_millis = 123;
+
+    assert_eq!(
+        program.invoke_builtin_method(&start, None),
         Some(DexExecutionResult::Value(DexValue::Long(123)))
     );
 }
@@ -3993,7 +4024,10 @@ fn bionic_dlopen_missing_library_throws_unsatisfied_link_error_catchable_as_link
         "Ljava/lang/LinkageError;",
         "Ljava/lang/Error;",
     ] {
-        assert!(program.value_matches_type(&exception, supertype), "{supertype}");
+        assert!(
+            program.value_matches_type(&exception, supertype),
+            "{supertype}"
+        );
     }
     assert!(!program.value_matches_type(&exception, "Ljava/lang/Exception;"));
     std::fs::remove_dir_all(app_dir).ok();
@@ -4057,12 +4091,468 @@ fn libcore_handler_thread_constructor_stores_name_and_default_priority() {
     assert_eq!(
         program.invoke_builtin_method(
             &constructor,
-            Some(&test_invocation(vec![null_name_thread.clone(), DexValue::Null]))
+            Some(&test_invocation(vec![
+                null_name_thread.clone(),
+                DexValue::Null
+            ]))
         ),
         None
     );
     assert_eq!(
         program.read_stored_instance_field(&null_name_thread, &priority_field),
+        None
+    );
+}
+
+#[test]
+fn frameworks_base_handler_thread_name_priority_constructor_stores_the_given_priority() {
+    // cite: frameworks-base HandlerThread.java#HandlerThread, mPriority
+    let program = DexProgram::new(Vec::new());
+    let constructor = DexMethodId {
+        class_descriptor: "Landroid/os/HandlerThread;".to_owned(),
+        name: "<init>".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VLI".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec!["Ljava/lang/String;".to_owned(), "I".to_owned()],
+        },
+    };
+    let name_field = DexFieldId {
+        class_descriptor: "Ljava/lang/Thread;".to_owned(),
+        type_descriptor: "Ljava/lang/String;".to_owned(),
+        name: "name".to_owned(),
+    };
+    let priority_field = DexFieldId {
+        class_descriptor: "Landroid/os/HandlerThread;".to_owned(),
+        type_descriptor: "I".to_owned(),
+        name: "mPriority".to_owned(),
+    };
+    let thread = program.allocate_object("Landroid/os/HandlerThread;".to_owned());
+    let null_name_thread = program.allocate_object("Landroid/os/HandlerThread;".to_owned());
+    let name = DexValue::String(std::rc::Rc::from("worker"));
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![
+                thread.clone(),
+                name.clone(),
+                DexValue::Int(10)
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&thread, &name_field),
+        Some(name)
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&thread, &priority_field),
+        Some(DexValue::Int(10))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![
+                null_name_thread.clone(),
+                DexValue::Null,
+                DexValue::Int(10)
+            ]))
+        ),
+        None
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&null_name_thread, &priority_field),
+        None
+    );
+}
+
+fn started_handler_thread(program: &DexProgram) -> DexValue {
+    let constructor = DexMethodId {
+        class_descriptor: "Landroid/os/HandlerThread;".to_owned(),
+        name: "<init>".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VL".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec!["Ljava/lang/String;".to_owned()],
+        },
+    };
+    let thread = program.allocate_object("Landroid/os/HandlerThread;".to_owned());
+    program.invoke_builtin_method(
+        &constructor,
+        Some(&test_invocation(vec![
+            thread.clone(),
+            DexValue::String(std::rc::Rc::from("worker")),
+        ])),
+    );
+
+    thread
+}
+
+#[test]
+fn frameworks_base_handler_thread_get_looper_is_null_until_the_thread_is_started() {
+    // cite: frameworks-base HandlerThread.java#getLooper
+    let program = DexProgram::new(Vec::new());
+    let thread = started_handler_thread(&program);
+
+    assert_eq!(
+        program
+            .handler_thread_looper(&test_invocation(vec![thread]), 0)
+            .unwrap(),
+        DexValue::Null
+    );
+}
+
+#[test]
+fn frameworks_base_handler_thread_get_looper_runs_the_started_thread_to_create_its_looper() {
+    // cite: frameworks-base HandlerThread.java#getLooper, run
+    let program = DexProgram::new(Vec::new());
+    let thread = started_handler_thread(&program);
+    program
+        .thread_start(&test_invocation(vec![thread.clone()]))
+        .unwrap();
+    program
+        .runtime
+        .borrow_mut()
+        .post_main_thread_task(MainThreadTask::StartThread {
+            thread: thread.clone(),
+        });
+
+    let looper = program
+        .handler_thread_looper(&test_invocation(vec![thread.clone()]), 0)
+        .unwrap();
+
+    assert!(program.value_matches_type(&looper, "Landroid/os/Looper;"));
+    assert_ne!(
+        looper,
+        DexValue::Reference(std::rc::Rc::from("Landroid/os/Looper;:main"))
+    );
+    assert_eq!(
+        program
+            .handler_thread_looper(&test_invocation(vec![thread]), 0)
+            .unwrap(),
+        looper
+    );
+}
+
+#[test]
+fn frameworks_base_handler_thread_get_looper_refuses_when_no_guest_thread_can_run() {
+    // cite: frameworks-base HandlerThread.java#getLooper
+    let program = DexProgram::new(Vec::new());
+    let thread = started_handler_thread(&program);
+    program
+        .thread_start(&test_invocation(vec![thread.clone()]))
+        .unwrap();
+
+    assert!(program
+        .handler_thread_looper(&test_invocation(vec![thread]), 0)
+        .is_err());
+}
+
+#[test]
+fn frameworks_base_handler_thread_on_looper_prepared_default_is_empty() {
+    // cite: frameworks-base HandlerThread.java#onLooperPrepared
+    let program = DexProgram::new(Vec::new());
+    let method = DexMethodId {
+        class_descriptor: "Landroid/os/HandlerThread;".to_owned(),
+        name: "onLooperPrepared".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "V".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+
+    assert_eq!(
+        program.invoke_builtin_method(&method, None),
+        Some(DexExecutionResult::Void)
+    );
+}
+
+#[test]
+fn frameworks_base_handler_looper_callback_constructor_binds_looper_and_callback() {
+    // cite: frameworks-base Handler.java#Handler, mCallback, mLooper
+    let program = DexProgram::new(Vec::new());
+    let constructor = DexMethodId {
+        class_descriptor: "Landroid/os/Handler;".to_owned(),
+        name: "<init>".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VLL".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec![
+                "Landroid/os/Looper;".to_owned(),
+                "Landroid/os/Handler$Callback;".to_owned(),
+            ],
+        },
+    };
+    let get_looper = DexMethodId {
+        class_descriptor: "Landroid/os/Handler;".to_owned(),
+        name: "getLooper".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "L".to_owned(),
+            return_type: "Landroid/os/Looper;".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let callback_field = DexFieldId {
+        class_descriptor: "Landroid/os/Handler;".to_owned(),
+        type_descriptor: "Landroid/os/Handler$Callback;".to_owned(),
+        name: "mCallback".to_owned(),
+    };
+    let handler = program.allocate_object("Landroid/os/Handler;".to_owned());
+    let looper = program.allocate_object("Landroid/os/Looper;".to_owned());
+    let callback = program.allocate_object("Landroid/os/Handler$Callback;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![
+                handler.clone(),
+                looper.clone(),
+                callback.clone()
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&get_looper, Some(&test_invocation(vec![handler.clone()]))),
+        Some(DexExecutionResult::Value(looper))
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&handler, &callback_field),
+        Some(callback)
+    );
+
+    let null_looper_handler = program.allocate_object("Landroid/os/Handler;".to_owned());
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![
+                null_looper_handler,
+                DexValue::Null,
+                DexValue::Null
+            ]))
+        ),
+        None
+    );
+}
+
+// cite: libcore Throwable.java#getMessage, detailMessage
+#[test]
+fn throwable_get_message_returns_detail_message_or_null() {
+    let program = DexProgram::new(Vec::new());
+    let get_message = DexMethodId {
+        class_descriptor: "Ljava/lang/Throwable;".to_owned(),
+        name: "getMessage".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "L".to_owned(),
+            return_type: "Ljava/lang/String;".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let with_message = program.allocate_generated_exception(DexGeneratedException {
+        class_descriptor: "Ljava/lang/IllegalArgumentException;".to_owned(),
+        detail_message: Some("bad suffix".to_owned()),
+    });
+    let without_message = program.allocate_object("Ljava/lang/NullPointerException;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(&get_message, Some(&test_invocation(vec![with_message]))),
+        Some(DexExecutionResult::Value(DexValue::String(
+            std::rc::Rc::from("bad suffix")
+        )))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&get_message, Some(&test_invocation(vec![without_message]))),
+        Some(DexExecutionResult::Value(DexValue::Null))
+    );
+}
+
+#[test]
+fn frameworks_base_handler_thread_get_thread_id_is_minus_one_until_run_then_the_thread_tid() {
+    // cite: frameworks-base HandlerThread.java#getThreadId, run, mTid
+    // cite: frameworks-base Process.java#myTid
+    let program = DexProgram::new(Vec::new());
+    let thread = started_handler_thread(&program);
+    let get_thread_id = DexMethodId {
+        class_descriptor: "Landroid/os/HandlerThread;".to_owned(),
+        name: "getThreadId".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "I".to_owned(),
+            return_type: "I".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let my_tid = DexMethodId {
+        class_descriptor: "Landroid/os/Process;".to_owned(),
+        name: "myTid".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "I".to_owned(),
+            return_type: "I".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let ask = |method: &DexMethodId, arguments: Vec<DexValue>| {
+        program.invoke_builtin_method(method, Some(&test_invocation(arguments)))
+    };
+
+    assert_eq!(
+        ask(&get_thread_id, vec![thread.clone()]),
+        Some(DexExecutionResult::Int(-1))
+    );
+    assert_eq!(
+        ask(&my_tid, Vec::new()),
+        Some(DexExecutionResult::Int(BOOTSTRAP_PROCESS_ID))
+    );
+    program
+        .thread_start(&test_invocation(vec![thread.clone()]))
+        .unwrap();
+    program
+        .runtime
+        .borrow_mut()
+        .post_main_thread_task(MainThreadTask::StartThread {
+            thread: thread.clone(),
+        });
+    program
+        .handler_thread_looper(&test_invocation(vec![thread.clone()]), 0)
+        .unwrap();
+
+    let Some(DexExecutionResult::Int(tid)) = ask(&get_thread_id, vec![thread]) else {
+        panic!("getThreadId should return an int");
+    };
+    assert!(tid > BOOTSTRAP_PROCESS_ID);
+}
+
+#[test]
+fn frameworks_base_process_set_thread_priority_accepts_known_tids_and_refuses_unknown_tid() {
+    // cite: frameworks-base Process.java#setThreadPriority, myTid
+    let program = DexProgram::new(Vec::new());
+    let set_thread_priority = DexMethodId {
+        class_descriptor: "Landroid/os/Process;".to_owned(),
+        name: "setThreadPriority".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VII".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec!["I".to_owned(), "I".to_owned()],
+        },
+    };
+    let call = |tid: i32| {
+        program.invoke_builtin_method(
+            &set_thread_priority,
+            Some(&test_invocation(vec![
+                DexValue::Int(tid),
+                DexValue::Int(10),
+            ])),
+        )
+    };
+
+    assert_eq!(call(BOOTSTRAP_PROCESS_ID), Some(DexExecutionResult::Void));
+    assert!(matches!(
+        call(BOOTSTRAP_PROCESS_ID + 7),
+        Some(DexExecutionResult::Throw(_))
+    ));
+    let worker_tid = program.with_current_guest_thread(
+        DexValue::Reference(std::rc::Rc::from("Ljava/lang/Thread;:worker")),
+        || program.current_guest_thread_tid(),
+    );
+    assert_eq!(call(worker_tid), Some(DexExecutionResult::Void));
+}
+
+// cite: art dalvik_system_VMRuntime.cc#VMRuntime_is64Bit
+#[test]
+fn builtin_process_is_64_bit_reports_the_pointer_width_of_the_runtime() {
+    let program = DexProgram::new(Vec::new());
+    let method = DexMethodId {
+        class_descriptor: "Landroid/os/Process;".to_owned(),
+        name: "is64Bit".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "Z".to_owned(),
+            return_type: "Z".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+
+    assert_eq!(
+        program.invoke_builtin_method(&method, Some(&test_invocation(Vec::new()))),
+        Some(DexExecutionResult::Int(i32::from(cfg!(
+            target_pointer_width = "64"
+        ))))
+    );
+}
+
+#[test]
+fn libcore_thread_get_name_returns_main_for_the_main_thread_and_the_stored_name_otherwise() {
+    // cite: libcore Thread.java#getName, setName
+    // cite: art runtime.cc#Init
+    let program = DexProgram::new(Vec::new());
+    let get_name = builtin_method("Ljava/lang/Thread;", "getName", "Ljava/lang/String;", &[]);
+    let set_name = builtin_method(
+        "Ljava/lang/Thread;",
+        "setName",
+        "V",
+        &["Ljava/lang/String;"],
+    );
+    let main = DexValue::Reference(std::rc::Rc::from("Ljava/lang/Thread;:main"));
+    let worker = program.allocate_object("Ljava/lang/Thread;".to_owned());
+    let text = |value: &str| DexValue::String(std::rc::Rc::from(value));
+
+    assert_eq!(
+        program.invoke_builtin_method(&get_name, Some(&test_invocation(vec![main.clone()]))),
+        Some(DexExecutionResult::Value(text("main")))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&get_name, Some(&test_invocation(vec![worker.clone()]))),
+        None
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &set_name,
+            Some(&test_invocation(vec![worker.clone(), text("worker-1")]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&get_name, Some(&test_invocation(vec![worker]))),
+        Some(DexExecutionResult::Value(text("worker-1")))
+    );
+}
+
+// cite: libcore Thread.java#setDefaultUncaughtExceptionHandler, getDefaultUncaughtExceptionHandler
+#[test]
+fn libcore_thread_default_uncaught_exception_handler_round_trips_and_clears_with_null() {
+    let program = DexProgram::new(Vec::new());
+    let set = builtin_method(
+        "Ljava/lang/Thread;",
+        "setDefaultUncaughtExceptionHandler",
+        "V",
+        &["Ljava/lang/Thread$UncaughtExceptionHandler;"],
+    );
+    let get = builtin_method(
+        "Ljava/lang/Thread;",
+        "getDefaultUncaughtExceptionHandler",
+        "Ljava/lang/Thread$UncaughtExceptionHandler;",
+        &[],
+    );
+    let handler = DexValue::Reference(std::rc::Rc::from("Lapp/Handler;:guest"));
+
+    assert_eq!(
+        program.invoke_builtin_method(&set, Some(&test_invocation(vec![handler.clone()]))),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&get, Some(&test_invocation(Vec::new()))),
+        Some(DexExecutionResult::Value(handler))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&set, Some(&test_invocation(vec![DexValue::Null]))),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&get, Some(&test_invocation(Vec::new()))),
+        Some(DexExecutionResult::Value(DexValue::Null))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&set, Some(&test_invocation(vec![DexValue::Long(1)]))),
         None
     );
 }

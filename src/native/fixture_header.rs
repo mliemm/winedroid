@@ -14,14 +14,25 @@ pub fn manifest_path(relative: &str) -> PathBuf {
 }
 
 pub fn read_header() -> String {
-    fs::read_to_string(manifest_path("tests/native_fixtures/include/jni.h")).expect("jni.h should be readable")
+    fs::read_to_string(manifest_path("tests/native_fixtures/include/jni.h"))
+        .expect("jni.h should be readable")
 }
 
 fn normalize_parameter(parameter: &str) -> String {
-    let spaced = parameter.replace("ATTRIBUTE_UNUSED", "").replace('*', " * ");
+    let spaced = parameter
+        .replace("ATTRIBUTE_UNUSED", "")
+        .replace('*', " * ");
     let mut tokens: Vec<&str> = spaced.split_whitespace().collect();
-    let is_name = |token: &str| token.chars().all(|character| character.is_alphanumeric() || character == '_');
-    if tokens.len() > 1 && tokens.last().is_some_and(|last| is_name(last) && *last != "const") {
+    let is_name = |token: &str| {
+        token
+            .chars()
+            .all(|character| character.is_alphanumeric() || character == '_')
+    };
+    if tokens.len() > 1
+        && tokens
+            .last()
+            .is_some_and(|last| is_name(last) && *last != "const")
+    {
         tokens.pop();
     }
     tokens.concat()
@@ -29,7 +40,11 @@ fn normalize_parameter(parameter: &str) -> String {
 
 fn signature(return_type: &str, parameters: &str) -> String {
     let parameters: Vec<String> = parameters.split(',').map(normalize_parameter).collect();
-    format!("{}({})", normalize_parameter(&format!("{return_type} _")), parameters.join(","))
+    format!(
+        "{}({})",
+        normalize_parameter(&format!("{return_type} _")),
+        parameters.join(",")
+    )
 }
 
 pub fn header_slots(header: &str, struct_name: &str) -> Vec<Slot> {
@@ -43,7 +58,9 @@ pub fn header_slots(header: &str, struct_name: &str) -> Vec<Slot> {
             let statement = statement.trim();
             if let Some(open) = statement.find("(*") {
                 let name_end = statement[open..].find(')')? + open;
-                let parameters = statement[name_end..].strip_prefix(")(")?.trim_end_matches(')');
+                let parameters = statement[name_end..]
+                    .strip_prefix(")(")?
+                    .trim_end_matches(')');
                 return Some(Slot {
                     name: statement[open + 2..name_end].to_owned(),
                     signature: signature(&statement[..open], parameters),
@@ -104,7 +121,12 @@ pub fn art_slots(source: &str, table_marker: &str, prefix: &str) -> Vec<Slot> {
     body.lines()
         .skip(1)
         .filter_map(|line| {
-            let entry = line.trim().split(SLOT_COMMENT).next()?.trim().trim_end_matches(',');
+            let entry = line
+                .trim()
+                .split(SLOT_COMMENT)
+                .next()?
+                .trim()
+                .trim_end_matches(',');
             if entry == "nullptr" {
                 reserved += 1;
                 return Some(Slot {

@@ -1,15 +1,20 @@
 use std::sync::atomic::{AtomicI32, AtomicU16, Ordering};
 
 use super::super::futex::{self, MATCH_ANY, TID_MASK};
-use super::abs_timeout::{check_timespec, deadline_at, Deadline, CLOCK_MONOTONIC, CLOCK_REALTIME, ETIMEDOUT};
 use super::abi_types::EAGAIN;
 use super::abi_types::EINVAL;
+use super::abs_timeout::{
+    check_timespec, deadline_at, Deadline, CLOCK_MONOTONIC, CLOCK_REALTIME, ETIMEDOUT,
+};
 use super::current_thread::tid;
 use super::export::in_libc;
 use super::fatal::fortify_fatal;
 use super::guest_atomic::{i32_at, u16_at};
 use super::guest_mem::{read_value, write_value};
-use super::pthread_mutexattr::{ATTR_PROTOCOL_MASK, ATTR_PROTOCOL_SHIFT, ATTR_SHARED_MASK, ATTR_TYPE_MASK, PRIO_INHERIT, TYPE_ERRORCHECK_VALUE, TYPE_NORMAL_VALUE, TYPE_RECURSIVE_VALUE};
+use super::pthread_mutexattr::{
+    ATTR_PROTOCOL_MASK, ATTR_PROTOCOL_SHIFT, ATTR_SHARED_MASK, ATTR_TYPE_MASK, PRIO_INHERIT,
+    TYPE_ERRORCHECK_VALUE, TYPE_NORMAL_VALUE, TYPE_RECURSIVE_VALUE,
+};
 use super::sdk::application_target_sdk;
 
 pub const EBUSY: i32 = 16;
@@ -86,7 +91,14 @@ fn recursive_increment(mutex: usize, old: u16) -> i32 {
 
 fn lock_with_timeout(mutex: usize, realtime: bool, timeout: usize) -> i32 {
     // cite: bionic pthread_mutex.cpp#MutexLockWithTimeout
-    let deadline = deadline_at(timeout, if realtime { CLOCK_REALTIME } else { CLOCK_MONOTONIC });
+    let deadline = deadline_at(
+        timeout,
+        if realtime {
+            CLOCK_REALTIME
+        } else {
+            CLOCK_MONOTONIC
+        },
+    );
     let mut old = state(mutex).load(Ordering::Relaxed);
     let mutex_type = old & TYPE_MASK;
     let shared = old & SHARED_MASK;
@@ -103,13 +115,22 @@ fn lock_with_timeout(mutex: usize, realtime: bool, timeout: usize) -> i32 {
     let unlocked = mutex_type | shared;
     let uncontended = unlocked | 1;
     let contended = unlocked | 2;
-    if old == unlocked && state(mutex).compare_exchange(unlocked, uncontended, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+    if old == unlocked
+        && state(mutex)
+            .compare_exchange(unlocked, uncontended, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+    {
         owner(mutex).store(me, Ordering::Relaxed);
         return 0;
     }
     loop {
         if old == unlocked {
-            match state(mutex).compare_exchange_weak(old, contended, Ordering::Acquire, Ordering::Relaxed) {
+            match state(mutex).compare_exchange_weak(
+                old,
+                contended,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            ) {
                 Ok(_) => {
                     owner(mutex).store(me, Ordering::Relaxed);
                     return 0;
@@ -121,7 +142,12 @@ fn lock_with_timeout(mutex: usize, realtime: bool, timeout: usize) -> i32 {
             }
         } else if locked_uncontended(old) {
             let flipped = old ^ 3;
-            match state(mutex).compare_exchange_weak(old, flipped, Ordering::Relaxed, Ordering::Relaxed) {
+            match state(mutex).compare_exchange_weak(
+                old,
+                flipped,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
                 Ok(_) => old = flipped,
                 Err(current) => {
                     old = current;
@@ -143,7 +169,10 @@ fn lock_with_timeout(mutex: usize, realtime: bool, timeout: usize) -> i32 {
 fn pi_try_lock(mutex: usize) -> i32 {
     // cite: bionic pthread_mutex.cpp#PIMutexTryLock
     let me = tid();
-    if pi_owner(mutex).compare_exchange(0, me, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+    if pi_owner(mutex)
+        .compare_exchange(0, me, Ordering::Acquire, Ordering::Relaxed)
+        .is_ok()
+    {
         return 0;
     }
     let current = pi_owner(mutex).load(Ordering::Relaxed);
@@ -170,7 +199,14 @@ fn pi_timed_lock(mutex: usize, realtime: bool, timeout: usize) -> i32 {
     if result != EBUSY {
         return result;
     }
-    let deadline = deadline_at(timeout, if realtime { CLOCK_REALTIME } else { CLOCK_MONOTONIC });
+    let deadline = deadline_at(
+        timeout,
+        if realtime {
+            CLOCK_REALTIME
+        } else {
+            CLOCK_MONOTONIC
+        },
+    );
     -futex::lock_pi(mutex + 8, tid(), deadline)
 }
 
@@ -180,7 +216,10 @@ fn pi_unlock(mutex: usize) -> i32 {
     let kind = i64::from(pi_type(mutex));
     let old_owner;
     if kind == TYPE_NORMAL_VALUE {
-        if pi_owner(mutex).compare_exchange(me, 0, Ordering::Release, Ordering::Relaxed).is_ok() {
+        if pi_owner(mutex)
+            .compare_exchange(me, 0, Ordering::Release, Ordering::Relaxed)
+            .is_ok()
+        {
             return 0;
         }
     }
@@ -192,7 +231,11 @@ fn pi_unlock(mutex: usize) -> i32 {
         pi_counter(mutex).fetch_sub(1, Ordering::Relaxed);
         return 0;
     }
-    if old_owner == me && pi_owner(mutex).compare_exchange(me, 0, Ordering::Release, Ordering::Relaxed).is_ok() {
+    if old_owner == me
+        && pi_owner(mutex)
+            .compare_exchange(me, 0, Ordering::Release, Ordering::Relaxed)
+            .is_ok()
+    {
         return 0;
     }
     -futex::unlock_pi(mutex + 8, me)
@@ -201,7 +244,9 @@ fn pi_unlock(mutex: usize) -> i32 {
 fn destroyed(mutex: usize, function: &str) -> i32 {
     // cite: bionic pthread_mutex.cpp#HandleUsingDestroyedMutex
     if application_target_sdk() >= 28 {
-        fortify_fatal(&format!("{function} called on a destroyed mutex ({mutex:#x})"));
+        fortify_fatal(&format!(
+            "{function} called on a destroyed mutex ({mutex:#x})"
+        ));
     }
     EBUSY
 }
@@ -291,7 +336,10 @@ pub fn try_lock(mutex: usize) -> i32 {
         return recursive_increment(mutex, old);
     }
     let unlocked = mutex_type | (old & SHARED_MASK);
-    if state(mutex).compare_exchange(unlocked, unlocked | 1, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+    if state(mutex)
+        .compare_exchange(unlocked, unlocked | 1, Ordering::Acquire, Ordering::Relaxed)
+        .is_ok()
+    {
         owner(mutex).store(me, Ordering::Relaxed);
         return 0;
     }
@@ -305,7 +353,11 @@ pub fn init(mutex: usize, attribute: usize) -> i32 {
         return 0;
     }
     let attribute: i64 = read_value(attribute);
-    let mut value: u16 = if attribute & ATTR_SHARED_MASK != 0 { SHARED_MASK } else { 0 };
+    let mut value: u16 = if attribute & ATTR_SHARED_MASK != 0 {
+        SHARED_MASK
+    } else {
+        0
+    };
     match attribute & ATTR_TYPE_MASK {
         TYPE_NORMAL_VALUE => {}
         TYPE_RECURSIVE_VALUE => value |= TYPE_RECURSIVE,
@@ -329,13 +381,20 @@ fn destroy(mutex: usize) -> i32 {
         return destroyed(mutex, "pthread_mutex_destroy");
     }
     if old == PI_STATE {
-        if pi_owner(mutex).compare_exchange(0, -1, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+        if pi_owner(mutex)
+            .compare_exchange(0, -1, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
             state(mutex).store(DESTROYED, Ordering::SeqCst);
             return 0;
         }
         return EBUSY;
     }
-    if old & 3 == 0 && state(mutex).compare_exchange(old, DESTROYED, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+    if old & 3 == 0
+        && state(mutex)
+            .compare_exchange(old, DESTROYED, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    {
         return 0;
     }
     EBUSY
@@ -356,14 +415,42 @@ fn clock_lock(mutex: usize, clock: i32, timeout: usize) -> i32 {
 }
 
 pub fn register() {
-    in_libc("pthread_mutex_init", |context| context.ret_i32(init(context.arg_ptr(0), context.arg_ptr(1))));
-    in_libc("pthread_mutex_destroy", |context| context.ret_i32(destroy(context.arg_ptr(0))));
-    in_libc("pthread_mutex_lock", |context| context.ret_i32(lock(context.arg_ptr(0))));
-    in_libc("pthread_mutex_unlock", |context| context.ret_i32(unlock(context.arg_ptr(0))));
-    in_libc("pthread_mutex_trylock", |context| context.ret_i32(try_lock(context.arg_ptr(0))));
-    in_libc("pthread_mutex_timedlock", |context| context.ret_i32(timed_lock(context.arg_ptr(0), true, context.arg_ptr(1), "pthread_mutex_timedlock")));
-    in_libc("pthread_mutex_timedlock_monotonic_np", |context| {
-        context.ret_i32(timed_lock(context.arg_ptr(0), false, context.arg_ptr(1), "pthread_mutex_timedlock_monotonic_np"))
+    in_libc("pthread_mutex_init", |context| {
+        context.ret_i32(init(context.arg_ptr(0), context.arg_ptr(1)))
     });
-    in_libc("pthread_mutex_clocklock", |context| context.ret_i32(clock_lock(context.arg_ptr(0), context.arg_i32(1), context.arg_ptr(2))));
+    in_libc("pthread_mutex_destroy", |context| {
+        context.ret_i32(destroy(context.arg_ptr(0)))
+    });
+    in_libc("pthread_mutex_lock", |context| {
+        context.ret_i32(lock(context.arg_ptr(0)))
+    });
+    in_libc("pthread_mutex_unlock", |context| {
+        context.ret_i32(unlock(context.arg_ptr(0)))
+    });
+    in_libc("pthread_mutex_trylock", |context| {
+        context.ret_i32(try_lock(context.arg_ptr(0)))
+    });
+    in_libc("pthread_mutex_timedlock", |context| {
+        context.ret_i32(timed_lock(
+            context.arg_ptr(0),
+            true,
+            context.arg_ptr(1),
+            "pthread_mutex_timedlock",
+        ))
+    });
+    in_libc("pthread_mutex_timedlock_monotonic_np", |context| {
+        context.ret_i32(timed_lock(
+            context.arg_ptr(0),
+            false,
+            context.arg_ptr(1),
+            "pthread_mutex_timedlock_monotonic_np",
+        ))
+    });
+    in_libc("pthread_mutex_clocklock", |context| {
+        context.ret_i32(clock_lock(
+            context.arg_ptr(0),
+            context.arg_i32(1),
+            context.arg_ptr(2),
+        ))
+    });
 }

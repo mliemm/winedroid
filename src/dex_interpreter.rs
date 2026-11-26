@@ -492,6 +492,14 @@ pub trait DexInvocationHandler {
         self.invoke(invocation.materialize()?)
     }
 
+    fn null_receiver_message(
+        &mut self,
+        _method_index: u32,
+        _kind: DexInvokeKind,
+    ) -> Option<String> {
+        None
+    }
+
     fn exception_matches(&mut self, exception: &DexValue, type_descriptor: &str) -> Result<bool> {
         let DexValue::Object(object) = exception else {
             return Ok(false);
@@ -1965,7 +1973,12 @@ fn continue_code(
                 let invocation =
                     read_five_register_invocation_frame(code, &frame, pc, instruction, opcode)?;
                 let method_metric_start = crate::method_metrics::start_timing();
-                let invocation_result = invocation_handler.invoke_from_frame(invocation);
+                let invocation_result =
+                    match null_receiver_exception(&invocation, invocation_handler) {
+                        Ok(Some(exception)) => Ok(DexInvocationResult::Throw(exception)),
+                        Ok(None) => invocation_handler.invoke_from_frame(invocation),
+                        Err(error) => Err(error),
+                    };
                 crate::method_metrics::record_call_elapsed(method_metric_start);
                 let invocation_result = invocation_result?;
                 if let Some(finished) = complete_invocation_result(
@@ -1985,7 +1998,12 @@ fn continue_code(
                 let invocation =
                     read_range_invocation_frame(code, &frame, pc, instruction, opcode)?;
                 let method_metric_start = crate::method_metrics::start_timing();
-                let invocation_result = invocation_handler.invoke_from_frame(invocation);
+                let invocation_result =
+                    match null_receiver_exception(&invocation, invocation_handler) {
+                        Ok(Some(exception)) => Ok(DexInvocationResult::Throw(exception)),
+                        Ok(None) => invocation_handler.invoke_from_frame(invocation),
+                        Err(error) => Err(error),
+                    };
                 crate::method_metrics::record_call_elapsed(method_metric_start);
                 let invocation_result = invocation_result?;
                 if let Some(finished) = complete_invocation_result(
@@ -2263,6 +2281,33 @@ fn continue_code(
             }
         }
     }
+}
+
+fn null_receiver_exception(
+    invocation: &DexInvocationFrame<'_>,
+    invocation_handler: &mut dyn DexInvocationHandler,
+) -> Result<Option<DexValue>> {
+    // cite: art entrypoint_utils-inl.h#FindMethodToCall
+    // cite: art common_throws.cc#ThrowNullPointerExceptionForMethodAccess
+    if invocation.kind() == DexInvokeKind::Static {
+        return Ok(None);
+    }
+    if !matches!(
+        invocation.read_argument(0)?,
+        Some(DexValue::Null | DexValue::Int(0))
+    ) {
+        return Ok(None);
+    }
+
+    let detail_message =
+        invocation_handler.null_receiver_message(invocation.method_index(), invocation.kind());
+
+    invocation_handler
+        .allocate_generated_exception(DexGeneratedException {
+            class_descriptor: "Ljava/lang/NullPointerException;".to_owned(),
+            detail_message,
+        })
+        .map(Some)
 }
 
 fn complete_invocation_result(
@@ -5565,6 +5610,42 @@ mod tests {
                 .expect("encoded null should enter the catch-all handler"),
             DexExecutionResult::Value(expected)
         );
+    }
+
+    // cite: art entrypoint_utils-inl.h#FindMethodToCall
+    // cite: art common_throws.cc#ThrowNullPointerExceptionForMethodAccess
+    #[test]
+    fn art_invoke_virtual_on_null_receiver_throws_without_calling_the_method() {
+        let mut code = code_item(1, vec![0x106e, 0x0000, 0x0000, 0x000e]);
+        code.ins_size = 1;
+        let expected = test_object(0x4e50, "Ljava/lang/NullPointerException;");
+
+        for receiver in [DexValue::Null, DexValue::Int(0)] {
+            let mut handler = recording_handler();
+
+            assert_eq!(
+                interpret_code_with_initial_arguments(&code, Some(&[receiver]), &mut handler)
+                    .expect("null receiver should be a guest exception"),
+                DexExecutionResult::Throw(expected.clone())
+            );
+            assert_eq!(handler.invocation, None);
+            assert_eq!(
+                handler.generated_exception,
+                Some(DexGeneratedException {
+                    class_descriptor: "Ljava/lang/NullPointerException;".to_owned(),
+                    detail_message: None,
+                })
+            );
+        }
+
+        let mut handler = recording_handler();
+        interpret_code_with_initial_arguments(
+            &code,
+            Some(&[test_object(7, "Ljava/lang/Object;")]),
+            &mut handler,
+        )
+        .expect("object receiver should invoke");
+        assert!(handler.invocation.is_some());
     }
 
     // cite: art interpreter_switch_impl-inl.h#THROW, HandlePendingException

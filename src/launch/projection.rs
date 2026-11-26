@@ -1870,6 +1870,11 @@ fn load_activity_image_resource(
 ) -> Result<host_window::ActivityImage> {
     if android_framework::is_framework_package_resource_id(resource_id) {
         // cite: frameworks-base ResourcesImpl.java#loadDrawable, loadDrawableForCookie
+        if crate::missing::strict_enabled() {
+            return Err(WinedroidError::new(format!(
+                "framework drawable resource 0x{resource_id:08x} is not bundled\nnext missing primitive: framework drawable resource loading"
+            )));
+        }
         return Ok(missing_framework_drawable_image(resource_id, theme));
     }
 

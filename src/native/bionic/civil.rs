@@ -29,11 +29,16 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let shifted = days + 719_468;
     let era = shifted.div_euclid(146_097);
     let day_of_era = shifted - era * 146_097;
-    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let month_index = (5 * day_of_year + 2) / 153;
     let day = day_of_year - (153 * month_index + 2) / 5 + 1;
-    let month = if month_index < 10 { month_index + 3 } else { month_index - 9 };
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
     let year = year_of_era + era * 400 + i64::from(month <= 2);
     (year, month, day)
 }
@@ -61,19 +66,46 @@ pub fn to_seconds(parts: &BrokenDown) -> Result<i64, i32> {
     let month_total = i128::from(parts.month);
     let year = i128::from(parts.year) + 1900 + month_total.div_euclid(12);
     let month = month_total.rem_euclid(12) + 1;
-    let days = i128::from(days_from_civil(i64::try_from(year).map_err(|_| EOVERFLOW)?, month as i64, 1)) + i128::from(parts.day) - 1;
-    let total = days * 86_400 + i128::from(parts.hour) * 3600 + i128::from(parts.minute) * 60 + i128::from(parts.second);
+    let days = i128::from(days_from_civil(
+        i64::try_from(year).map_err(|_| EOVERFLOW)?,
+        month as i64,
+        1,
+    )) + i128::from(parts.day)
+        - 1;
+    let total = days * 86_400
+        + i128::from(parts.hour) * 3600
+        + i128::from(parts.minute) * 60
+        + i128::from(parts.second);
     i64::try_from(total).map_err(|_| EOVERFLOW)
 }
 
 pub fn read_tm(address: usize) -> BrokenDown {
     let field = |index: usize| read_value::<i32>(address + index * 4);
-    BrokenDown { second: field(0), minute: field(1), hour: field(2), day: field(3), month: field(4), year: field(5), weekday: field(6), yearday: field(7) }
+    BrokenDown {
+        second: field(0),
+        minute: field(1),
+        hour: field(2),
+        day: field(3),
+        month: field(4),
+        year: field(5),
+        weekday: field(6),
+        yearday: field(7),
+    }
 }
 
 pub fn write_tm(address: usize, parts: &BrokenDown, is_dst: i32, offset: i64, zone_name: usize) {
     let mut block = [0u8; TM_SIZE];
-    let fields = [parts.second, parts.minute, parts.hour, parts.day, parts.month, parts.year, parts.weekday, parts.yearday, is_dst];
+    let fields = [
+        parts.second,
+        parts.minute,
+        parts.hour,
+        parts.day,
+        parts.month,
+        parts.year,
+        parts.weekday,
+        parts.yearday,
+        is_dst,
+    ];
     for (index, value) in fields.iter().enumerate() {
         block[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
     }

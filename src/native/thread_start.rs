@@ -22,7 +22,11 @@ const HANDSHAKE_OFFSET: usize = 156;
 
 extern "C" {
     fn pthread_attr_setguardsize(attr: *mut libc::pthread_attr_t, size: usize) -> i32;
-    fn pthread_attr_setstack(attr: *mut libc::pthread_attr_t, base: *mut c_void, size: usize) -> i32;
+    fn pthread_attr_setstack(
+        attr: *mut libc::pthread_attr_t,
+        base: *mut c_void,
+        size: usize,
+    ) -> i32;
 }
 
 struct Start {
@@ -35,7 +39,10 @@ fn round_up(value: u64, unit: u64) -> Option<u64> {
 }
 
 fn failure_to_run(record: usize, message: &str) {
-    host_log::line(&format!("FIXME: guest thread {} start routine failed: {message}", unsafe { (*(record as *const PthreadInternal)).tid }));
+    host_log::line(&format!(
+        "FIXME: guest thread {} start routine failed: {message}",
+        unsafe { (*(record as *const PthreadInternal)).tid }
+    ));
     if crate::missing::strict_enabled() {
         std::process::abort();
     }
@@ -50,8 +57,20 @@ extern "C" fn host_thread_main(raw: *mut c_void) -> *mut c_void {
     futex::wake(ready, 1, MATCH_ANY);
     bionic_lock::lock(record + HANDSHAKE_OFFSET);
     bionic_lock::unlock(record + HANDSHAKE_OFFSET);
-    let (routine, argument) = unsafe { ((*(record as *const PthreadInternal)).start_routine, (*(record as *const PthreadInternal)).start_routine_arg) };
-    let outcome = if routine == 0 { Ok(0) } else { CallBuilder::new(routine as usize).ptr(argument as usize).invoke().map(|result| result.u64()) };
+    let (routine, argument) = unsafe {
+        (
+            (*(record as *const PthreadInternal)).start_routine,
+            (*(record as *const PthreadInternal)).start_routine_arg,
+        )
+    };
+    let outcome = if routine == 0 {
+        Ok(0)
+    } else {
+        CallBuilder::new(routine as usize)
+            .ptr(argument as usize)
+            .invoke()
+            .map(|result| result.u64())
+    };
     let finished = match outcome {
         Ok(result) => thread_exit::run_guest_storage(record, result),
         Err(_) if thread_exit::take_exit_request() => Ok(()),
@@ -78,10 +97,15 @@ fn host_attributes(attr: usize) -> Result<libc::pthread_attr_t, i32> {
     );
     if base == 0 {
         let guard = round_up(guard, GUEST_PAGE).ok_or(EAGAIN)?;
-        let stack = round_up(size.checked_add(guard).ok_or(EAGAIN)?, HOST_PAGE).and_then(|bytes| bytes.checked_add(HOST_HEADROOM)).ok_or(EAGAIN)?;
+        let stack = round_up(size.checked_add(guard).ok_or(EAGAIN)?, HOST_PAGE)
+            .and_then(|bytes| bytes.checked_add(HOST_HEADROOM))
+            .ok_or(EAGAIN)?;
         unsafe {
             libc::pthread_attr_setstacksize(&mut host, stack as usize);
-            pthread_attr_setguardsize(&mut host, round_up(guard, HOST_PAGE).ok_or(EAGAIN)?.max(HOST_PAGE) as usize);
+            pthread_attr_setguardsize(
+                &mut host,
+                round_up(guard, HOST_PAGE).ok_or(EAGAIN)?.max(HOST_PAGE) as usize,
+            );
         }
     } else {
         if base % HOST_PAGE != 0 || size % HOST_PAGE != 0 {
@@ -99,9 +123,22 @@ fn host_attributes(attr: usize) -> Result<libc::pthread_attr_t, i32> {
 fn schedule(host: libc::pthread_t, attr: usize) -> Result<(), i32> {
     // cite: bionic pthread_create.cpp#__init_thread
     let flags: u32 = super::bionic::guest_mem::read_value(attr);
-    let (policy, priority) = (super::bionic::guest_mem::read_value::<i32>(attr + 32), super::bionic::guest_mem::read_value::<i32>(attr + 36));
-    let need = if flags & FLAG_INHERIT != 0 { false } else if flags & FLAG_EXPLICIT != 0 { true } else { policy != 0 };
-    if need { pthread_sched::set_host(host, policy, priority) } else { Ok(()) }
+    let (policy, priority) = (
+        super::bionic::guest_mem::read_value::<i32>(attr + 32),
+        super::bionic::guest_mem::read_value::<i32>(attr + 36),
+    );
+    let need = if flags & FLAG_INHERIT != 0 {
+        false
+    } else if flags & FLAG_EXPLICIT != 0 {
+        true
+    } else {
+        policy != 0
+    };
+    if need {
+        pthread_sched::set_host(host, policy, priority)
+    } else {
+        Ok(())
+    }
 }
 
 pub fn create(thread_out: usize, attr: usize, routine: usize, argument: usize) -> i32 {
@@ -111,23 +148,34 @@ pub fn create(thread_out: usize, attr: usize, routine: usize, argument: usize) -
     if attr == 0 {
         pthread_attr::init(attr_address);
     } else {
-        unsafe { std::ptr::copy_nonoverlapping(attr as *const u8, attributes.as_mut_ptr(), ATTR_SIZE) };
+        unsafe {
+            std::ptr::copy_nonoverlapping(attr as *const u8, attributes.as_mut_ptr(), ATTR_SIZE)
+        };
     }
     let host_attr = match host_attributes(attr_address) {
         Ok(host) => host,
         Err(code) => return code,
     };
     let creator = current_thread::record();
-    let record = unsafe { std::alloc::alloc_zeroed(std::alloc::Layout::new::<PthreadInternal>()) } as *mut PthreadInternal;
+    let record = unsafe { std::alloc::alloc_zeroed(std::alloc::Layout::new::<PthreadInternal>()) }
+        as *mut PthreadInternal;
     assert!(!record.is_null(), "thread record allocation failed");
     let address = record as usize;
     let flags: u32 = super::bionic::guest_mem::read_value(attr_address);
     let tid = next_tid();
     unsafe {
-        std::ptr::copy_nonoverlapping(attributes.as_ptr(), &raw mut (*record).attr as *mut u8, ATTR_SIZE);
+        std::ptr::copy_nonoverlapping(
+            attributes.as_ptr(),
+            &raw mut (*record).attr as *mut u8,
+            ATTR_SIZE,
+        );
         (*record).tid = tid;
         (*record).cached_pid = libc::getpid() as u32;
-        (*record).join_state = if flags & FLAG_DETACHED != 0 { JOIN_DETACHED } else { JOIN_NOT_JOINED };
+        (*record).join_state = if flags & FLAG_DETACHED != 0 {
+            JOIN_DETACHED
+        } else {
+            JOIN_NOT_JOINED
+        };
         (*record).start_routine = routine as u64;
         (*record).start_routine_arg = argument as u64;
         (*record).start_mask = (*(creator as *const PthreadInternal)).start_mask;
@@ -135,9 +183,19 @@ pub fn create(thread_out: usize, attr: usize, routine: usize, argument: usize) -
     register_created(address, tid);
     bionic_lock::init(address + HANDSHAKE_OFFSET, false);
     bionic_lock::lock(address + HANDSHAKE_OFFSET);
-    let start = Box::into_raw(Box::new(Start { record: address, ready: AtomicU32::new(0) }));
+    let start = Box::into_raw(Box::new(Start {
+        record: address,
+        ready: AtomicU32::new(0),
+    }));
     let mut host: libc::pthread_t = unsafe { std::mem::zeroed() };
-    let status = unsafe { libc::pthread_create(&mut host, &host_attr, host_thread_main, start as *mut c_void) };
+    let status = unsafe {
+        libc::pthread_create(
+            &mut host,
+            &host_attr,
+            host_thread_main,
+            start as *mut c_void,
+        )
+    };
     if status != 0 {
         drop(unsafe { Box::from_raw(start) });
         guest_thread::unregister(address);
@@ -152,7 +210,9 @@ pub fn create(thread_out: usize, attr: usize, routine: usize, argument: usize) -
     }
     drop(unsafe { Box::from_raw(start) });
     if let Err(code) = schedule(host, attr_address) {
-        host_log::line(&format!("pthread_create sched_setscheduler failed: errno {code}"));
+        host_log::line(&format!(
+            "pthread_create sched_setscheduler failed: errno {code}"
+        ));
         unsafe {
             (*record).start_routine = 0;
             (*record).join_state = JOIN_DETACHED;

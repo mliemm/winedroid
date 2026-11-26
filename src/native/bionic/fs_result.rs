@@ -32,7 +32,9 @@ pub fn check(result: i64) -> i64 {
 }
 
 pub fn missing(what: &str, reason: &str) {
-    host_log::line(&format!("FIXME: missing-primitive {what}: {reason}; next missing primitive: {what}"));
+    host_log::line(&format!(
+        "FIXME: missing-primitive {what}: {reason}; next missing primitive: {what}"
+    ));
 }
 
 pub fn is_error(result: i64) -> bool {

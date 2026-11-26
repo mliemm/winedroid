@@ -17,15 +17,21 @@ const MAX_IMAGE_SIZE: u64 = 1 << 30;
 const PAGE: u64 = 4096;
 
 pub(crate) fn le_u16(data: &[u8], offset: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(data.get(offset..offset.checked_add(2)?)?.try_into().ok()?))
+    Some(u16::from_le_bytes(
+        data.get(offset..offset.checked_add(2)?)?.try_into().ok()?,
+    ))
 }
 
 pub(crate) fn le_u32(data: &[u8], offset: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(data.get(offset..offset.checked_add(4)?)?.try_into().ok()?))
+    Some(u32::from_le_bytes(
+        data.get(offset..offset.checked_add(4)?)?.try_into().ok()?,
+    ))
 }
 
 pub(crate) fn le_u64(data: &[u8], offset: usize) -> Option<u64> {
-    Some(u64::from_le_bytes(data.get(offset..offset.checked_add(8)?)?.try_into().ok()?))
+    Some(u64::from_le_bytes(
+        data.get(offset..offset.checked_add(8)?)?.try_into().ok()?,
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,7 +60,10 @@ pub struct ElfImage {
 }
 
 pub fn is_arm64_elf(data: &[u8]) -> bool {
-    data.len() >= 64 && data[..4] == *b"\x7fELF" && data[4] == 2 && le_u16(data, 18) == Some(EM_AARCH64)
+    data.len() >= 64
+        && data[..4] == *b"\x7fELF"
+        && data[4] == 2
+        && le_u16(data, 18) == Some(EM_AARCH64)
 }
 
 fn floor_page(value: u64) -> u64 {
@@ -82,19 +91,34 @@ impl ElfImage {
         }
         match data[4] {
             2 => {}
-            1 => return Err(WinedroidError::new(format!("\"{name}\" is 32-bit instead of 64-bit"))),
-            other => return Err(WinedroidError::new(format!("\"{name}\" has unknown ELF class: {other}"))),
+            1 => {
+                return Err(WinedroidError::new(format!(
+                    "\"{name}\" is 32-bit instead of 64-bit"
+                )))
+            }
+            other => {
+                return Err(WinedroidError::new(format!(
+                    "\"{name}\" has unknown ELF class: {other}"
+                )))
+            }
         }
         if data[5] != 1 {
-            return Err(WinedroidError::new(format!("\"{name}\" not little-endian: {}", data[5])));
+            return Err(WinedroidError::new(format!(
+                "\"{name}\" not little-endian: {}",
+                data[5]
+            )));
         }
         let e_type = le_u16(data, 16).unwrap_or(0);
         if e_type != 3 {
-            return Err(WinedroidError::new(format!("\"{name}\" has unexpected e_type: {e_type}")));
+            return Err(WinedroidError::new(format!(
+                "\"{name}\" has unexpected e_type: {e_type}"
+            )));
         }
         let version = le_u32(data, 20).unwrap_or(0);
         if version != 1 {
-            return Err(WinedroidError::new(format!("\"{name}\" has unexpected e_version: {version}")));
+            return Err(WinedroidError::new(format!(
+                "\"{name}\" has unexpected e_version: {version}"
+            )));
         }
         let machine = le_u16(data, 18).unwrap_or(0);
         if machine != EM_AARCH64 {
@@ -106,7 +130,9 @@ impl ElfImage {
         let entry_size = le_u16(data, 54).unwrap_or(0);
         let phnum = usize::from(le_u16(data, 56).unwrap_or(0));
         if usize::from(entry_size) != PHDR_SIZE || phnum == 0 || phnum > MAX_PHNUM {
-            return Err(WinedroidError::new(format!("\"{name}\" has invalid e_phnum: {phnum}")));
+            return Err(WinedroidError::new(format!(
+                "\"{name}\" has invalid e_phnum: {phnum}"
+            )));
         }
         let table_end = phoff.checked_add((phnum * PHDR_SIZE) as u64);
         if phoff == 0 || phoff % 8 != 0 || table_end.is_none_or(|end| end > data.len() as u64) {
@@ -137,11 +163,15 @@ impl ElfImage {
     fn validate(&self, name: &str, file_len: u64) -> Result<()> {
         // cite: bionic linker_phdr.cpp#LoadSegments, CheckFileRange, FindPhdr, CheckPhdr
         if self.phdrs.iter().any(|phdr| phdr.kind == PT_INTERP) {
-            return Err(WinedroidError::new(format!("\"{name}\" is a PIE executable, not a library")));
+            return Err(WinedroidError::new(format!(
+                "\"{name}\" is a PIE executable, not a library"
+            )));
         }
         let loads: Vec<&Phdr> = self.loads().collect();
         if loads.is_empty() {
-            return Err(WinedroidError::new(format!("\"{name}\" has no loadable segments")));
+            return Err(WinedroidError::new(format!(
+                "\"{name}\" has no loadable segments"
+            )));
         }
         let mut previous_end = 0u64;
         for (index, load) in loads.iter().enumerate() {
@@ -153,31 +183,50 @@ impl ElfImage {
                 )));
             }
             if load.flags & PF_W != 0 && load.flags & PF_X != 0 {
-                return Err(WinedroidError::new(format!("\"{name}\": W+E load segments are not allowed")));
+                return Err(WinedroidError::new(format!(
+                    "\"{name}\": W+E load segments are not allowed"
+                )));
             }
             if load.vaddr % PAGE != load.offset % PAGE {
                 return Err(WinedroidError::new(format!(
                     "\"{name}\" load segment[{index}] has p_vaddr and p_offset in different pages"
                 )));
             }
-            let end = load.vaddr.checked_add(load.memsz).filter(|end| *end <= MAX_IMAGE_SIZE);
+            let end = load
+                .vaddr
+                .checked_add(load.memsz)
+                .filter(|end| *end <= MAX_IMAGE_SIZE);
             let Some(end) = end else {
-                return Err(WinedroidError::new(format!("\"{name}\" load segment[{index}] is outside the supported image size")));
+                return Err(WinedroidError::new(format!(
+                    "\"{name}\" load segment[{index}] is outside the supported image size"
+                )));
             };
             if index > 0 && load.vaddr < previous_end {
-                return Err(WinedroidError::new(format!("\"{name}\" load segment[{index}] overlaps the previous segment")));
+                return Err(WinedroidError::new(format!(
+                    "\"{name}\" load segment[{index}] overlaps the previous segment"
+                )));
             }
             previous_end = end;
         }
-        let dynamics: Vec<&Phdr> = self.phdrs.iter().filter(|phdr| phdr.kind == PT_DYNAMIC).collect();
+        let dynamics: Vec<&Phdr> = self
+            .phdrs
+            .iter()
+            .filter(|phdr| phdr.kind == PT_DYNAMIC)
+            .collect();
         let [dynamic] = dynamics.as_slice() else {
-            return Err(WinedroidError::new(format!("missing PT_DYNAMIC in \"{name}\"")));
+            return Err(WinedroidError::new(format!(
+                "missing PT_DYNAMIC in \"{name}\""
+            )));
         };
         if dynamic.filesz % 16 != 0 || !self.in_file_backed_load(dynamic.vaddr, dynamic.filesz) {
-            return Err(WinedroidError::new(format!("\"{name}\" has an invalid PT_DYNAMIC range")));
+            return Err(WinedroidError::new(format!(
+                "\"{name}\" has an invalid PT_DYNAMIC range"
+            )));
         }
         if self.phdrs.iter().filter(|phdr| phdr.kind == PT_TLS).count() > 1 {
-            return Err(WinedroidError::new(format!("\"{name}\" has more than one PT_TLS")));
+            return Err(WinedroidError::new(format!(
+                "\"{name}\" has more than one PT_TLS"
+            )));
         }
         if let Some(tls) = self.tls() {
             // cite: bionic bionic_elf_tls.cpp#__bionic_check_tls_alignment
@@ -189,9 +238,13 @@ impl ElfImage {
             }
         }
         let phdr_len = (self.phdrs.len() * PHDR_SIZE) as u64;
-        let phdr_vaddr = self.phdr_vaddr().ok_or_else(|| WinedroidError::new(format!("can't find loaded phdr for \"{name}\"")))?;
+        let phdr_vaddr = self
+            .phdr_vaddr()
+            .ok_or_else(|| WinedroidError::new(format!("can't find loaded phdr for \"{name}\"")))?;
         if !self.in_file_backed_load(phdr_vaddr, phdr_len) {
-            return Err(WinedroidError::new(format!("\"{name}\" loaded phdr {phdr_vaddr:#x} not in loadable segment")));
+            return Err(WinedroidError::new(format!(
+                "\"{name}\" loaded phdr {phdr_vaddr:#x} not in loadable segment"
+            )));
         }
         Ok(())
     }
@@ -200,7 +253,8 @@ impl ElfImage {
         let Some(end) = vaddr.checked_add(len) else {
             return false;
         };
-        self.loads().any(|load| vaddr >= load.vaddr && end <= load.vaddr + load.filesz)
+        self.loads()
+            .any(|load| vaddr >= load.vaddr && end <= load.vaddr + load.filesz)
     }
 
     pub fn loads(&self) -> impl Iterator<Item = &Phdr> {
@@ -208,7 +262,10 @@ impl ElfImage {
     }
 
     pub fn dynamic(&self) -> &Phdr {
-        self.phdrs.iter().find(|phdr| phdr.kind == PT_DYNAMIC).expect("validated PT_DYNAMIC")
+        self.phdrs
+            .iter()
+            .find(|phdr| phdr.kind == PT_DYNAMIC)
+            .expect("validated PT_DYNAMIC")
     }
 
     pub fn phdr_vaddr(&self) -> Option<u64> {
@@ -236,12 +293,22 @@ impl ElfImage {
     }
 
     pub fn eh_frame_hdr(&self) -> Option<&Phdr> {
-        self.phdrs.iter().find(|phdr| phdr.kind == PT_GNU_EH_FRAME && phdr.memsz != 0)
+        self.phdrs
+            .iter()
+            .find(|phdr| phdr.kind == PT_GNU_EH_FRAME && phdr.memsz != 0)
     }
 
     pub fn image_bounds(&self) -> (u64, u64) {
-        let lo = self.loads().map(|load| floor_page(load.vaddr)).min().unwrap_or(0);
-        let hi = self.loads().map(|load| ceil_page(load.vaddr + load.memsz).unwrap_or(u64::MAX)).max().unwrap_or(0);
+        let lo = self
+            .loads()
+            .map(|load| floor_page(load.vaddr))
+            .min()
+            .unwrap_or(0);
+        let hi = self
+            .loads()
+            .map(|load| ceil_page(load.vaddr + load.memsz).unwrap_or(u64::MAX))
+            .max()
+            .unwrap_or(0);
         (lo, hi)
     }
 }

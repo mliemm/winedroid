@@ -2004,10 +2004,7 @@ fn builtin_collections_empty_set_returns_shared_empty_set_per_libcore_collection
 
     assert_eq!(first, second);
     assert_eq!(
-        program.invoke_builtin_method(
-            &array_list_init,
-            Some(&test_invocation(vec![target, set]))
-        ),
+        program.invoke_builtin_method(&array_list_init, Some(&test_invocation(vec![target, set]))),
         Some(DexExecutionResult::Void)
     );
     assert_eq!(
@@ -2771,6 +2768,47 @@ fn libcore_concurrent_linked_queue_constructor_creates_an_empty_queue() {
 }
 
 #[test]
+fn libcore_concurrent_linked_queue_clear_removes_every_element() {
+    // cite: libcore ConcurrentLinkedQueue.java#clear
+    let program = DexProgram::new(Vec::new());
+    let constructor = builtin_method(
+        "Ljava/util/concurrent/ConcurrentLinkedQueue;",
+        "<init>",
+        "V",
+        &[],
+    );
+    let clear = builtin_method(
+        "Ljava/util/concurrent/ConcurrentLinkedQueue;",
+        "clear",
+        "V",
+        &[],
+    );
+    let size = builtin_method("Ljava/util/Collection;", "size", "I", &[]);
+    let queue = program.allocate_object("Ljava/util/concurrent/ConcurrentLinkedQueue;".to_owned());
+    assert_eq!(
+        program.invoke_builtin_method(&constructor, Some(&test_invocation(vec![queue.clone()]))),
+        Some(DexExecutionResult::Void)
+    );
+    program.runtime.borrow_mut().list_entries.insert(
+        map_identity_key(&queue),
+        vec![DexValue::Int(1), DexValue::Int(2)],
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&size, Some(&test_invocation(vec![queue.clone()]))),
+        Some(DexExecutionResult::Int(2))
+    );
+
+    assert_eq!(
+        program.invoke_builtin_method(&clear, Some(&test_invocation(vec![queue.clone()]))),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&size, Some(&test_invocation(vec![queue.clone()]))),
+        Some(DexExecutionResult::Int(0))
+    );
+}
+
+#[test]
 fn libcore_linked_blocking_queue_constructor_creates_an_empty_queue() {
     // cite: libcore LinkedBlockingQueue.java#LinkedBlockingQueue
     let program = DexProgram::new(Vec::new());
@@ -2917,7 +2955,8 @@ fn libcore_linked_list_constructor_and_add_keep_insertion_order_including_null()
     );
     for element in [first.clone(), DexValue::Null] {
         assert_eq!(
-            program.invoke_builtin_method(&add, Some(&test_invocation(vec![list.clone(), element]))),
+            program
+                .invoke_builtin_method(&add, Some(&test_invocation(vec![list.clone(), element]))),
             Some(DexExecutionResult::Int(1))
         );
     }
@@ -2940,4 +2979,75 @@ fn libcore_linked_list_constructor_and_add_keep_insertion_order_including_null()
     ] {
         assert!(program.value_matches_type(&list, supertype), "{supertype}");
     }
+}
+
+#[test]
+fn libcore_linked_list_contains_uses_equals_and_matches_null() {
+    // cite: libcore LinkedList.java#contains, indexOf
+    let program = DexProgram::new(Vec::new());
+    let contains = DexMethodId {
+        class_descriptor: "Ljava/util/LinkedList;".to_owned(),
+        name: "contains".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "ZL".to_owned(),
+            return_type: "Z".to_owned(),
+            parameters: vec!["Ljava/lang/Object;".to_owned()],
+        },
+    };
+    let list = program.allocate_object("Ljava/util/LinkedList;".to_owned());
+    program.runtime.borrow_mut().list_entries.insert(
+        map_identity_key(&list),
+        vec![DexValue::String(std::rc::Rc::from("a")), DexValue::Null],
+    );
+    let call = |value: DexValue| {
+        program
+            .invoke_java_collection_equality_method(
+                &contains,
+                &test_invocation(vec![list.clone(), value]),
+                0,
+            )
+            .expect("LinkedList.contains should run")
+    };
+
+    assert_eq!(
+        call(DexValue::String(std::rc::Rc::from("a"))),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(call(DexValue::Null), Some(DexExecutionResult::Int(1)));
+    assert_eq!(
+        call(DexValue::String(std::rc::Rc::from("b"))),
+        Some(DexExecutionResult::Int(0))
+    );
+}
+
+#[test]
+fn libcore_copy_on_write_array_list_clear_removes_every_element() {
+    // cite: libcore CopyOnWriteArrayList.java#clear
+    let program = DexProgram::new(Vec::new());
+    let class = "Ljava/util/concurrent/CopyOnWriteArrayList;";
+    let constructor = builtin_method(class, "<init>", "V", &[]);
+    let clear = builtin_method(class, "clear", "V", &[]);
+    let size = builtin_method(class, "size", "I", &[]);
+    let list = program.allocate_object(class.to_owned());
+    assert_eq!(
+        program.invoke_builtin_method(&constructor, Some(&test_invocation(vec![list.clone()]))),
+        Some(DexExecutionResult::Void)
+    );
+    program.runtime.borrow_mut().list_entries.insert(
+        map_identity_key(&list),
+        vec![DexValue::Int(1), DexValue::Int(2)],
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&size, Some(&test_invocation(vec![list.clone()]))),
+        Some(DexExecutionResult::Int(2))
+    );
+
+    assert_eq!(
+        program.invoke_builtin_method(&clear, Some(&test_invocation(vec![list.clone()]))),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&size, Some(&test_invocation(vec![list.clone()]))),
+        Some(DexExecutionResult::Int(0))
+    );
 }

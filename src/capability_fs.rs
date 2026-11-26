@@ -335,9 +335,17 @@ impl Directory {
         self.fd.as_fd()
     }
 
-    pub fn parent_and_leaf(&self, components: &[CString]) -> io::Result<(Directory, Option<CString>)> {
+    pub fn parent_and_leaf(
+        &self,
+        components: &[CString],
+    ) -> io::Result<(Directory, Option<CString>)> {
         match self.target(components)? {
-            Target::Leaf(parent) => Ok((Directory { fd: Arc::new(parent.directory) }, Some(parent.leaf))),
+            Target::Leaf(parent) => Ok((
+                Directory {
+                    fd: Arc::new(parent.directory),
+                },
+                Some(parent.leaf),
+            )),
             Target::Directory(fd) => Ok((Directory { fd: Arc::new(fd) }, None)),
         }
     }

@@ -100,13 +100,18 @@ fn bootstraps_linked_blocking_queue_hierarchy() {
     );
     assert_eq!(
         bootstrap_direct_interface_descriptors("Ljava/util/concurrent/LinkedBlockingQueue;"),
-        &["Ljava/util/concurrent/BlockingQueue;", "Ljava/io/Serializable;"]
+        &[
+            "Ljava/util/concurrent/BlockingQueue;",
+            "Ljava/io/Serializable;"
+        ]
     );
     assert_eq!(
         bootstrap_direct_interface_descriptors("Ljava/util/concurrent/BlockingQueue;"),
         &["Ljava/util/Queue;"]
     );
-    assert!(is_bootstrap_interface_descriptor("Ljava/util/concurrent/BlockingQueue;"));
+    assert!(is_bootstrap_interface_descriptor(
+        "Ljava/util/concurrent/BlockingQueue;"
+    ));
 }
 
 // cite: frameworks-base Resources.java#NotFoundException

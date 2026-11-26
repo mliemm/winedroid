@@ -5,7 +5,9 @@ use super::bionic::pthread_key;
 use super::call_assign::CallBuilder;
 use super::futex::{self, MATCH_ANY};
 use super::guest_thread;
-use super::pthread_internal::{PthreadInternal, JOIN_DETACHED, JOIN_EXITED_NOT_JOINED, JOIN_NOT_JOINED};
+use super::pthread_internal::{
+    PthreadInternal, JOIN_DETACHED, JOIN_EXITED_NOT_JOINED, JOIN_NOT_JOINED,
+};
 use super::thread_block::{set_slot, SLOT_BIONIC_TLS, SLOT_THREAD_ID};
 use super::thread_list;
 
@@ -54,7 +56,12 @@ pub fn tid_word(record: usize) -> usize {
 
 pub fn add_thread_local_destructor(record: usize, function: u64, argument: u64, dso: u64) {
     // cite: bionic __cxa_thread_atexit_impl.cpp#__cxa_thread_atexit_impl
-    let node = Box::into_raw(Box::new(LocalDestructor { function, argument, dso, next: unsafe { (*thread(record)).thread_local_dtors } }));
+    let node = Box::into_raw(Box::new(LocalDestructor {
+        function,
+        argument,
+        dso,
+        next: unsafe { (*thread(record)).thread_local_dtors },
+    }));
     unsafe { (*thread(record)).thread_local_dtors = node as u64 };
 }
 
@@ -67,7 +74,10 @@ pub fn finalize_thread_locals(record: usize) -> Result<(), String> {
         }
         let node = unsafe { Box::from_raw(head) };
         unsafe { (*thread(record)).thread_local_dtors = node.next };
-        CallBuilder::new(node.function as usize).int(node.argument).invoke().map_err(|error| error.to_string())?;
+        CallBuilder::new(node.function as usize)
+            .int(node.argument)
+            .invoke()
+            .map_err(|error| error.to_string())?;
     }
 }
 
@@ -78,9 +88,13 @@ fn run_cleanup_stack(record: usize) -> Result<(), String> {
         if top.is_null() {
             return Ok(());
         }
-        let (previous, routine, argument) = unsafe { ((*top).previous, (*top).routine, (*top).argument) };
+        let (previous, routine, argument) =
+            unsafe { ((*top).previous, (*top).routine, (*top).argument) };
         unsafe { (*thread(record)).cleanup_stack = previous };
-        CallBuilder::new(routine as usize).int(argument).invoke().map_err(|error| error.to_string())?;
+        CallBuilder::new(routine as usize)
+            .int(argument)
+            .invoke()
+            .map_err(|error| error.to_string())?;
     }
 }
 
@@ -93,7 +107,11 @@ pub fn run_guest_storage(record: usize, return_value: u64) -> Result<(), String>
 }
 
 pub fn has_pending_guest_storage(record: usize) -> bool {
-    unsafe { (*thread(record)).thread_local_dtors != 0 || (*thread(record)).cleanup_stack != 0 || pthread_key::has_pending_destructors(record) }
+    unsafe {
+        (*thread(record)).thread_local_dtors != 0
+            || (*thread(record)).cleanup_stack != 0
+            || pthread_key::has_pending_destructors(record)
+    }
 }
 
 fn block_every_signal() {
@@ -106,7 +124,9 @@ fn block_every_signal() {
 
 pub fn clear_child_tid(record: usize) {
     // cite: bionic SYSCALLS.TXT#__set_tid_address
-    let Some(address) = thread_list::take_clear_tid(record) else { return };
+    let Some(address) = thread_list::take_clear_tid(record) else {
+        return;
+    };
     unsafe { AtomicU32::from_ptr(address as *mut u32) }.store(0, Ordering::Release);
     futex::wake(address, i32::MAX, MATCH_ANY);
 }
@@ -116,7 +136,12 @@ pub fn publish_exit(record: usize) {
     let state = join_state(record);
     let mut old = JOIN_NOT_JOINED;
     while old == JOIN_NOT_JOINED {
-        match state.compare_exchange_weak(old, JOIN_EXITED_NOT_JOINED, Ordering::SeqCst, Ordering::SeqCst) {
+        match state.compare_exchange_weak(
+            old,
+            JOIN_EXITED_NOT_JOINED,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
             Ok(_) => break,
             Err(current) => old = current,
         }

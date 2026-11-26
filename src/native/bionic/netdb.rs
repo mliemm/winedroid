@@ -23,7 +23,14 @@ fn error(code: i32) -> i64 {
 
 fn host_ai_flags(linux: i32) -> i32 {
     let mut host = 0;
-    for (from, to) in [(codes::AI_PASSIVE, libc::AI_PASSIVE), (codes::AI_CANONNAME, libc::AI_CANONNAME), (codes::AI_NUMERICHOST, libc::AI_NUMERICHOST), (codes::AI_ADDRCONFIG, libc::AI_ADDRCONFIG), (codes::AI_V4MAPPED, libc::AI_V4MAPPED), (codes::AI_ALL, libc::AI_ALL)] {
+    for (from, to) in [
+        (codes::AI_PASSIVE, libc::AI_PASSIVE),
+        (codes::AI_CANONNAME, libc::AI_CANONNAME),
+        (codes::AI_NUMERICHOST, libc::AI_NUMERICHOST),
+        (codes::AI_ADDRCONFIG, libc::AI_ADDRCONFIG),
+        (codes::AI_V4MAPPED, libc::AI_V4MAPPED),
+        (codes::AI_ALL, libc::AI_ALL),
+    ] {
         if linux & from != 0 {
             host |= to;
         }
@@ -62,7 +69,8 @@ fn guest_sockaddr(storage: &libc::sockaddr_storage, length: libc::socklen_t) -> 
     match storage.ss_family as i32 {
         libc::AF_INET => {
             let address = allocate(abi::SOCKADDR_SIZE);
-            let source = unsafe { &*(storage as *const libc::sockaddr_storage as *const libc::sockaddr_in) };
+            let source =
+                unsafe { &*(storage as *const libc::sockaddr_storage as *const libc::sockaddr_in) };
             write_value::<u16>(address, abi::AF_INET as u16);
             write_value::<u16>(address + 2, source.sin_port);
             write_value::<u32>(address + 4, source.sin_addr.s_addr);
@@ -70,7 +78,9 @@ fn guest_sockaddr(storage: &libc::sockaddr_storage, length: libc::socklen_t) -> 
         }
         libc::AF_INET6 => {
             let address = allocate(abi::SOCKADDR_IN6_SIZE);
-            let source = unsafe { &*(storage as *const libc::sockaddr_storage as *const libc::sockaddr_in6) };
+            let source = unsafe {
+                &*(storage as *const libc::sockaddr_storage as *const libc::sockaddr_in6)
+            };
             write_value::<u16>(address, abi::AF_INET6 as u16);
             write_value::<u16>(address + 2, source.sin6_port);
             write_value::<u32>(address + 4, source.sin6_flowinfo);
@@ -121,7 +131,8 @@ fn resolve(node: Option<CString>, service: Option<CString>, hints: usize) -> Res
             return Err(codes::EAI_BADFLAGS);
         }
         host_hints.ai_flags = host_ai_flags(flags);
-        host_hints.ai_family = match super::translate::family_to_host(read_value::<i32>(hints + 4)) {
+        host_hints.ai_family = match super::translate::family_to_host(read_value::<i32>(hints + 4))
+        {
             Some(family) => family,
             None => return Err(codes::EAI_FAMILY),
         };
@@ -130,7 +141,17 @@ fn resolve(node: Option<CString>, service: Option<CString>, hints: usize) -> Res
         &host_hints
     };
     let mut result: *mut libc::addrinfo = std::ptr::null_mut();
-    let status = unsafe { libc::getaddrinfo(node.as_ref().map_or(std::ptr::null(), |value| value.as_ptr()), service.as_ref().map_or(std::ptr::null(), |value| value.as_ptr()), hints_pointer, &mut result) };
+    let status = unsafe {
+        libc::getaddrinfo(
+            node.as_ref()
+                .map_or(std::ptr::null(), |value| value.as_ptr()),
+            service
+                .as_ref()
+                .map_or(std::ptr::null(), |value| value.as_ptr()),
+            hints_pointer,
+            &mut result,
+        )
+    };
     if status != 0 {
         return Err(status);
     }
@@ -169,7 +190,10 @@ fn free_list(mut node: usize) {
     }
 }
 
-fn storage_of(pointer: usize, length: usize) -> Result<(libc::sockaddr_storage, libc::socklen_t), i32> {
+fn storage_of(
+    pointer: usize,
+    length: usize,
+) -> Result<(libc::sockaddr_storage, libc::socklen_t), i32> {
     if pointer == 0 || length < 2 {
         return Err(codes::EAI_FAMILY);
     }
@@ -180,7 +204,9 @@ fn storage_of(pointer: usize, length: usize) -> Result<(libc::sockaddr_storage, 
             if length < abi::SOCKADDR_SIZE {
                 return Err(codes::EAI_FAMILY);
             }
-            let address = unsafe { &mut *(&mut storage as *mut libc::sockaddr_storage as *mut libc::sockaddr_in) };
+            let address = unsafe {
+                &mut *(&mut storage as *mut libc::sockaddr_storage as *mut libc::sockaddr_in)
+            };
             address.sin_len = abi::SOCKADDR_SIZE as u8;
             address.sin_family = libc::AF_INET as u8;
             address.sin_port = read_value::<u16>(pointer + 2);
@@ -191,12 +217,20 @@ fn storage_of(pointer: usize, length: usize) -> Result<(libc::sockaddr_storage, 
             if length < abi::SOCKADDR_IN6_SIZE {
                 return Err(codes::EAI_FAMILY);
             }
-            let address = unsafe { &mut *(&mut storage as *mut libc::sockaddr_storage as *mut libc::sockaddr_in6) };
+            let address = unsafe {
+                &mut *(&mut storage as *mut libc::sockaddr_storage as *mut libc::sockaddr_in6)
+            };
             address.sin6_len = abi::SOCKADDR_IN6_SIZE as u8;
             address.sin6_family = libc::AF_INET6 as u8;
             address.sin6_port = read_value::<u16>(pointer + 2);
             address.sin6_flowinfo = read_value::<u32>(pointer + 4);
-            unsafe { std::ptr::copy_nonoverlapping((pointer + 8) as *const u8, address.sin6_addr.s6_addr.as_mut_ptr(), 16) };
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    (pointer + 8) as *const u8,
+                    address.sin6_addr.s6_addr.as_mut_ptr(),
+                    16,
+                )
+            };
             address.sin6_scope_id = read_value::<u32>(pointer + 24);
             Ok((storage, abi::SOCKADDR_IN6_SIZE as libc::socklen_t))
         }
@@ -216,9 +250,24 @@ fn copy_out(text: &[u8], pointer: usize, capacity: usize) -> Result<(), i32> {
     Ok(())
 }
 
-fn name_info(pointer: usize, length: usize, host: usize, host_capacity: usize, service: usize, service_capacity: usize, flags: i32) -> i32 {
+fn name_info(
+    pointer: usize,
+    length: usize,
+    host: usize,
+    host_capacity: usize,
+    service: usize,
+    service_capacity: usize,
+    flags: i32,
+) -> i32 {
     // cite: bionic getnameinfo.c#getnameinfo
-    if flags & !(codes::NI_NOFQDN | codes::NI_NUMERICHOST | codes::NI_NAMEREQD | codes::NI_NUMERICSERV | codes::NI_DGRAM) != 0 {
+    if flags
+        & !(codes::NI_NOFQDN
+            | codes::NI_NUMERICHOST
+            | codes::NI_NAMEREQD
+            | codes::NI_NUMERICSERV
+            | codes::NI_DGRAM)
+        != 0
+    {
         return codes::EAI_BADFLAGS;
     }
     let (storage, host_length) = match storage_of(pointer, length) {
@@ -231,10 +280,26 @@ fn name_info(pointer: usize, length: usize, host: usize, host_capacity: usize, s
         libc::getnameinfo(
             &storage as *const _ as *const libc::sockaddr,
             host_length,
-            if host == 0 { std::ptr::null_mut() } else { host_buffer.as_mut_ptr() as *mut libc::c_char },
-            if host == 0 { 0 } else { host_buffer.len() as libc::socklen_t },
-            if service == 0 { std::ptr::null_mut() } else { service_buffer.as_mut_ptr() as *mut libc::c_char },
-            if service == 0 { 0 } else { service_buffer.len() as libc::socklen_t },
+            if host == 0 {
+                std::ptr::null_mut()
+            } else {
+                host_buffer.as_mut_ptr() as *mut libc::c_char
+            },
+            if host == 0 {
+                0
+            } else {
+                host_buffer.len() as libc::socklen_t
+            },
+            if service == 0 {
+                std::ptr::null_mut()
+            } else {
+                service_buffer.as_mut_ptr() as *mut libc::c_char
+            },
+            if service == 0 {
+                0
+            } else {
+                service_buffer.len() as libc::socklen_t
+            },
             flags,
         )
     };
@@ -242,13 +307,16 @@ fn name_info(pointer: usize, length: usize, host: usize, host_capacity: usize, s
         return status;
     }
     if host != 0 {
-        let text = unsafe { std::ffi::CStr::from_ptr(host_buffer.as_ptr() as *const libc::c_char) }.to_bytes();
+        let text = unsafe { std::ffi::CStr::from_ptr(host_buffer.as_ptr() as *const libc::c_char) }
+            .to_bytes();
         if let Err(code) = copy_out(text, host, host_capacity) {
             return code;
         }
     }
     if service != 0 {
-        let text = unsafe { std::ffi::CStr::from_ptr(service_buffer.as_ptr() as *const libc::c_char) }.to_bytes();
+        let text =
+            unsafe { std::ffi::CStr::from_ptr(service_buffer.as_ptr() as *const libc::c_char) }
+                .to_bytes();
         if let Err(code) = copy_out(text, service, service_capacity) {
             return code;
         }
@@ -300,13 +368,22 @@ fn lookup_host(name: Option<CString>, family: i32) -> Result<usize, i32> {
     if status != 0 {
         set_h_errno(match status {
             codes::EAI_AGAIN => TRY_AGAIN,
-            codes::EAI_NONAME | codes::EAI_NODATA | codes::EAI_ADDRFAMILY => if status == codes::EAI_NONAME { NAME_NOT_FOUND } else { NO_DATA },
+            codes::EAI_NONAME | codes::EAI_NODATA | codes::EAI_ADDRFAMILY => {
+                if status == codes::EAI_NONAME {
+                    NAME_NOT_FOUND
+                } else {
+                    NO_DATA
+                }
+            }
             _ => NO_RECOVERY,
         });
         return Err(status);
     }
     let mut chosen = result;
-    while !chosen.is_null() && (unsafe { (*chosen).ai_family }) != family && family != libc::AF_UNSPEC {
+    while !chosen.is_null()
+        && (unsafe { (*chosen).ai_family }) != family
+        && family != libc::AF_UNSPEC
+    {
         chosen = unsafe { (*chosen).ai_next };
     }
     if chosen.is_null() {
@@ -318,17 +395,30 @@ fn lookup_host(name: Option<CString>, family: i32) -> Result<usize, i32> {
     let storage = unsafe { &*(node.ai_addr as *const libc::sockaddr_storage) };
     let guest = match storage.ss_family as i32 {
         libc::AF_INET => {
-            let address = unsafe { &*(storage as *const libc::sockaddr_storage as *const libc::sockaddr_in) };
+            let address =
+                unsafe { &*(storage as *const libc::sockaddr_storage as *const libc::sockaddr_in) };
             address.sin_addr.s_addr.to_ne_bytes().to_vec()
         }
         libc::AF_INET6 => {
-            let address = unsafe { &*(storage as *const libc::sockaddr_storage as *const libc::sockaddr_in6) };
+            let address = unsafe {
+                &*(storage as *const libc::sockaddr_storage as *const libc::sockaddr_in6)
+            };
             address.sin6_addr.s6_addr.to_vec()
         }
         _ => Vec::new(),
     };
-    let canonical = if node.ai_canonname.is_null() { Vec::new() } else { unsafe { std::ffi::CStr::from_ptr(node.ai_canonname) }.to_bytes().to_vec() };
-    let name_bytes = if canonical.is_empty() { cstr_bytes(name.as_ptr() as usize).to_vec() } else { canonical };
+    let canonical = if node.ai_canonname.is_null() {
+        Vec::new()
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(node.ai_canonname) }
+            .to_bytes()
+            .to_vec()
+    };
+    let name_bytes = if canonical.is_empty() {
+        cstr_bytes(name.as_ptr() as usize).to_vec()
+    } else {
+        canonical
+    };
     unsafe { libc::freeaddrinfo(result) };
     set_h_errno(0);
     Ok(hostent_from(&name_bytes, family, &guest))
@@ -366,7 +456,10 @@ fn text_error(code: i32) -> &'static [u8] {
 }
 
 fn resolver_missing(what: &str) -> i64 {
-    missing(what, "the Bionic resolver state and raw DNS transport have no host equivalent; use getaddrinfo");
+    missing(
+        what,
+        "the Bionic resolver state and raw DNS transport have no host equivalent; use getaddrinfo",
+    );
     -1
 }
 
@@ -376,7 +469,9 @@ pub fn register() {
         let service = name_at(context.arg_ptr(1));
         let result = match (node, service) {
             (None, None) => Err(codes::EAI_NONAME),
-            (Some(Ok(node)), Some(Ok(service))) => resolve(Some(node), Some(service), context.arg_ptr(2)),
+            (Some(Ok(node)), Some(Ok(service))) => {
+                resolve(Some(node), Some(service), context.arg_ptr(2))
+            }
             (Some(Ok(node)), None) => resolve(Some(node), None, context.arg_ptr(2)),
             (None, Some(Ok(service))) => resolve(None, Some(service), context.arg_ptr(2)),
             (Some(Err(code)), _) | (_, Some(Err(code))) => Err(code),
@@ -401,11 +496,20 @@ pub fn register() {
     in_libc("freeaddrinfo", |context| free_list(context.arg_ptr(0)));
     in_libc("gai_strerror", |context| {
         let text = text_error(context.arg_i32(0));
-        let pointer = super::guest_mem::intern(std::str::from_utf8(text).unwrap_or("Unknown error"));
+        let pointer =
+            super::guest_mem::intern(std::str::from_utf8(text).unwrap_or("Unknown error"));
         context.ret_ptr(pointer);
     });
     in_libc("getnameinfo", |context| {
-        let code = name_info(context.arg_ptr(0), context.arg_u32(1) as usize, context.arg_ptr(2), context.arg_u64(3) as usize, context.arg_ptr(4), context.arg_u64(5) as usize, context.arg_i32(6));
+        let code = name_info(
+            context.arg_ptr(0),
+            context.arg_u32(1) as usize,
+            context.arg_ptr(2),
+            context.arg_u64(3) as usize,
+            context.arg_ptr(4),
+            context.arg_u64(5) as usize,
+            context.arg_i32(6),
+        );
         context.ret_i32(code);
     });
     in_libc("gethostbyname", |context| {
@@ -420,10 +524,20 @@ pub fn register() {
             Some(bytes) => CString::new(bytes).ok(),
             None => None,
         };
-        hostent_result(context, lookup_host(name, super::translate::family_to_host(context.arg_i32(1)).unwrap_or(libc::AF_INET)));
+        hostent_result(
+            context,
+            lookup_host(
+                name,
+                super::translate::family_to_host(context.arg_i32(1)).unwrap_or(libc::AF_INET),
+            ),
+        );
     });
     in_libc("gethostbyaddr", |context| {
-        let (pointer, length, kind) = (context.arg_ptr(0), context.arg_u32(1) as usize, context.arg_i32(2));
+        let (pointer, length, kind) = (
+            context.arg_ptr(0),
+            context.arg_u32(1) as usize,
+            context.arg_i32(2),
+        );
         if pointer == 0 {
             set_h_errno(NO_RECOVERY);
             context.set_errno(EFAULT);
@@ -433,17 +547,27 @@ pub fn register() {
         let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
         let host_length = match kind {
             abi::AF_INET if length == 4 => {
-                let address = unsafe { &mut *(&mut storage as *mut libc::sockaddr_storage as *mut libc::sockaddr_in) };
+                let address = unsafe {
+                    &mut *(&mut storage as *mut libc::sockaddr_storage as *mut libc::sockaddr_in)
+                };
                 address.sin_len = abi::SOCKADDR_SIZE as u8;
                 address.sin_family = libc::AF_INET as u8;
                 address.sin_addr.s_addr = read_value::<u32>(pointer);
                 abi::SOCKADDR_SIZE
             }
             abi::AF_INET6 if length == 16 => {
-                let address = unsafe { &mut *(&mut storage as *mut libc::sockaddr_storage as *mut libc::sockaddr_in6) };
+                let address = unsafe {
+                    &mut *(&mut storage as *mut libc::sockaddr_storage as *mut libc::sockaddr_in6)
+                };
                 address.sin6_len = abi::SOCKADDR_IN6_SIZE as u8;
                 address.sin6_family = libc::AF_INET6 as u8;
-                unsafe { std::ptr::copy_nonoverlapping(pointer as *const u8, address.sin6_addr.s6_addr.as_mut_ptr(), 16) };
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        pointer as *const u8,
+                        address.sin6_addr.s6_addr.as_mut_ptr(),
+                        16,
+                    )
+                };
                 abi::SOCKADDR_IN6_SIZE
             }
             _ => {
@@ -454,21 +578,41 @@ pub fn register() {
             }
         };
         let mut host = vec![0u8; codes::NI_MAXHOST];
-        let status = unsafe { libc::getnameinfo(&storage as *const _ as *const libc::sockaddr, host_length as libc::socklen_t, host.as_mut_ptr() as *mut libc::c_char, host.len() as libc::socklen_t, std::ptr::null_mut(), 0, codes::NI_NAMEREQD) };
+        let status = unsafe {
+            libc::getnameinfo(
+                &storage as *const _ as *const libc::sockaddr,
+                host_length as libc::socklen_t,
+                host.as_mut_ptr() as *mut libc::c_char,
+                host.len() as libc::socklen_t,
+                std::ptr::null_mut(),
+                0,
+                codes::NI_NAMEREQD,
+            )
+        };
         if status != 0 {
-            set_h_errno(if status == codes::EAI_AGAIN { TRY_AGAIN } else { NAME_NOT_FOUND });
+            set_h_errno(if status == codes::EAI_AGAIN {
+                TRY_AGAIN
+            } else {
+                NAME_NOT_FOUND
+            });
             context.set_errno(status);
             context.ret_ptr(0);
             return;
         }
-        let bytes = unsafe { std::ffi::CStr::from_ptr(host.as_ptr() as *const libc::c_char) }.to_bytes().to_vec();
+        let bytes = unsafe { std::ffi::CStr::from_ptr(host.as_ptr() as *const libc::c_char) }
+            .to_bytes()
+            .to_vec();
         let address = unsafe { std::slice::from_raw_parts(pointer as *const u8, length) };
         set_h_errno(0);
         context.ret_ptr(hostent_from(&bytes, kind, address));
     });
-    in_libc("__get_h_errno", |context| context.ret_ptr(h_errno_address()));
+    in_libc("__get_h_errno", |context| {
+        context.ret_ptr(h_errno_address())
+    });
     in_libc("herror", |context| {
-        let prefix = optional_cstr(context.arg_ptr(0)).map(|bytes| String::from_utf8_lossy(bytes).into_owned()).unwrap_or_default();
+        let prefix = optional_cstr(context.arg_ptr(0))
+            .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+            .unwrap_or_default();
         let code = H_ERRNO.with(|slot| slot.get());
         super::super::host_log::line(&format!("{prefix}: resolver error {code}"));
     });
@@ -483,13 +627,28 @@ pub fn register() {
         context.ret_ptr(super::guest_mem::intern(message));
     });
     for name in ["res_init", "__res_init", "res_ninit"] {
-        in_libc(name, move |context: &mut CallContext| context.ret_i32(resolver_missing(name) as i32));
+        in_libc(name, move |context: &mut CallContext| {
+            context.ret_i32(resolver_missing(name) as i32)
+        });
     }
-    for name in ["res_mkquery", "res_query", "res_search", "res_querydomain", "res_send", "res_nquery", "res_nsearch", "res_nsend"] {
-        in_libc(name, move |context: &mut CallContext| context.ret_i32(resolver_missing(name) as i32));
+    for name in [
+        "res_mkquery",
+        "res_query",
+        "res_search",
+        "res_querydomain",
+        "res_send",
+        "res_nquery",
+        "res_nsearch",
+        "res_nsend",
+    ] {
+        in_libc(name, move |context: &mut CallContext| {
+            context.ret_i32(resolver_missing(name) as i32)
+        });
     }
     for name in ["dn_comp", "dn_expand"] {
-        in_libc(name, move |context: &mut CallContext| context.ret_i32(resolver_missing(name) as i32));
+        in_libc(name, move |context: &mut CallContext| {
+            context.ret_i32(resolver_missing(name) as i32)
+        });
     }
     in_libc("res_close", |_| {});
 }

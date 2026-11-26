@@ -71,7 +71,10 @@ mod tests {
     #[test]
     fn bionic_pthread_internal_t_field_offsets_match_the_lp64_layout_guests_read() {
         // cite: bionic pthread_internal.h#pthread_internal_t
-        assert_eq!(std::mem::size_of::<PthreadInternal>(), PTHREAD_INTERNAL_SIZE);
+        assert_eq!(
+            std::mem::size_of::<PthreadInternal>(),
+            PTHREAD_INTERNAL_SIZE
+        );
         assert_eq!(std::mem::align_of::<PthreadInternal>(), 16);
         let offsets = [
             (offset_of!(PthreadInternal, next), 0),
@@ -79,11 +82,26 @@ mod tests {
             (offset_of!(PthreadInternal, tid), 16),
             (offset_of!(PthreadInternal, cached_pid), 20),
             (offset_of!(PthreadInternal, attr), 24),
-            (offset_of!(PthreadInternal, attr) + offset_of!(PthreadAttr, stack_base), 32),
-            (offset_of!(PthreadInternal, attr) + offset_of!(PthreadAttr, stack_size), 40),
-            (offset_of!(PthreadInternal, attr) + offset_of!(PthreadAttr, guard_size), 48),
-            (offset_of!(PthreadInternal, attr) + offset_of!(PthreadAttr, sched_policy), 56),
-            (offset_of!(PthreadInternal, attr) + offset_of!(PthreadAttr, reserved), 64),
+            (
+                offset_of!(PthreadInternal, attr) + offset_of!(PthreadAttr, stack_base),
+                32,
+            ),
+            (
+                offset_of!(PthreadInternal, attr) + offset_of!(PthreadAttr, stack_size),
+                40,
+            ),
+            (
+                offset_of!(PthreadInternal, attr) + offset_of!(PthreadAttr, guard_size),
+                48,
+            ),
+            (
+                offset_of!(PthreadInternal, attr) + offset_of!(PthreadAttr, sched_policy),
+                56,
+            ),
+            (
+                offset_of!(PthreadInternal, attr) + offset_of!(PthreadAttr, reserved),
+                64,
+            ),
             (offset_of!(PthreadInternal, join_state), 80),
             (offset_of!(PthreadInternal, cleanup_stack), 88),
             (offset_of!(PthreadInternal, start_routine), 96),
@@ -91,7 +109,10 @@ mod tests {
             (offset_of!(PthreadInternal, return_value), 112),
             (offset_of!(PthreadInternal, start_mask), 120),
             (offset_of!(PthreadInternal, alternate_signal_stack), 128),
-            (offset_of!(PthreadInternal, shadow_call_stack_guard_region), 136),
+            (
+                offset_of!(PthreadInternal, shadow_call_stack_guard_region),
+                136,
+            ),
             (offset_of!(PthreadInternal, stack_top), 144),
             (offset_of!(PthreadInternal, terminating), 152),
             (offset_of!(PthreadInternal, startup_handshake_lock), 156),

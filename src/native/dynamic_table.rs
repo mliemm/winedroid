@@ -95,7 +95,9 @@ impl DynamicInfo {
         let mut pltrel = None;
         let hi = image.layout().hi;
         let pointer = |value: u64, tag: i64| -> Result<u64> {
-            require(value < hi, || format!("\"{name}\" has DT tag {tag:#x} pointing outside the image: {value:#x}"))?;
+            require(value < hi, || {
+                format!("\"{name}\" has DT tag {tag:#x} pointing outside the image: {value:#x}")
+            })?;
             Ok(value)
         };
         let mut terminated = false;
@@ -122,12 +124,22 @@ impl DynamicInfo {
                 DT_FINI => info.fini = value,
                 DT_SONAME => soname_offset = Some(value),
                 DT_SYMBOLIC => info.has_symbolic = true,
-                DT_REL | DT_RELSZ => return Err(WinedroidError::new(format!("unsupported DT_REL/DT_RELSZ in \"{name}\""))),
+                DT_REL | DT_RELSZ => {
+                    return Err(WinedroidError::new(format!(
+                        "unsupported DT_REL/DT_RELSZ in \"{name}\""
+                    )))
+                }
                 DT_ANDROID_REL | DT_ANDROID_RELSZ => {
-                    return Err(WinedroidError::new(format!("unsupported DT_ANDROID_REL in \"{name}\"")))
+                    return Err(WinedroidError::new(format!(
+                        "unsupported DT_ANDROID_REL in \"{name}\""
+                    )))
                 }
                 DT_PLTREL => pltrel = Some(value),
-                DT_TEXTREL => return Err(WinedroidError::new(format!("\"{name}\" has text relocations"))),
+                DT_TEXTREL => {
+                    return Err(WinedroidError::new(format!(
+                        "\"{name}\" has text relocations"
+                    )))
+                }
                 DT_JMPREL => info.jmprel.vaddr = pointer(value, tag)?,
                 DT_INIT_ARRAY => info.init_array.vaddr = pointer(value, tag)?,
                 DT_INIT_ARRAYSZ => info.init_array.size = value,
@@ -137,12 +149,16 @@ impl DynamicInfo {
                 DT_PREINIT_ARRAYSZ => info.preinit_array.size = value,
                 DT_RUNPATH => runpath_offset = Some(value),
                 DT_FLAGS => {
-                    require(value & DF_TEXTREL == 0, || format!("\"{name}\" has text relocations"))?;
+                    require(value & DF_TEXTREL == 0, || {
+                        format!("\"{name}\" has text relocations")
+                    })?;
                     info.has_symbolic |= value & DF_SYMBOLIC != 0;
                 }
                 DT_RELR | DT_ANDROID_RELR => info.relr.vaddr = pointer(value, tag)?,
                 DT_RELRSZ | DT_ANDROID_RELRSZ => info.relr.size = value,
-                DT_RELRENT | DT_ANDROID_RELRENT => require(value == 8, || format!("invalid DT_RELRENT: {value}"))?,
+                DT_RELRENT | DT_ANDROID_RELRENT => {
+                    require(value == 8, || format!("invalid DT_RELRENT: {value}"))?
+                }
                 DT_ANDROID_RELA => info.android_rela.vaddr = pointer(value, tag)?,
                 DT_ANDROID_RELASZ => info.android_rela.size = value,
                 DT_GNU_HASH => info.gnu_hash = pointer(value, tag)?,
@@ -150,20 +166,43 @@ impl DynamicInfo {
                 _ => {}
             }
         }
-        require(terminated, || format!("unterminated dynamic section in \"{name}\""))?;
-        require(pltrel.is_none_or(|value| value == 7), || format!("unsupported DT_PLTREL in \"{name}\"; expected DT_RELA"))?;
-        require(info.hash != 0 || info.gnu_hash != 0, || {
-            format!("empty/missing DT_HASH/DT_GNU_HASH in \"{name}\" (new hash type from the future?)")
+        require(terminated, || {
+            format!("unterminated dynamic section in \"{name}\"")
         })?;
-        require(info.strtab != 0, || format!("empty/missing DT_STRTAB in \"{name}\""))?;
-        require(info.symtab != 0, || format!("empty/missing DT_SYMTAB in \"{name}\""))?;
-        require(info.strsz != 0 && info.strtab + info.strsz <= hi, || format!("strtab out of bounds error in \"{name}\"; STRSZ={}", info.strsz))?;
+        require(pltrel.is_none_or(|value| value == 7), || {
+            format!("unsupported DT_PLTREL in \"{name}\"; expected DT_RELA")
+        })?;
+        require(info.hash != 0 || info.gnu_hash != 0, || {
+            format!(
+                "empty/missing DT_HASH/DT_GNU_HASH in \"{name}\" (new hash type from the future?)"
+            )
+        })?;
+        require(info.strtab != 0, || {
+            format!("empty/missing DT_STRTAB in \"{name}\"")
+        })?;
+        require(info.symtab != 0, || {
+            format!("empty/missing DT_SYMTAB in \"{name}\"")
+        })?;
+        require(info.strsz != 0 && info.strtab + info.strsz <= hi, || {
+            format!(
+                "strtab out of bounds error in \"{name}\"; STRSZ={}",
+                info.strsz
+            )
+        })?;
         let string = |offset: u64| -> Result<String> {
-            require(offset < info.strsz, || format!("strtab out of bounds error; STRSZ={}, name={offset}", info.strsz))?;
+            require(offset < info.strsz, || {
+                format!(
+                    "strtab out of bounds error; STRSZ={}, name={offset}",
+                    info.strsz
+                )
+            })?;
             let bytes = image.cstr(info.strtab + offset, info.strsz - offset)?;
             Ok(String::from_utf8_lossy(bytes).into_owned())
         };
-        info.needed = needed_offsets.into_iter().map(string).collect::<Result<_>>()?;
+        info.needed = needed_offsets
+            .into_iter()
+            .map(string)
+            .collect::<Result<_>>()?;
         info.soname = soname_offset.map(string).transpose()?;
         info.runpath = runpath_offset.map(string).transpose()?;
         Ok(info)

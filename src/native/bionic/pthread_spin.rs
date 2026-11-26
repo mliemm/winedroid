@@ -12,11 +12,19 @@ pub fn register() {
     });
     in_libc("pthread_spin_destroy", |context| {
         // cite: bionic pthread_spinlock.cpp#pthread_spin_destroy
-        context.ret_i32(if bionic_lock::try_lock(context.arg_ptr(0)) { 0 } else { EBUSY });
+        context.ret_i32(if bionic_lock::try_lock(context.arg_ptr(0)) {
+            0
+        } else {
+            EBUSY
+        });
     });
     in_libc("pthread_spin_trylock", |context| {
         // cite: bionic pthread_spinlock.cpp#pthread_spin_trylock
-        context.ret_i32(if bionic_lock::try_lock(context.arg_ptr(0)) { 0 } else { EBUSY });
+        context.ret_i32(if bionic_lock::try_lock(context.arg_ptr(0)) {
+            0
+        } else {
+            EBUSY
+        });
     });
     in_libc("pthread_spin_lock", |context| {
         // cite: bionic pthread_spinlock.cpp#pthread_spin_lock

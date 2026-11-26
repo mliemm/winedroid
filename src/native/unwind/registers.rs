@@ -23,7 +23,12 @@ const _: () = assert!(std::mem::offset_of!(UnwindRegs, pc) == 384);
 
 impl UnwindRegs {
     pub const fn zeroed() -> Self {
-        Self { q: [0; VECTOR_REGISTER_COUNT], x: [0; GENERAL_REGISTER_COUNT], sp: 0, pc: 0 }
+        Self {
+            q: [0; VECTOR_REGISTER_COUNT],
+            x: [0; GENERAL_REGISTER_COUNT],
+            sp: 0,
+            pc: 0,
+        }
     }
 }
 
@@ -42,7 +47,16 @@ pub struct UnwindContext {
 
 impl UnwindContext {
     pub fn new(regs: UnwindRegs) -> Self {
-        Self { magic: CONTEXT_MAGIC, regs, cfa: 0, region_start: 0, lsda: 0, fde: 0, personality: 0, handler_frame: false }
+        Self {
+            magic: CONTEXT_MAGIC,
+            regs,
+            cfa: 0,
+            region_start: 0,
+            lsda: 0,
+            fde: 0,
+            personality: 0,
+            handler_frame: false,
+        }
     }
 
     pub fn from_guest(pointer: usize) -> &'static mut Self {
@@ -63,7 +77,9 @@ impl UnwindContext {
         match register {
             0..=30 => Some(self.regs.x[register as usize]),
             STACK_POINTER_REGISTER => Some(self.regs.sp),
-            VECTOR_FIRST_REGISTER..=79 => Some(self.regs.q[(register - VECTOR_FIRST_REGISTER) as usize] as u64),
+            VECTOR_FIRST_REGISTER..=79 => {
+                Some(self.regs.q[(register - VECTOR_FIRST_REGISTER) as usize] as u64)
+            }
             _ => None,
         }
     }
@@ -85,7 +101,9 @@ pub fn register_value(regs: &UnwindRegs, register: u32) -> Option<u64> {
     match register {
         0..=30 => Some(regs.x[register as usize]),
         STACK_POINTER_REGISTER => Some(regs.sp),
-        VECTOR_FIRST_REGISTER..=79 => Some(regs.q[(register - VECTOR_FIRST_REGISTER) as usize] as u64),
+        VECTOR_FIRST_REGISTER..=79 => {
+            Some(regs.q[(register - VECTOR_FIRST_REGISTER) as usize] as u64)
+        }
         _ => None,
     }
 }

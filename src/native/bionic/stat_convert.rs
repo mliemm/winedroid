@@ -55,9 +55,17 @@ pub fn encode(fields: &Fields) -> [u8; layout::SIZE] {
     put(&mut bytes, layout::ST_GID, &fields.gid.to_le_bytes());
     put(&mut bytes, layout::ST_RDEV, &fields.rdev.to_le_bytes());
     put(&mut bytes, layout::ST_SIZE, &fields.size.to_le_bytes());
-    put(&mut bytes, layout::ST_BLKSIZE, &fields.block_size.to_le_bytes());
+    put(
+        &mut bytes,
+        layout::ST_BLKSIZE,
+        &fields.block_size.to_le_bytes(),
+    );
     put(&mut bytes, layout::ST_BLOCKS, &fields.blocks.to_le_bytes());
-    for (offset, (seconds, nanos)) in [(layout::ST_ATIME, fields.accessed), (layout::ST_MTIME, fields.modified), (layout::ST_CTIME, fields.changed)] {
+    for (offset, (seconds, nanos)) in [
+        (layout::ST_ATIME, fields.accessed),
+        (layout::ST_MTIME, fields.modified),
+        (layout::ST_CTIME, fields.changed),
+    ] {
         put(&mut bytes, offset, &seconds.to_le_bytes());
         put(&mut bytes, offset + 8, &nanos.to_le_bytes());
     }
@@ -100,8 +108,16 @@ pub fn from_host(host: &libc::stat, synthetic: Option<SyntheticStat>) -> [u8; la
     encode(&fields)
 }
 
-pub fn virtual_node(mode: u32, owner_id: u32, inode: u64, device: (u32, u32), rdev: (u32, u32)) -> [u8; layout::SIZE] {
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs() as i64);
+pub fn virtual_node(
+    mode: u32,
+    owner_id: u32,
+    inode: u64,
+    device: (u32, u32),
+    rdev: (u32, u32),
+) -> [u8; layout::SIZE] {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs() as i64);
     let time = (now, 0);
     encode(&Fields {
         device: makedev(device.0, device.1),
@@ -121,7 +137,9 @@ pub fn virtual_node(mode: u32, owner_id: u32, inode: u64, device: (u32, u32), rd
 }
 
 pub fn path_hash(path: &str) -> u64 {
-    path.bytes().fold(0xcbf29ce484222325u64, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3))
+    path.bytes().fold(0xcbf29ce484222325u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    })
 }
 
 pub const S_IFMT: u32 = 0o170000;
@@ -135,7 +153,12 @@ pub const S_IFIFO: u32 = 0o010000;
 pub fn statfs_bytes(host: &libc::statfs) -> [u8; 120] {
     // cite: bionic sys_statfs.cpp#ST_VALID
     let mut bytes = [0u8; 120];
-    let name = host.f_fstypename.iter().take_while(|byte| **byte != 0).map(|byte| *byte as u8).collect::<Vec<u8>>();
+    let name = host
+        .f_fstypename
+        .iter()
+        .take_while(|byte| **byte != 0)
+        .map(|byte| *byte as u8)
+        .collect::<Vec<u8>>();
     let kind: i64 = match name.as_slice() {
         b"apfs" | b"hfs" => 0xEF53,
         b"msdos" => 0x4d44,
@@ -144,7 +167,14 @@ pub fn statfs_bytes(host: &libc::statfs) -> [u8; 120] {
         _ => 0x01021994,
     };
     let mut flags = 0i64;
-    for (host_flag, linux_flag) in [(1u32, 1i64), (8, 2), (0x10, 4), (4, 8), (2, 0x10), (0x1000_0000, 0x400)] {
+    for (host_flag, linux_flag) in [
+        (1u32, 1i64),
+        (8, 2),
+        (0x10, 4),
+        (4, 8),
+        (2, 0x10),
+        (0x1000_0000, 0x400),
+    ] {
         if host.f_flags & host_flag != 0 {
             flags |= linux_flag;
         }
@@ -162,7 +192,8 @@ pub fn statfs_bytes(host: &libc::statfs) -> [u8; 120] {
     for (offset, value) in writes {
         bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
     }
-    let fsid: [i32; 2] = unsafe { std::ptr::read_unaligned(&host.f_fsid as *const _ as *const [i32; 2]) };
+    let fsid: [i32; 2] =
+        unsafe { std::ptr::read_unaligned(&host.f_fsid as *const _ as *const [i32; 2]) };
     bytes[56..60].copy_from_slice(&fsid[0].to_le_bytes());
     bytes[60..64].copy_from_slice(&fsid[1].to_le_bytes());
     bytes[72..80].copy_from_slice(&i64::from(host.f_bsize).to_le_bytes());

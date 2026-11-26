@@ -111,7 +111,9 @@ pub fn register() {
         }
         context.ret_ptr(allocate_locale(is_utf8(name)));
     });
-    in_libc("duplocale", |context| context.ret_ptr(allocate_locale(max_bytes(context.arg_ptr(0)) == UTF8_MAX)));
+    in_libc("duplocale", |context| {
+        context.ret_ptr(allocate_locale(max_bytes(context.arg_ptr(0)) == UTF8_MAX))
+    });
     in_libc("freelocale", |context| {
         if context.arg_ptr(0) != GLOBAL_LOCALE {
             unsafe { libc::free(context.arg_ptr(0) as *mut libc::c_void) };

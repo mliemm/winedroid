@@ -1,11 +1,13 @@
 use super::super::bridge::CallContext;
 use super::super::call_assign::CallBuilder;
-use super::guest_mem::read_value;
-use super::super::unwind::entry::{spk_unwind_backtrace, spk_unwind_forced, spk_unwind_raise, spk_unwind_resume};
+use super::super::unwind::entry::{
+    spk_unwind_backtrace, spk_unwind_forced, spk_unwind_raise, spk_unwind_resume,
+};
 use super::super::unwind::fde;
 use super::super::unwind::registers::UnwindContext;
 use super::super::unwind::URC_FOREIGN_EXCEPTION_CAUGHT;
 use super::export::{in_libc, in_libc_raw};
+use super::guest_mem::read_value;
 
 fn accessor(context: &mut CallContext) -> &'static mut UnwindContext {
     UnwindContext::from_guest(context.arg_ptr(0))
@@ -36,10 +38,19 @@ fn set_ip(context: &mut CallContext) {
 }
 
 pub fn register() {
-    in_libc_raw("_Unwind_RaiseException", spk_unwind_raise as *const () as usize);
+    in_libc_raw(
+        "_Unwind_RaiseException",
+        spk_unwind_raise as *const () as usize,
+    );
     in_libc_raw("_Unwind_Resume", spk_unwind_resume as *const () as usize);
-    in_libc_raw("_Unwind_ForcedUnwind", spk_unwind_forced as *const () as usize);
-    in_libc_raw("_Unwind_Backtrace", spk_unwind_backtrace as *const () as usize);
+    in_libc_raw(
+        "_Unwind_ForcedUnwind",
+        spk_unwind_forced as *const () as usize,
+    );
+    in_libc_raw(
+        "_Unwind_Backtrace",
+        spk_unwind_backtrace as *const () as usize,
+    );
     in_libc("_Unwind_GetGR", get_gr);
     in_libc("_Unwind_SetGR", set_gr);
     in_libc("_Unwind_GetIP", get_ip);
@@ -89,7 +100,12 @@ pub fn register() {
             None => (0, 0),
         };
         if bases != 0 {
-            let block = [function.to_le_bytes(), 0u64.to_le_bytes(), 0u64.to_le_bytes()].concat();
+            let block = [
+                function.to_le_bytes(),
+                0u64.to_le_bytes(),
+                0u64.to_le_bytes(),
+            ]
+            .concat();
             super::guest_mem::write_bytes(bases, &block);
         }
         context.ret_u64(address);
@@ -104,7 +120,11 @@ pub fn register() {
         if cleanup == 0 {
             return;
         }
-        if let Err(error) = CallBuilder::new(cleanup as usize).int(URC_FOREIGN_EXCEPTION_CAUGHT as u64).ptr(exception).invoke() {
+        if let Err(error) = CallBuilder::new(cleanup as usize)
+            .int(URC_FOREIGN_EXCEPTION_CAUGHT as u64)
+            .ptr(exception)
+            .invoke()
+        {
             context.fail(error.to_string());
         }
     });

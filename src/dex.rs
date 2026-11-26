@@ -12,7 +12,8 @@ const PROTO_ID_SIZE: usize = 12;
 const FIELD_ID_SIZE: usize = 8;
 const METHOD_ID_SIZE: usize = 8;
 const CLASS_DEF_SIZE: usize = 32;
-const DEX_METADATA_CACHE_MAGIC: &[u8; 12] = b"WDDEXIDX0001";
+const DEX_METADATA_CACHE_MAGIC_V1: &[u8; 12] = b"WDDEXIDX0001";
+const DEX_METADATA_CACHE_MAGIC: &[u8; 12] = b"WDDEXIDX0002";
 const DEX_METADATA_CACHE_FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const DEX_METADATA_CACHE_FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
@@ -32,7 +33,7 @@ pub struct DexSummary {
 pub struct DexFile {
     source_name: String,
     data: Vec<u8>,
-    strings: Vec<String>,
+    strings: Vec<Option<String>>,
     type_descriptors: Vec<String>,
     protos: Vec<DexProto>,
     fields: Vec<DexFieldId>,
@@ -63,14 +64,7 @@ impl DexFile {
     }
 
     pub fn string(&self, string_index: u32) -> Result<&str> {
-        self.strings
-            .get(string_index as usize)
-            .map(String::as_str)
-            .ok_or_else(|| {
-                WinedroidError::new(format!(
-                    "DEX string index {string_index} is outside the string table"
-                ))
-            })
+        string_at(&self.strings, string_index)
     }
 
     pub fn type_descriptor(&self, type_index: u32) -> Result<&str> {
@@ -135,15 +129,7 @@ impl DexFile {
         let mut elements = Vec::with_capacity(element_count as usize);
         for _ in 0..element_count {
             let (name_index, next_offset) = read_uleb128(&self.data, offset)?;
-            let name = self
-                .strings
-                .get(name_index as usize)
-                .ok_or_else(|| {
-                    WinedroidError::new(format!(
-                        "annotation element name index {name_index} is outside the string table"
-                    ))
-                })?
-                .clone();
+            let name = self.string(name_index)?.to_owned();
             let (value, next_offset) = self.read_encoded_value(next_offset)?;
             offset = next_offset;
 
@@ -527,11 +513,18 @@ pub fn parse_dex_file(source_name: impl Into<String>, data: Vec<u8>) -> Result<D
 
 pub fn encode_dex_metadata_cache(file: &DexFile) -> Result<Vec<u8>> {
     let header = DexHeader::parse(&file.data)?;
+    let legacy_strings = file.strings.iter().all(Option::is_some);
     let mut payload = Vec::new();
     write_cache_string(&mut payload, &header.version)?;
     write_cache_u32(&mut payload, header.checksum);
     write_cache_u32(&mut payload, header.file_size);
-    write_cache_string_vec(&mut payload, &file.strings)?;
+    write_cache_len(&mut payload, file.strings.len())?;
+    for string in &file.strings {
+        match (legacy_strings, string) {
+            (true, Some(value)) => write_cache_string(&mut payload, value)?,
+            _ => write_cache_string_option(&mut payload, string)?,
+        }
+    }
     write_cache_string_vec(&mut payload, &file.type_descriptors)?;
     write_cache_protos(&mut payload, &file.protos)?;
     write_cache_fields(&mut payload, &file.fields)?;
@@ -539,7 +532,12 @@ pub fn encode_dex_metadata_cache(file: &DexFile) -> Result<Vec<u8>> {
     write_cache_classes(&mut payload, &file.classes)?;
 
     let mut cache = Vec::with_capacity(DEX_METADATA_CACHE_MAGIC.len() + 8 + payload.len());
-    cache.extend_from_slice(DEX_METADATA_CACHE_MAGIC);
+    let magic = if legacy_strings {
+        DEX_METADATA_CACHE_MAGIC_V1
+    } else {
+        DEX_METADATA_CACHE_MAGIC
+    };
+    cache.extend_from_slice(magic);
     write_cache_u64(&mut cache, dex_metadata_cache_checksum(&payload));
     cache.extend_from_slice(&payload);
 
@@ -563,13 +561,7 @@ pub fn parse_dex_file_with_metadata_cache(
         )));
     }
 
-    let strings = reader.read_string_vec()?;
-    require_cache_count(
-        &source_name,
-        "string",
-        strings.len(),
-        header.string_ids_size,
-    )?;
+    let strings = reader.read_dex_strings(header.string_ids_size)?;
     let type_descriptors = reader.read_string_vec()?;
     require_cache_count(
         &source_name,
@@ -671,10 +663,11 @@ fn read_type_descriptor(data: &[u8], header: &DexHeader, type_index: u32) -> Res
     require_range(data, type_offset, TYPE_ID_SIZE, "type id")?;
 
     let descriptor_index = read_u32(data, type_offset)?;
-    read_string(data, header, descriptor_index)
+    read_string(data, header, descriptor_index)?
+        .ok_or_else(|| unsupported_dex_string(descriptor_index))
 }
 
-fn read_strings(data: &[u8], header: &DexHeader) -> Result<Vec<String>> {
+fn read_strings(data: &[u8], header: &DexHeader) -> Result<Vec<Option<String>>> {
     let mut strings = Vec::with_capacity(header.string_ids_size as usize);
 
     for index in 0..header.string_ids_size {
@@ -687,7 +680,7 @@ fn read_strings(data: &[u8], header: &DexHeader) -> Result<Vec<String>> {
 fn read_type_descriptors(
     data: &[u8],
     header: &DexHeader,
-    strings: &[String],
+    strings: &[Option<String>],
 ) -> Result<Vec<String>> {
     let mut descriptors = Vec::with_capacity(header.type_ids_size as usize);
 
@@ -706,7 +699,7 @@ fn read_type_descriptors(
 fn read_protos(
     data: &[u8],
     header: &DexHeader,
-    strings: &[String],
+    strings: &[Option<String>],
     type_descriptors: &[String],
 ) -> Result<Vec<DexProto>> {
     let mut protos = Vec::with_capacity(header.proto_ids_size as usize);
@@ -768,7 +761,7 @@ fn read_methods(
     data: &[u8],
     header: &DexHeader,
     type_descriptors: &[String],
-    strings: &[String],
+    strings: &[Option<String>],
     protos: &[DexProto],
 ) -> Result<Vec<DexMethodId>> {
     let mut methods = Vec::with_capacity(header.method_ids_size as usize);
@@ -796,7 +789,7 @@ fn read_fields(
     data: &[u8],
     header: &DexHeader,
     type_descriptors: &[String],
-    strings: &[String],
+    strings: &[Option<String>],
 ) -> Result<Vec<DexFieldId>> {
     let mut fields = Vec::with_capacity(header.field_ids_size as usize);
 
@@ -823,7 +816,7 @@ fn read_class_defs(
     data: &[u8],
     header: &DexHeader,
     type_descriptors: &[String],
-    strings: &[String],
+    strings: &[Option<String>],
 ) -> Result<Vec<DexClassDef>> {
     let mut classes = Vec::with_capacity(header.class_defs_size as usize);
 
@@ -884,7 +877,7 @@ fn read_class_defs(
 fn read_encoded_static_values(
     data: &[u8],
     static_values_offset: u32,
-    strings: &[String],
+    strings: &[Option<String>],
 ) -> Result<Vec<DexStaticValue>> {
     if static_values_offset == 0 {
         return Ok(Vec::new());
@@ -904,7 +897,7 @@ fn read_encoded_static_values(
 fn read_encoded_value(
     data: &[u8],
     offset: usize,
-    strings: &[String],
+    strings: &[Option<String>],
 ) -> Result<(DexStaticValue, usize)> {
     let header = *data.get(offset).ok_or_else(|| {
         WinedroidError::new("encoded value header extends past end of DEX data".to_owned())
@@ -1267,15 +1260,21 @@ fn read_encoded_catch_handler_list(
     Ok(handlers)
 }
 
-fn string_at(strings: &[String], index: u32) -> Result<&str> {
-    strings
-        .get(index as usize)
-        .map(String::as_str)
-        .ok_or_else(|| {
-            WinedroidError::new(format!(
-                "DEX string index {index} is outside the string table"
-            ))
-        })
+fn string_at(strings: &[Option<String>], index: u32) -> Result<&str> {
+    let value = strings.get(index as usize).ok_or_else(|| {
+        WinedroidError::new(format!(
+            "DEX string index {index} is outside the string table"
+        ))
+    })?;
+    value
+        .as_deref()
+        .ok_or_else(|| unsupported_dex_string(index))
+}
+
+fn unsupported_dex_string(index: u32) -> WinedroidError {
+    WinedroidError::new(format!(
+        "missing primitive: DEX string with an unpaired UTF-16 surrogate (string index {index})"
+    ))
 }
 
 fn type_descriptor_at(type_descriptors: &[String], index: u32) -> Result<&str> {
@@ -1295,7 +1294,7 @@ fn proto_at(protos: &[DexProto], index: u32) -> Result<&DexProto> {
     })
 }
 
-fn read_string(data: &[u8], header: &DexHeader, string_index: u32) -> Result<String> {
+fn read_string(data: &[u8], header: &DexHeader, string_index: u32) -> Result<Option<String>> {
     if string_index >= header.string_ids_size {
         return Err(WinedroidError::new(format!(
             "DEX string index {string_index} is outside the string table"
@@ -1318,7 +1317,7 @@ fn read_string(data: &[u8], header: &DexHeader, string_index: u32) -> Result<Str
     decode_mutf8_string(&data[value_offset..value_end], utf16_size)
 }
 
-fn decode_mutf8_string(data: &[u8], expected_utf16_size: u32) -> Result<String> {
+fn decode_mutf8_string(data: &[u8], expected_utf16_size: u32) -> Result<Option<String>> {
     let mut code_units = Vec::new();
     let mut offset = 0usize;
 
@@ -1375,9 +1374,8 @@ fn decode_mutf8_string(data: &[u8], expected_utf16_size: u32) -> Result<String> 
         )));
     }
 
-    String::from_utf16(&code_units).map_err(|error| {
-        WinedroidError::with_source("DEX MUTF-8 string is not valid UTF-16", error)
-    })
+    // cite: art dex_file_verifier.cc#CheckIntraStringDataItem
+    Ok(String::from_utf16(&code_units).ok())
 }
 
 fn require_mutf8_continuation(byte: u8, offset: usize) -> Result<()> {
@@ -1861,6 +1859,7 @@ fn require_cache_count(source_name: &str, label: &str, actual: usize, expected: 
 struct DexMetadataCacheReader<'a> {
     data: &'a [u8],
     offset: usize,
+    legacy_strings: bool,
 }
 
 impl<'a> DexMetadataCacheReader<'a> {
@@ -1871,7 +1870,9 @@ impl<'a> DexMetadataCacheReader<'a> {
             DEX_METADATA_CACHE_MAGIC.len() + 8,
             "DEX metadata cache header",
         )?;
-        if &data[..DEX_METADATA_CACHE_MAGIC.len()] != DEX_METADATA_CACHE_MAGIC {
+        let magic = &data[..DEX_METADATA_CACHE_MAGIC.len()];
+        let legacy_strings = magic == DEX_METADATA_CACHE_MAGIC_V1;
+        if !legacy_strings && magic != DEX_METADATA_CACHE_MAGIC {
             return Err(WinedroidError::new(
                 "DEX metadata cache has an unsupported magic header",
             ));
@@ -1898,6 +1899,7 @@ impl<'a> DexMetadataCacheReader<'a> {
         Ok(Self {
             data,
             offset: payload_offset,
+            legacy_strings,
         })
     }
 
@@ -1979,6 +1981,25 @@ impl<'a> DexMetadataCacheReader<'a> {
             values.push(self.read_string()?);
         }
 
+        Ok(values)
+    }
+
+    fn read_dex_strings(&mut self, expected_count: u32) -> Result<Vec<Option<String>>> {
+        let len = self.read_len()?;
+        if len != expected_count as usize {
+            return Err(WinedroidError::new(
+                "DEX metadata cache string count does not match the DEX header",
+            ));
+        }
+        let mut values = Vec::new();
+        for _ in 0..len {
+            let value = if self.legacy_strings {
+                Some(self.read_string()?)
+            } else {
+                self.read_string_option()?
+            };
+            values.push(value);
+        }
         Ok(values)
     }
 
@@ -2184,7 +2205,7 @@ mod tests {
     #[test]
     fn parses_encoded_values_per_dex_format_value_types() {
         // cite: art dex_file.h#kDexAnnotationByte, kDexAnnotationValueTypeMask, kDexAnnotationValueArgShift
-        let strings = vec!["hello".to_owned()];
+        let strings = vec![Some("hello".to_owned())];
 
         let (value, next) = read_encoded_value(&[0x04, 0x2a], 0, &strings).expect("int");
         assert_eq!(value, DexStaticValue::Int(42));
@@ -2236,7 +2257,7 @@ mod tests {
     fn decodes_mutf8_encoded_null() {
         let value = decode_mutf8_string(&[0xc0, 0x80], 1).expect("string should decode");
 
-        assert_eq!(value, "\0");
+        assert_eq!(value.as_deref(), Some("\0"));
     }
 
     #[test]
@@ -2244,7 +2265,38 @@ mod tests {
         let value = decode_mutf8_string(&[0xed, 0xa0, 0xbd, 0xed, 0xb8, 0x80], 2)
             .expect("string should decode");
 
-        assert_eq!(value, "😀");
+        assert_eq!(value.as_deref(), Some("😀"));
+    }
+
+    #[test]
+    fn art_dex_verifier_accepts_unpaired_surrogate_and_cache_retains_its_slot() {
+        let string_ids_off = DEX_HEADER_SIZE as usize;
+        let string_data_off = string_ids_off + STRING_ID_SIZE;
+        let mut dex = vec![0; string_data_off];
+        dex.extend_from_slice(&[1, 0xed, 0xa0, 0x80, 0]);
+        dex[0..8].copy_from_slice(b"dex\n035\0");
+        let file_size = dex.len() as u32;
+        write_u32(&mut dex, 32, file_size);
+        write_u32(&mut dex, 36, DEX_HEADER_SIZE);
+        write_u32(&mut dex, 40, DEX_ENDIAN_CONSTANT);
+        write_u32(&mut dex, 56, 1);
+        write_u32(&mut dex, 60, string_ids_off as u32);
+        write_u32(&mut dex, 104, file_size - string_data_off as u32);
+        write_u32(&mut dex, 108, string_data_off as u32);
+        write_u32(&mut dex, string_ids_off, string_data_off as u32);
+
+        let parsed = parse_dex_file("classes.dex", dex.clone()).unwrap();
+        let cache = encode_dex_metadata_cache(&parsed).unwrap();
+        assert!(cache.starts_with(DEX_METADATA_CACHE_MAGIC));
+        let cached = parse_dex_file_with_metadata_cache("classes.dex", dex, &cache).unwrap();
+        for file in [parsed, cached] {
+            assert!(file
+                .string(0)
+                .unwrap_err()
+                .to_string()
+                .contains("unpaired UTF-16 surrogate"));
+        }
+        assert!(decode_mutf8_string(&[0xed, 0xa0], 1).is_err());
     }
 
     #[test]

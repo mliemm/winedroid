@@ -31,8 +31,17 @@ fn slots() -> &'static Slots {
                 0,
             )
         };
-        assert_ne!(region, libc::MAP_FAILED, "unresolved data reservation failed");
-        Slots { base: region as usize, messages: (0..SLOT_COUNT).map(|_| AtomicPtr::new(std::ptr::null_mut())).collect() }
+        assert_ne!(
+            region,
+            libc::MAP_FAILED,
+            "unresolved data reservation failed"
+        );
+        Slots {
+            base: region as usize,
+            messages: (0..SLOT_COUNT)
+                .map(|_| AtomicPtr::new(std::ptr::null_mut()))
+                .collect(),
+        }
     })
 }
 
@@ -52,7 +61,10 @@ pub fn reserve(message: String) -> Option<usize> {
 fn message_at(address: usize) -> Option<&'static str> {
     let slots = SLOTS.get()?;
     let offset = address.checked_sub(slots.base)?;
-    let message = slots.messages.get(offset / SLOT_BYTES)?.load(Ordering::Acquire);
+    let message = slots
+        .messages
+        .get(offset / SLOT_BYTES)?
+        .load(Ordering::Acquire);
     unsafe { message.as_ref() }.map(String::as_str)
 }
 
@@ -86,7 +98,8 @@ unsafe fn chain(signal: libc::c_int, info: *mut libc::siginfo_t, context: *mut l
         return restore_default(signal);
     }
     if previous.sa_flags & libc::SA_SIGINFO != 0 {
-        let handler: extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void) = std::mem::transmute(previous.sa_sigaction);
+        let handler: extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void) =
+            std::mem::transmute(previous.sa_sigaction);
         handler(signal, info, context);
     } else {
         let handler: extern "C" fn(libc::c_int) = std::mem::transmute(previous.sa_sigaction);
@@ -94,7 +107,11 @@ unsafe fn chain(signal: libc::c_int, info: *mut libc::siginfo_t, context: *mut l
     }
 }
 
-extern "C" fn on_fault(signal: libc::c_int, info: *mut libc::siginfo_t, context: *mut libc::c_void) {
+extern "C" fn on_fault(
+    signal: libc::c_int,
+    info: *mut libc::siginfo_t,
+    context: *mut libc::c_void,
+) {
     let address = unsafe { (*info).si_addr() } as usize;
     if let Some(message) = message_at(address) {
         host_log::line(message);
@@ -106,7 +123,8 @@ extern "C" fn on_fault(signal: libc::c_int, info: *mut libc::siginfo_t, context:
 fn handler_installed(signal: libc::c_int) -> bool {
     let mut current: libc::sigaction = unsafe { std::mem::zeroed() };
     unsafe { libc::sigaction(signal, std::ptr::null(), &mut current) };
-    current.sa_sigaction == on_fault as *const () as usize && current.sa_flags & libc::SA_SIGINFO != 0
+    current.sa_sigaction == on_fault as *const () as usize
+        && current.sa_flags & libc::SA_SIGINFO != 0
 }
 
 pub fn install() {
@@ -120,7 +138,10 @@ pub fn install() {
         unsafe { libc::sigemptyset(&mut action.sa_mask) };
         let mut previous: Box<libc::sigaction> = Box::new(unsafe { std::mem::zeroed() });
         let status = unsafe { libc::sigaction(signal, &action, &mut *previous) };
-        assert_eq!(status, 0, "installing the unresolved data fault handler failed");
+        assert_eq!(
+            status, 0,
+            "installing the unresolved data fault handler failed"
+        );
         previous_of(signal).store(Box::into_raw(previous), Ordering::Release);
     }
 }
@@ -130,7 +151,11 @@ struct AlternateStack(Option<Box<[u8]>>);
 impl Drop for AlternateStack {
     fn drop(&mut self) {
         if self.0.is_some() {
-            let disable = libc::stack_t { ss_sp: std::ptr::null_mut(), ss_size: 0, ss_flags: libc::SS_DISABLE };
+            let disable = libc::stack_t {
+                ss_sp: std::ptr::null_mut(),
+                ss_size: 0,
+                ss_flags: libc::SS_DISABLE,
+            };
             unsafe { libc::sigaltstack(&disable, std::ptr::null_mut()) };
         }
     }
@@ -148,7 +173,11 @@ pub fn ensure_alternate_stack() {
     }
     ALTERNATE.with(|alternate| {
         let mut stack = vec![0u8; 64 * 1024].into_boxed_slice();
-        let installed = libc::stack_t { ss_sp: stack.as_mut_ptr() as *mut libc::c_void, ss_size: stack.len(), ss_flags: 0 };
+        let installed = libc::stack_t {
+            ss_sp: stack.as_mut_ptr() as *mut libc::c_void,
+            ss_size: stack.len(),
+            ss_flags: 0,
+        };
         if unsafe { libc::sigaltstack(&installed, std::ptr::null_mut()) } == 0 {
             alternate.borrow_mut().0 = Some(stack);
         }

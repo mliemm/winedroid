@@ -1,4 +1,5 @@
 use super::super::*;
+use super::java_locale::{locale_accessor_value, LocaleAccessor};
 
 impl DexProgram {
     pub(super) fn invoke_java_box_locale_builtin(
@@ -385,6 +386,17 @@ impl DexProgram {
             )));
         }
 
+        for descriptor in [
+            "(Ljava/lang/String;Ljava/lang/String;)V",
+            "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
+        ] {
+            if method.matches_builtin_signature("Ljava/util/Locale;", "<init>", descriptor) {
+                let invocation = invocation?;
+
+                return self.initialize_locale(invocation);
+            }
+        }
+
         if method.matches_builtin_signature(
             "Ljava/util/Locale;",
             "forLanguageTag",
@@ -396,14 +408,18 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(value));
         }
 
-        if method.matches_builtin_signature(
-            "Ljava/util/Locale;",
-            "getCountry",
-            "()Ljava/lang/String;",
-        ) {
-            return Some(DexExecutionResult::Value(DexValue::String(
-                std::rc::Rc::from("US"),
-            )));
+        for (name, accessor) in [
+            ("getLanguage", LocaleAccessor::Language),
+            ("getCountry", LocaleAccessor::Country),
+            ("getVariant", LocaleAccessor::Variant),
+        ] {
+            if method.matches_builtin_signature("Ljava/util/Locale;", name, "()Ljava/lang/String;")
+            {
+                let invocation = invocation?;
+                let value = locale_accessor_value(self, accessor, invocation)?;
+
+                return Some(DexExecutionResult::Value(value));
+            }
         }
 
         if method.matches_builtin_signature(

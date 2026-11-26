@@ -1,7 +1,7 @@
+use super::super::bridge::CallContext;
 use super::abi_types::{EINVAL, ERANGE};
 use super::export::in_libc;
 use super::guest_mem::{read_value, write_value};
-use super::super::bridge::CallContext;
 
 pub trait Unit: Copy {
     const SIZE: usize;
@@ -44,7 +44,9 @@ fn is_digit(unit: i64) -> bool {
 }
 
 fn is_hex_digit(unit: i64) -> bool {
-    is_digit(unit) || (i64::from(b'a')..=i64::from(b'f')).contains(&unit) || (i64::from(b'A')..=i64::from(b'F')).contains(&unit)
+    is_digit(unit)
+        || (i64::from(b'a')..=i64::from(b'f')).contains(&unit)
+        || (i64::from(b'A')..=i64::from(b'F')).contains(&unit)
 }
 
 fn digit_value(unit: i64) -> Option<u64> {
@@ -85,7 +87,9 @@ fn read_prefix<U: Unit>(start: usize, base: i32) -> Prefix {
         let marker = U::load(cursor);
         let is_hex = marker == i64::from(b'x') || marker == i64::from(b'X');
         let is_binary = marker == i64::from(b'b') || marker == i64::from(b'B');
-        if (is_hex && (base == 0 || base == 16) && is_hex_digit(U::load(cursor + U::SIZE))) || (is_binary && (base == 0 || base == 2) && is_digit(U::load(cursor + U::SIZE))) {
+        if (is_hex && (base == 0 || base == 16) && is_hex_digit(U::load(cursor + U::SIZE)))
+            || (is_binary && (base == 0 || base == 2) && is_digit(U::load(cursor + U::SIZE)))
+        {
             unit = U::load(cursor + U::SIZE);
             cursor += 2 * U::SIZE;
             base = if is_hex { 16 } else { 2 };
@@ -94,7 +98,12 @@ fn read_prefix<U: Unit>(start: usize, base: i32) -> Prefix {
     if base == 0 {
         base = if unit == i64::from(b'0') { 8 } else { 10 };
     }
-    Prefix { negative, base, first: unit, cursor }
+    Prefix {
+        negative,
+        base,
+        first: unit,
+        cursor,
+    }
 }
 
 fn invalid_base(base: i32) -> bool {
@@ -104,7 +113,11 @@ fn invalid_base(base: i32) -> bool {
 pub fn parse_signed<U: Unit>(start: usize, base: i32) -> Parsed {
     // cite: bionic strtol.cpp#StrToI
     if invalid_base(base) {
-        return Parsed { value: 0, end: start, errno: Some(EINVAL) };
+        return Parsed {
+            value: 0,
+            end: start,
+            errno: Some(EINVAL),
+        };
     }
     let prefix = read_prefix::<U>(start, base);
     let base = prefix.base as i64;
@@ -113,7 +126,9 @@ pub fn parse_signed<U: Unit>(start: usize, base: i32) -> Parsed {
     let (mut unit, mut cursor) = (prefix.first, prefix.cursor);
     let (mut any, mut accumulator, mut errno) = (0i32, 0i64, None);
     loop {
-        let Some(digit) = digit_value(unit).filter(|digit| (*digit as i64) < base) else { break };
+        let Some(digit) = digit_value(unit).filter(|digit| (*digit as i64) < base) else {
+            break;
+        };
         let digit = digit as i64;
         if any >= 0 {
             if accumulator < cutoff || (accumulator == cutoff && digit > cutlim) {
@@ -137,13 +152,21 @@ pub fn parse_signed<U: Unit>(start: usize, base: i32) -> Parsed {
             accumulator = -accumulator;
         }
     }
-    Parsed { value: accumulator as u64, end, errno }
+    Parsed {
+        value: accumulator as u64,
+        end,
+        errno,
+    }
 }
 
 pub fn parse_unsigned<U: Unit>(start: usize, base: i32) -> Parsed {
     // cite: bionic strtol.cpp#StrToU
     if invalid_base(base) {
-        return Parsed { value: 0, end: start, errno: Some(EINVAL) };
+        return Parsed {
+            value: 0,
+            end: start,
+            errno: Some(EINVAL),
+        };
     }
     let prefix = read_prefix::<U>(start, base);
     let base = prefix.base;
@@ -152,7 +175,9 @@ pub fn parse_unsigned<U: Unit>(start: usize, base: i32) -> Parsed {
     let (mut unit, mut cursor) = (prefix.first, prefix.cursor);
     let (mut any, mut accumulator, mut errno) = (0i32, 0u64, None);
     loop {
-        let Some(digit) = digit_value(unit).filter(|digit| *digit < base) else { break };
+        let Some(digit) = digit_value(unit).filter(|digit| *digit < base) else {
+            break;
+        };
         if any >= 0 {
             if accumulator > cutoff || (accumulator == cutoff && digit > cutlim) {
                 any = -1;
@@ -169,7 +194,11 @@ pub fn parse_unsigned<U: Unit>(start: usize, base: i32) -> Parsed {
     if prefix.negative && any > 0 {
         accumulator = accumulator.wrapping_neg();
     }
-    Parsed { value: accumulator, end: if any != 0 { cursor - U::SIZE } else { start }, errno }
+    Parsed {
+        value: accumulator,
+        end: if any != 0 { cursor - U::SIZE } else { start },
+        errno,
+    }
 }
 
 fn finish(context: &mut CallContext, parsed: Parsed) {
@@ -203,7 +232,13 @@ fn register_unsigned<U: Unit>(names: &[&str]) {
 
 pub fn register() {
     register_signed::<u8>(&["strtol", "strtoll", "strtoimax", "strtol_l", "strtoll_l"]);
-    register_unsigned::<u8>(&["strtoul", "strtoull", "strtoumax", "strtoul_l", "strtoull_l"]);
+    register_unsigned::<u8>(&[
+        "strtoul",
+        "strtoull",
+        "strtoumax",
+        "strtoul_l",
+        "strtoull_l",
+    ]);
     register_signed::<u32>(&["wcstol", "wcstoll", "wcstoimax"]);
     register_unsigned::<u32>(&["wcstoul", "wcstoull", "wcstoumax"]);
     for name in ["atoi", "atol", "atoll"] {

@@ -26,7 +26,11 @@ static EPOCH: AtomicU64 = AtomicU64::new(0);
 pub fn register(segment: TlsSegment, init_address: usize) -> u32 {
     // cite: bionic linker_tls.cpp#register_soinfo_tls
     let mut registry = REGISTRY.lock().expect("tls registry");
-    let module = Some(TlsModule { segment, init_address, generation: GENERATION.fetch_add(1, Ordering::SeqCst) + 1 });
+    let module = Some(TlsModule {
+        segment,
+        init_address,
+        generation: GENERATION.fetch_add(1, Ordering::SeqCst) + 1,
+    });
     match registry.iter().position(Option::is_none) {
         Some(index) => {
             registry[index] = module;
@@ -42,7 +46,10 @@ pub fn register(segment: TlsSegment, init_address: usize) -> u32 {
 pub fn unregister(module_id: u32) {
     // cite: bionic linker_tls.cpp#unregister_soinfo_tls
     let mut registry = REGISTRY.lock().expect("tls registry");
-    if let Some(slot) = module_id.checked_sub(1).and_then(|index| registry.get_mut(index as usize)) {
+    if let Some(slot) = module_id
+        .checked_sub(1)
+        .and_then(|index| registry.get_mut(index as usize))
+    {
         *slot = None;
     }
     EPOCH.fetch_add(1, Ordering::SeqCst);
@@ -50,7 +57,11 @@ pub fn unregister(module_id: u32) {
 
 pub fn generation_of(module_id: u32) -> Option<u64> {
     let index = module_id.checked_sub(1)? as usize;
-    REGISTRY.lock().expect("tls registry").get(index).and_then(|slot| slot.as_ref().map(|module| module.generation))
+    REGISTRY
+        .lock()
+        .expect("tls registry")
+        .get(index)
+        .and_then(|slot| slot.as_ref().map(|module| module.generation))
 }
 
 struct Block {
@@ -72,8 +83,14 @@ impl Blocks {
         }
         let registry = REGISTRY.lock().expect("tls registry");
         for (index, slot) in self.entries.iter_mut().enumerate() {
-            let live = registry.get(index).and_then(|module| module.as_ref()).map(|module| module.generation);
-            if slot.as_ref().is_some_and(|block| Some(block.generation) != live) {
+            let live = registry
+                .get(index)
+                .and_then(|module| module.as_ref())
+                .map(|module| module.generation);
+            if slot
+                .as_ref()
+                .is_some_and(|block| Some(block.generation) != live)
+            {
                 *slot = None;
             }
         }
@@ -96,7 +113,10 @@ pub fn existing_block_address(module_id: u32) -> Option<usize> {
         .try_with(|blocks| {
             let mut blocks = blocks.borrow_mut();
             blocks.drop_stale();
-            blocks.entries.get(module_id.checked_sub(1)? as usize).and_then(|block| block.as_ref().map(|block| block.pointer as usize))
+            blocks
+                .entries
+                .get(module_id.checked_sub(1)? as usize)
+                .and_then(|block| block.as_ref().map(|block| block.pointer as usize))
         })
         .ok()
         .flatten()
@@ -122,14 +142,21 @@ pub fn block_address_checked(module_id: u32) -> Result<usize, String> {
     assert_eq!(status, 0, "posix_memalign for TLS block failed");
     unsafe {
         std::ptr::write_bytes(pointer as *mut u8, 0, size);
-        std::ptr::copy_nonoverlapping(module.init_address as *const u8, pointer as *mut u8, module.segment.init_size as usize);
+        std::ptr::copy_nonoverlapping(
+            module.init_address as *const u8,
+            pointer as *mut u8,
+            module.segment.init_size as usize,
+        );
     }
     BLOCKS.with(|blocks| {
         let mut blocks = blocks.borrow_mut();
         if blocks.entries.len() < module_id as usize {
             blocks.entries.resize_with(module_id as usize, || None);
         }
-        blocks.entries[module_id as usize - 1] = Some(Block { pointer: pointer as *mut u8, generation: module.generation });
+        blocks.entries[module_id as usize - 1] = Some(Block {
+            pointer: pointer as *mut u8,
+            generation: module.generation,
+        });
     });
     Ok(pointer as usize)
 }
@@ -147,7 +174,8 @@ pub extern "C" fn __tls_get_addr(index: *const TlsIndex) -> usize {
 
 extern "C" fn tls_block_address(arg: *const TlsDescArg) -> usize {
     let arg = unsafe { &*arg };
-    std::panic::catch_unwind(|| block_address(arg.module_id as u32) + arg.offset as usize).unwrap_or_else(|_| std::process::abort())
+    std::panic::catch_unwind(|| block_address(arg.module_id as u32) + arg.offset as usize)
+        .unwrap_or_else(|_| std::process::abort())
 }
 
 std::arch::global_asm!(
@@ -253,7 +281,12 @@ mod tests {
 
     #[test]
     fn bionic_register_tls_module_reuses_the_lowest_free_module_id() {
-        let segment = TlsSegment { size: 8, alignment: 8, init_vaddr: 0, init_size: 0 };
+        let segment = TlsSegment {
+            size: 8,
+            alignment: 8,
+            init_vaddr: 0,
+            init_size: 0,
+        };
         let first = register(segment.clone(), 0);
         let second = register(segment.clone(), 0);
         unregister(first);
@@ -265,7 +298,12 @@ mod tests {
     #[test]
     fn bionic_unregister_soinfo_tls_drops_the_blocks_other_modules_ids_would_reuse() {
         static TEMPLATE: [u8; 4] = [7, 7, 7, 7];
-        let segment = TlsSegment { size: 4, alignment: 4, init_vaddr: 0, init_size: 4 };
+        let segment = TlsSegment {
+            size: 4,
+            alignment: 4,
+            init_vaddr: 0,
+            init_size: 4,
+        };
         let module = register(segment, TEMPLATE.as_ptr() as usize);
         let block = block_address(module);
         assert_eq!(unsafe { *(block as *const u8) }, 7);

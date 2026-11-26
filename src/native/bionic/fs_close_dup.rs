@@ -43,7 +43,9 @@ fn close_range(first: u32, last: u32, flags: u32) -> i64 {
 }
 
 pub fn dup_fd(old: i32) -> i64 {
-    let Some(entry) = fd_table::get(old) else { return error(EBADF) };
+    let Some(entry) = fd_table::get(old) else {
+        return error(EBADF);
+    };
     let fd = unsafe { libc::dup(old) };
     if fd < 0 {
         return from_host();
@@ -57,14 +59,19 @@ fn replace_target(new: i32) -> Result<(), i64> {
         return Ok(());
     }
     if unsafe { libc::fcntl(new, libc::F_GETFD) } >= 0 {
-        missing("dup2", &format!("descriptor {new} belongs to the host runtime"));
+        missing(
+            "dup2",
+            &format!("descriptor {new} belongs to the host runtime"),
+        );
         return Err(error(EBADF));
     }
     Ok(())
 }
 
 fn dup_to(old: i32, new: i32, cloexec: bool) -> i64 {
-    let Some(entry) = fd_table::get(old) else { return error(EBADF) };
+    let Some(entry) = fd_table::get(old) else {
+        return error(EBADF);
+    };
     if let Err(failure) = replace_target(new) {
         return failure;
     }
@@ -103,8 +110,22 @@ pub fn pipe_with_flags(pointer: usize, flags: i32) -> i64 {
         }
     }
     let inherited = flags & (open::NONBLOCK | open::CLOEXEC);
-    fd_table::adopt(ends[0], FdEntry::new(FdKind::Pipe, "pipe", open::RDONLY | (inherited & open::NONBLOCK)));
-    fd_table::adopt(ends[1], FdEntry::new(FdKind::Pipe, "pipe", open::WRONLY | (inherited & open::NONBLOCK)));
+    fd_table::adopt(
+        ends[0],
+        FdEntry::new(
+            FdKind::Pipe,
+            "pipe",
+            open::RDONLY | (inherited & open::NONBLOCK),
+        ),
+    );
+    fd_table::adopt(
+        ends[1],
+        FdEntry::new(
+            FdKind::Pipe,
+            "pipe",
+            open::WRONLY | (inherited & open::NONBLOCK),
+        ),
+    );
     write_value::<i32>(pointer, ends[0]);
     write_value::<i32>(pointer + 4, ends[1]);
     0
@@ -116,15 +137,28 @@ fn handle(context: &mut CallContext, work: impl FnOnce(&CallContext) -> i64) {
 }
 
 pub fn register() {
-    in_libc("close", |context| handle(context, |context| close_fd(context.arg_i32(0))));
-    in_libc("close_range", |context| handle(context, |context| close_range(context.arg_u32(0), context.arg_u32(1), context.arg_u32(2))));
-    in_libc("dup", |context| handle(context, |context| dup_fd(context.arg_i32(0))));
+    in_libc("close", |context| {
+        handle(context, |context| close_fd(context.arg_i32(0)))
+    });
+    in_libc("close_range", |context| {
+        handle(context, |context| {
+            close_range(context.arg_u32(0), context.arg_u32(1), context.arg_u32(2))
+        })
+    });
+    in_libc("dup", |context| {
+        handle(context, |context| dup_fd(context.arg_i32(0)))
+    });
     in_libc("dup2", |context| {
         handle(context, |context| {
             // cite: bionic dup.cpp#dup2
             let (old, new) = (context.arg_i32(0), context.arg_i32(1));
             if old == new {
-                return if unsafe { libc::fcntl(old, libc::F_GETFD) } < 0 || !fd_table::contains(old) { error(EBADF) } else { i64::from(new) };
+                return if unsafe { libc::fcntl(old, libc::F_GETFD) } < 0 || !fd_table::contains(old)
+                {
+                    error(EBADF)
+                } else {
+                    i64::from(new)
+                };
             }
             dup_to(old, new, false)
         })
@@ -139,6 +173,12 @@ pub fn register() {
             dup_to(old, new, flags & open::CLOEXEC != 0)
         })
     });
-    in_libc("pipe", |context| handle(context, |context| pipe_with_flags(context.arg_ptr(0), 0)));
-    in_libc("pipe2", |context| handle(context, |context| pipe_with_flags(context.arg_ptr(0), context.arg_i32(1))));
+    in_libc("pipe", |context| {
+        handle(context, |context| pipe_with_flags(context.arg_ptr(0), 0))
+    });
+    in_libc("pipe2", |context| {
+        handle(context, |context| {
+            pipe_with_flags(context.arg_ptr(0), context.arg_i32(1))
+        })
+    });
 }

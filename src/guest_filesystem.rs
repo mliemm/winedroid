@@ -31,7 +31,10 @@ pub struct GuestPathFailure {
 }
 
 fn failure(kind: GuestPathError, message: impl Into<String>) -> GuestPathFailure {
-    GuestPathFailure { kind, error: WinedroidError::new(message) }
+    GuestPathFailure {
+        kind,
+        error: WinedroidError::new(message),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +48,7 @@ pub enum GuestMount {
     CredentialProtected,
     DeviceProtected,
     Shared,
+    AppCode,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +94,9 @@ impl ResolvedGuestPath {
     }
 
     pub fn can_access(&self, write: bool) -> io::Result<bool> {
+        if write && self.mount == GuestMount::AppCode {
+            return Ok(false);
+        }
         self.root.can_access(&self.components, write)
     }
 
@@ -102,30 +109,38 @@ impl ResolvedGuestPath {
     }
 
     pub fn open_truncate(&self) -> io::Result<File> {
+        self.require_writable_mount()?;
         self.root.open_truncate(&self.components)
     }
 
     pub fn open_append(&self) -> io::Result<File> {
+        self.require_writable_mount()?;
         self.root.open_append(&self.components)
     }
 
     pub fn create_new(&self) -> io::Result<File> {
+        self.require_writable_mount()?;
         self.root.create_new(&self.components)
     }
 
     pub fn mkdir(&self) -> io::Result<()> {
+        self.require_writable_mount()?;
         self.root.mkdir(&self.components)
     }
 
     pub fn mkdir_all(&self) -> io::Result<bool> {
+        self.require_writable_mount()?;
         self.root.mkdir_all(&self.components)
     }
 
     pub fn remove(&self) -> io::Result<()> {
+        self.require_writable_mount()?;
         self.root.remove(&self.components)
     }
 
     pub fn rename_to(&self, destination: &ResolvedGuestPath) -> io::Result<()> {
+        self.require_writable_mount()?;
+        destination.require_writable_mount()?;
         self.root
             .rename(&self.components, &destination.root, &destination.components)
     }
@@ -135,6 +150,7 @@ impl ResolvedGuestPath {
     }
 
     pub fn atomic_replace(&self, bytes: &[u8]) -> io::Result<()> {
+        self.require_writable_mount()?;
         self.root.atomic_replace(&self.components, bytes)
     }
 
@@ -143,7 +159,18 @@ impl ResolvedGuestPath {
     }
 
     pub fn directory_capability_and_leaf(&self) -> io::Result<(Directory, CString)> {
+        self.require_writable_mount()?;
         self.root.parent_directory_and_leaf(&self.components)
+    }
+
+    fn require_writable_mount(&self) -> io::Result<()> {
+        if self.mount == GuestMount::AppCode {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "installed app code is read-only",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -161,6 +188,9 @@ pub struct GuestFilesystem {
     #[cfg(any(test, target_os = "emscripten"))]
     _shared_host_root: PathBuf,
     shared_root: Directory,
+    app_root: Directory,
+    #[cfg(any(test, target_os = "emscripten"))]
+    app_host_root: PathBuf,
 }
 
 impl GuestFilesystem {
@@ -247,6 +277,8 @@ impl GuestFilesystem {
             device_protected_guest_root: format!(
                 "{GUEST_DEVICE_PROTECTED_ROOT_PREFIX}/{package_name}"
             ),
+            #[cfg(any(test, target_os = "emscripten"))]
+            app_host_root: canonical_prefix.join("apps").join(&package_name),
             package_name,
             #[cfg(any(test, target_os = "emscripten"))]
             _credential_protected_host_root: credential_protected_host_root,
@@ -257,6 +289,7 @@ impl GuestFilesystem {
             #[cfg(any(test, target_os = "emscripten"))]
             _shared_host_root: shared_host_root,
             shared_root,
+            app_root,
         })
     }
 
@@ -278,7 +311,8 @@ impl GuestFilesystem {
         access: ExternalStorageAccess,
         external_storage_policy: &ExternalStoragePolicy,
     ) -> Result<ResolvedGuestPath> {
-        self.resolve_typed(guest_path, access, external_storage_policy).map_err(|failure| failure.error)
+        self.resolve_typed(guest_path, access, external_storage_policy)
+            .map_err(|failure| failure.error)
     }
 
     pub fn resolve_typed(
@@ -288,6 +322,25 @@ impl GuestFilesystem {
         external_storage_policy: &ExternalStoragePolicy,
     ) -> std::result::Result<ResolvedGuestPath, GuestPathFailure> {
         let normalized = mount_match_path(guest_path)?;
+        if let Some(relative) = self.app_code_relative_path(&normalized) {
+            if access == ExternalStorageAccess::Write {
+                return Err(failure(
+                    GuestPathError::OutsideMounts,
+                    "installed app code is read-only",
+                ));
+            }
+            let mut path = self.resolve_under(
+                GuestMount::AppCode,
+                &self.app_root,
+                &relative,
+                guest_path,
+                false,
+                access,
+                external_storage_policy,
+            )?;
+            path.mutation_protected = true;
+            return Ok(path);
+        }
 
         if let Some(relative) =
             strip_path_prefix(&normalized, &self.credential_protected_guest_root)
@@ -332,8 +385,22 @@ impl GuestFilesystem {
 
         Err(failure(
             GuestPathError::OutsideMounts,
-            format!("guest path `{guest_path}` is outside the app-private and shared-storage mounts"),
+            format!(
+                "guest path `{guest_path}` is outside the app-private and shared-storage mounts"
+            ),
         ))
+    }
+
+    fn app_code_relative_path(&self, path: &str) -> Option<String> {
+        // cite: frameworks-base ApplicationInfo.java#sourceDir, nativeLibraryDir
+        if path == crate::guest_app_paths::base_apk(&self.package_name) {
+            return Some("source.apk".to_owned());
+        }
+        if path == crate::guest_app_paths::native_library_dir(&self.package_name) {
+            return Some("native/arm64-v8a".to_owned());
+        }
+        crate::guest_app_paths::native_library_name(&self.package_name, path)
+            .map(|name| format!("native/arm64-v8a/{name}"))
     }
 
     fn resolve_under(
@@ -413,6 +480,7 @@ impl GuestFilesystem {
             GuestMount::CredentialProtected => &self._credential_protected_host_root,
             GuestMount::DeviceProtected => &self._device_protected_host_root,
             GuestMount::Shared => &self._shared_host_root,
+            GuestMount::AppCode => &self.app_host_root,
         }
     }
 
@@ -528,7 +596,10 @@ pub fn canonical_guest_path(path: &str) -> Result<String> {
 
 fn mount_match_path(path: &str) -> std::result::Result<String, GuestPathFailure> {
     if path.contains('\0') {
-        return Err(failure(GuestPathError::NulByte, "guest path contains a NUL character"));
+        return Err(failure(
+            GuestPathError::NulByte,
+            "guest path contains a NUL character",
+        ));
     }
 
     let absolute = absolute_guest_path(path);
@@ -684,6 +755,42 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
+
+    #[test]
+    fn application_info_code_paths_allow_reads_and_refuse_writes() {
+        // cite: frameworks-base ApplicationInfo.java#sourceDir, nativeLibraryDir
+        let fixture = Fixture::new("code");
+        let app = fixture.private.parent().unwrap();
+        fs::write(app.join("source.apk"), b"archive").unwrap();
+        fs::create_dir_all(app.join("native/arm64-v8a")).unwrap();
+        fs::write(app.join("native/arm64-v8a/libtest.so"), b"library").unwrap();
+        let files = fixture.filesystem();
+        let policy = restricted_policy();
+        let source = crate::guest_app_paths::base_apk("com.example");
+        let libraries = crate::guest_app_paths::native_library_dir("com.example");
+        for (path, bytes) in [
+            (source, b"archive".as_slice()),
+            (format!("{libraries}/libtest.so"), b"library".as_slice()),
+        ] {
+            let resolved = resolve_read(&files, &path, &policy).unwrap();
+            assert_eq!(resolved.mount(), GuestMount::AppCode);
+            assert_eq!(resolved.read().unwrap(), bytes);
+            assert_eq!(
+                resolved.open_truncate().unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            assert!(files
+                .resolve(&path, ExternalStorageAccess::Write, &policy)
+                .is_err());
+        }
+        assert!(resolve_read(&files, &format!("{libraries}/../data"), &policy).is_err());
+        assert!(resolve_read(
+            &files,
+            &crate::guest_app_paths::base_apk("com.other"),
+            &policy
+        )
+        .is_err());
+    }
 
     #[test]
     fn context_impl_private_path_maps_only_the_current_package() {

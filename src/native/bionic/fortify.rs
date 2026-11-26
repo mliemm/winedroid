@@ -1,8 +1,8 @@
+use super::super::bridge::CallContext;
 use super::export::in_libc;
 use super::fatal::fortify_fatal;
 use super::fortify_check::{check_access, check_count, check_fd_set};
 use super::guest_mem::{cstr_bytes, read_value, write_value};
-use super::super::bridge::CallContext;
 
 fn byte(address: usize) -> u8 {
     read_value::<u8>(address)
@@ -67,7 +67,9 @@ fn strcat_chk(destination: usize, source: usize, capacity: u64) -> usize {
         }
         room -= 1;
         if room == 0 {
-            fortify_fatal(&format!("strcat: prevented write past end of {room}-byte buffer"));
+            fortify_fatal(&format!(
+                "strcat: prevented write past end of {room}-byte buffer"
+            ));
         }
     }
 }
@@ -96,13 +98,22 @@ fn strncat_chk(destination: usize, source: usize, mut limit: u64, capacity: u64)
     destination
 }
 
-fn bounded_copy(function: &str, destination: usize, source: usize, mut count: u64, destination_len: u64, source_len: u64) -> usize {
+fn bounded_copy(
+    function: &str,
+    destination: usize,
+    source: usize,
+    mut count: u64,
+    destination_len: u64,
+    source_len: u64,
+) -> usize {
     // cite: bionic fortify.cpp#__strncpy_chk2, __stpncpy_chk2
     check_access(function, "write into", count, destination_len);
     let (mut to, mut from) = (destination, source);
     while count != 0 {
         if (from - source) as u64 >= source_len {
-            fortify_fatal(&format!("{function}: detected read past end of {source_len}-byte buffer"));
+            fortify_fatal(&format!(
+                "{function}: detected read past end of {source_len}-byte buffer"
+            ));
         }
         let value = byte(from);
         write_value::<u8>(to, value);
@@ -127,14 +138,26 @@ fn register_copies() {
         let (count, capacity) = (context.arg_u64(2), context.arg_u64(3));
         check_count("memcpy", "count", count);
         check_access("memcpy", "write into", count, capacity);
-        unsafe { libc::memmove(context.arg_ptr(0) as *mut _, context.arg_ptr(1) as *const _, count as usize) };
+        unsafe {
+            libc::memmove(
+                context.arg_ptr(0) as *mut _,
+                context.arg_ptr(1) as *const _,
+                count as usize,
+            )
+        };
         context.ret_ptr(context.arg_ptr(0));
     });
     in_libc("__memmove_chk", |context| {
         // cite: bionic fortify.cpp#__memmove_chk
         let (count, capacity) = (context.arg_u64(2), context.arg_u64(3));
         check_access("memmove", "write into", count, capacity);
-        unsafe { libc::memmove(context.arg_ptr(0) as *mut _, context.arg_ptr(1) as *const _, count as usize) };
+        unsafe {
+            libc::memmove(
+                context.arg_ptr(0) as *mut _,
+                context.arg_ptr(1) as *const _,
+                count as usize,
+            )
+        };
         context.ret_ptr(context.arg_ptr(0));
     });
     in_libc("__mempcpy_chk", |context| {
@@ -142,7 +165,13 @@ fn register_copies() {
         let (count, capacity) = (context.arg_u64(2), context.arg_u64(3));
         check_count("mempcpy", "count", count);
         check_access("mempcpy", "write into", count, capacity);
-        unsafe { libc::memmove(context.arg_ptr(0) as *mut _, context.arg_ptr(1) as *const _, count as usize) };
+        unsafe {
+            libc::memmove(
+                context.arg_ptr(0) as *mut _,
+                context.arg_ptr(1) as *const _,
+                count as usize,
+            )
+        };
         context.ret_ptr(context.arg_ptr(0) + count as usize);
     });
     in_libc("__memset_chk", |context| {
@@ -150,68 +179,180 @@ fn register_copies() {
         let (count, capacity) = (context.arg_u64(2), context.arg_u64(3));
         check_count("memset", "count", count);
         check_access("memset", "write into", count, capacity);
-        unsafe { libc::memset(context.arg_ptr(0) as *mut _, context.arg_i32(1), count as usize) };
+        unsafe {
+            libc::memset(
+                context.arg_ptr(0) as *mut _,
+                context.arg_i32(1),
+                count as usize,
+            )
+        };
         context.ret_ptr(context.arg_ptr(0));
     });
     in_libc("__memchr_chk", |context| {
         // cite: bionic fortify.cpp#__memchr_chk
-        check_access("memchr", "read from", context.arg_u64(2), context.arg_u64(3));
-        let found = unsafe { libc::memchr(context.arg_ptr(0) as *const _, context.arg_i32(1), context.arg_u64(2) as usize) };
+        check_access(
+            "memchr",
+            "read from",
+            context.arg_u64(2),
+            context.arg_u64(3),
+        );
+        let found = unsafe {
+            libc::memchr(
+                context.arg_ptr(0) as *const _,
+                context.arg_i32(1),
+                context.arg_u64(2) as usize,
+            )
+        };
         context.ret_ptr(found as usize);
     });
     in_libc("__strcpy_chk", |context| {
         // cite: bionic fortify.cpp#__strcpy_chk
         let needed = cstr_bytes(context.arg_ptr(1)).len() as u64 + 1;
         check_access("strcpy", "write into", needed, context.arg_u64(2));
-        unsafe { libc::memmove(context.arg_ptr(0) as *mut _, context.arg_ptr(1) as *const _, needed as usize) };
+        unsafe {
+            libc::memmove(
+                context.arg_ptr(0) as *mut _,
+                context.arg_ptr(1) as *const _,
+                needed as usize,
+            )
+        };
         context.ret_ptr(context.arg_ptr(0));
     });
     in_libc("__stpcpy_chk", |context| {
         // cite: bionic fortify.cpp#__stpcpy_chk
         let needed = cstr_bytes(context.arg_ptr(1)).len() as u64 + 1;
         check_access("stpcpy", "write into", needed, context.arg_u64(2));
-        unsafe { libc::memmove(context.arg_ptr(0) as *mut _, context.arg_ptr(1) as *const _, needed as usize) };
+        unsafe {
+            libc::memmove(
+                context.arg_ptr(0) as *mut _,
+                context.arg_ptr(1) as *const _,
+                needed as usize,
+            )
+        };
         context.ret_ptr(context.arg_ptr(0) + needed as usize - 1);
     });
-    in_libc("__strcat_chk", |context| context.ret_ptr(strcat_chk(context.arg_ptr(0), context.arg_ptr(1), context.arg_u64(2))));
-    in_libc("__strncat_chk", |context| context.ret_ptr(strncat_chk(context.arg_ptr(0), context.arg_ptr(1), context.arg_u64(2), context.arg_u64(3))));
+    in_libc("__strcat_chk", |context| {
+        context.ret_ptr(strcat_chk(
+            context.arg_ptr(0),
+            context.arg_ptr(1),
+            context.arg_u64(2),
+        ))
+    });
+    in_libc("__strncat_chk", |context| {
+        context.ret_ptr(strncat_chk(
+            context.arg_ptr(0),
+            context.arg_ptr(1),
+            context.arg_u64(2),
+            context.arg_u64(3),
+        ))
+    });
     in_libc("__strncpy_chk", |context| {
         // cite: bionic fortify.cpp#__strncpy_chk
-        check_access("strncpy", "write into", context.arg_u64(2), context.arg_u64(3));
-        unsafe { libc::strncpy(context.arg_ptr(0) as *mut _, context.arg_ptr(1) as *const _, context.arg_u64(2) as usize) };
+        check_access(
+            "strncpy",
+            "write into",
+            context.arg_u64(2),
+            context.arg_u64(3),
+        );
+        unsafe {
+            libc::strncpy(
+                context.arg_ptr(0) as *mut _,
+                context.arg_ptr(1) as *const _,
+                context.arg_u64(2) as usize,
+            )
+        };
         context.ret_ptr(context.arg_ptr(0));
     });
     in_libc("__strncpy_chk2", |context| {
-        bounded_copy("strncpy", context.arg_ptr(0), context.arg_ptr(1), context.arg_u64(2), context.arg_u64(3), context.arg_u64(4));
+        bounded_copy(
+            "strncpy",
+            context.arg_ptr(0),
+            context.arg_ptr(1),
+            context.arg_u64(2),
+            context.arg_u64(3),
+            context.arg_u64(4),
+        );
         context.ret_ptr(context.arg_ptr(0));
     });
     in_libc("__stpncpy_chk", |context| {
         // cite: bionic fortify.cpp#__stpncpy_chk
-        check_access("stpncpy", "write into", context.arg_u64(2), context.arg_u64(3));
-        let end = unsafe { libc::stpncpy(context.arg_ptr(0) as *mut _, context.arg_ptr(1) as *const _, context.arg_u64(2) as usize) };
+        check_access(
+            "stpncpy",
+            "write into",
+            context.arg_u64(2),
+            context.arg_u64(3),
+        );
+        let end = unsafe {
+            libc::stpncpy(
+                context.arg_ptr(0) as *mut _,
+                context.arg_ptr(1) as *const _,
+                context.arg_u64(2) as usize,
+            )
+        };
         context.ret_ptr(end as usize);
     });
     in_libc("__stpncpy_chk2", |context| {
-        bounded_copy("stpncpy", context.arg_ptr(0), context.arg_ptr(1), context.arg_u64(2), context.arg_u64(3), context.arg_u64(4));
+        bounded_copy(
+            "stpncpy",
+            context.arg_ptr(0),
+            context.arg_ptr(1),
+            context.arg_u64(2),
+            context.arg_u64(3),
+            context.arg_u64(4),
+        );
         context.ret_ptr(context.arg_ptr(0));
     });
     in_libc("__strlcpy_chk", |context| {
         // cite: bionic fortify.cpp#__strlcpy_chk
-        check_access("strlcpy", "write into", context.arg_u64(2), context.arg_u64(3));
-        let length = unsafe { super::string::host::strlcpy(context.arg_ptr(0) as *mut _, context.arg_ptr(1) as *const _, context.arg_u64(2) as usize) };
+        check_access(
+            "strlcpy",
+            "write into",
+            context.arg_u64(2),
+            context.arg_u64(3),
+        );
+        let length = unsafe {
+            super::string::host::strlcpy(
+                context.arg_ptr(0) as *mut _,
+                context.arg_ptr(1) as *const _,
+                context.arg_u64(2) as usize,
+            )
+        };
         context.ret_u64(length as u64);
     });
     in_libc("__strlcat_chk", |context| {
         // cite: bionic fortify.cpp#__strlcat_chk
-        check_access("strlcat", "write into", context.arg_u64(2), context.arg_u64(3));
-        context.ret_u64(super::string::strlcat(context.arg_ptr(0), context.arg_ptr(1), context.arg_u64(2) as usize) as u64);
+        check_access(
+            "strlcat",
+            "write into",
+            context.arg_u64(2),
+            context.arg_u64(3),
+        );
+        context.ret_u64(super::string::strlcat(
+            context.arg_ptr(0),
+            context.arg_ptr(1),
+            context.arg_u64(2) as usize,
+        ) as u64);
     });
 }
 
 fn register_scans() {
-    in_libc("__strlen_chk", |context| context.ret_u64(strlen_chk(context.arg_ptr(0), context.arg_u64(1)) as u64));
-    in_libc("__strchr_chk", |context| context.ret_ptr(strchr_chk(context.arg_ptr(0), context.arg_i32(1), context.arg_u64(2))));
-    in_libc("__strrchr_chk", |context| context.ret_ptr(strrchr_chk(context.arg_ptr(0), context.arg_i32(1), context.arg_u64(2))));
+    in_libc("__strlen_chk", |context| {
+        context.ret_u64(strlen_chk(context.arg_ptr(0), context.arg_u64(1)) as u64)
+    });
+    in_libc("__strchr_chk", |context| {
+        context.ret_ptr(strchr_chk(
+            context.arg_ptr(0),
+            context.arg_i32(1),
+            context.arg_u64(2),
+        ))
+    });
+    in_libc("__strrchr_chk", |context| {
+        context.ret_ptr(strrchr_chk(
+            context.arg_ptr(0),
+            context.arg_i32(1),
+            context.arg_u64(2),
+        ))
+    });
 }
 
 fn fd_set_bit(context: &CallContext) -> (usize, u64) {
@@ -240,7 +381,13 @@ fn register_descriptors() {
         let (count, capacity) = (context.arg_u64(2), context.arg_u64(3));
         check_count("read", "count", count);
         check_access("read", "write into", count, capacity);
-        let read = unsafe { libc::read(context.arg_i32(0), context.arg_ptr(1) as *mut _, count as usize) };
+        let read = unsafe {
+            libc::read(
+                context.arg_i32(0),
+                context.arg_ptr(1) as *mut _,
+                count as usize,
+            )
+        };
         if read < 0 {
             context.set_errno_from_host(unsafe { *libc::__error() });
         }
@@ -250,7 +397,13 @@ fn register_descriptors() {
         let (count, capacity) = (context.arg_u64(2), context.arg_u64(3));
         check_count("write", "count", count);
         check_access("write", "read from", count, capacity);
-        let written = unsafe { libc::write(context.arg_i32(0), context.arg_ptr(1) as *const _, count as usize) };
+        let written = unsafe {
+            libc::write(
+                context.arg_i32(0),
+                context.arg_ptr(1) as *const _,
+                count as usize,
+            )
+        };
         if written < 0 {
             context.set_errno_from_host(unsafe { *libc::__error() });
         }

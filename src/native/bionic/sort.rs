@@ -13,7 +13,11 @@ impl Sorter {
         if self.failure.is_some() {
             return 0;
         }
-        match CallBuilder::new(self.comparator).ptr(left).ptr(right).invoke() {
+        match CallBuilder::new(self.comparator)
+            .ptr(left)
+            .ptr(right)
+            .invoke()
+        {
             Ok(result) => result.i32(),
             Err(error) => {
                 self.failure = Some(error.to_string());
@@ -159,11 +163,20 @@ impl Sorter {
 }
 
 fn qsort(context: &mut CallContext) {
-    let (base, count, size, comparator) = (context.arg_ptr(0), context.arg_u64(1) as usize, context.arg_u64(2) as usize, context.arg_ptr(3));
+    let (base, count, size, comparator) = (
+        context.arg_ptr(0),
+        context.arg_u64(1) as usize,
+        context.arg_u64(2) as usize,
+        context.arg_ptr(3),
+    );
     if count == 0 || size == 0 {
         return;
     }
-    let mut sorter = Sorter { comparator, size, failure: None };
+    let mut sorter = Sorter {
+        comparator,
+        size,
+        failure: None,
+    };
     sorter.sort(base, count);
     if let Some(message) = sorter.failure {
         context.fail(message);
@@ -172,7 +185,13 @@ fn qsort(context: &mut CallContext) {
 
 fn bsearch(context: &mut CallContext) {
     // cite: bionic bsearch.c#bsearch
-    let (key, mut base, count, size, comparator) = (context.arg_ptr(0), context.arg_ptr(1), context.arg_u64(2) as usize, context.arg_u64(3) as usize, context.arg_ptr(4));
+    let (key, mut base, count, size, comparator) = (
+        context.arg_ptr(0),
+        context.arg_ptr(1),
+        context.arg_u64(2) as usize,
+        context.arg_u64(3) as usize,
+        context.arg_ptr(4),
+    );
     let mut limit = count;
     while limit != 0 {
         let probe = base + (limit >> 1) * size;

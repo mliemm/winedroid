@@ -16,13 +16,28 @@ pub fn init(lock: usize, process_shared: bool) {
 
 pub fn try_lock(lock: usize) -> bool {
     // cite: bionic bionic_lock.h#trylock
-    u32_at(lock).compare_exchange(UNLOCKED, LOCKED_WITHOUT_WAITER, Ordering::Acquire, Ordering::Relaxed).is_ok()
+    u32_at(lock)
+        .compare_exchange(
+            UNLOCKED,
+            LOCKED_WITHOUT_WAITER,
+            Ordering::Acquire,
+            Ordering::Relaxed,
+        )
+        .is_ok()
 }
 
 pub fn lock(lock: usize) {
     // cite: bionic bionic_lock.h#lock
     let state = u32_at(lock);
-    if state.compare_exchange(UNLOCKED, LOCKED_WITHOUT_WAITER, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+    if state
+        .compare_exchange(
+            UNLOCKED,
+            LOCKED_WITHOUT_WAITER,
+            Ordering::Acquire,
+            Ordering::Relaxed,
+        )
+        .is_ok()
+    {
         return;
     }
     while state.swap(LOCKED_WITH_WAITER, Ordering::Acquire) != UNLOCKED {
@@ -41,8 +56,8 @@ pub fn unlock(lock: usize) {
 mod tests {
     use std::sync::Arc;
 
-    use crate::native::test_deadline::bounded_test;
     use super::*;
+    use crate::native::test_deadline::bounded_test;
 
     bounded_test! {
         fn the_lock_serialises_increments_from_several_threads() {

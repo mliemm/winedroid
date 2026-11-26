@@ -241,3 +241,33 @@ fn diagnostic_policy_groups_repeated_abandoned_calls_under_their_actual_cause() 
         .iter()
         .any(|entry| entry.primitive.contains("Ldiagnostic/Causes;")));
 }
+
+// cite: art common_throws.cc#ThrowNullPointerExceptionForMethodAccessImpl
+// cite: art dex_file.cc#AppendPrettyMethod
+#[test]
+fn art_null_receiver_message_names_kind_and_pretty_method_signature() {
+    let program = diagnostic_program("Lcom/example/Target;", &["Ljava/lang/String;"], false);
+    program.caches.borrow_mut().method_ids = vec![vec![Some(Rc::new(DexMethodId {
+        class_descriptor: "Lcom/example/Target;".to_owned(),
+        name: "find".to_owned(),
+        proto: dex::DexProto {
+            shorty: "LI".to_owned(),
+            return_type: "Ljava/lang/String;".to_owned(),
+            parameters: vec!["I".to_owned(), "[Ljava/lang/String;".to_owned()],
+        },
+    }))]];
+    let mut handler = DexRunInvocationHandler {
+        program: &program,
+        current_dex_file_index: 0,
+        current_class_descriptor: None,
+        depth: 0,
+    };
+
+    assert_eq!(
+        handler.null_receiver_message(0, DexInvokeKind::Interface),
+        Some(
+            "Attempt to invoke interface method 'java.lang.String com.example.Target.find(int, java.lang.String[])' on a null object reference"
+                .to_owned()
+        )
+    );
+}

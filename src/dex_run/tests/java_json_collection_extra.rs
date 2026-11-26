@@ -502,3 +502,124 @@ fn libcore_thread_local_default_initial_value_is_null() {
         DexExecutionResult::Int(1)
     );
 }
+
+fn json_object_from_map(
+    program: &DexProgram,
+    entries: &[(&str, DexValue)],
+) -> (DexValue, Option<DexExecutionResult>) {
+    let entries: Vec<(DexValue, DexValue)> = entries
+        .iter()
+        .map(|(key, value)| (DexValue::String(std::rc::Rc::from(*key)), value.clone()))
+        .collect();
+
+    json_object_from_keyed_map(program, &entries)
+}
+
+fn json_object_from_keyed_map(
+    program: &DexProgram,
+    entries: &[(DexValue, DexValue)],
+) -> (DexValue, Option<DexExecutionResult>) {
+    let map = program.allocate_object("Ljava/util/HashMap;".to_owned());
+    let map_constructor = builtin_method("Ljava/util/HashMap;", "<init>", "V", &[]);
+    program.invoke_builtin_method(&map_constructor, Some(&test_invocation(vec![map.clone()])));
+    let put = builtin_method(
+        "Ljava/util/HashMap;",
+        "put",
+        "Ljava/lang/Object;",
+        &["Ljava/lang/Object;", "Ljava/lang/Object;"],
+    );
+    for (key, value) in entries {
+        program.invoke_builtin_method(
+            &put,
+            Some(&test_invocation(vec![
+                map.clone(),
+                key.clone(),
+                value.clone(),
+            ])),
+        );
+    }
+
+    let object = program.allocate_object("Lorg/json/JSONObject;".to_owned());
+    let constructor = builtin_method("Lorg/json/JSONObject;", "<init>", "V", &["Ljava/util/Map;"]);
+    let result = program.invoke_builtin_method(
+        &constructor,
+        Some(&test_invocation(vec![object.clone(), map])),
+    );
+
+    (object, result)
+}
+
+fn json_to_string(program: &DexProgram, object: &DexValue) -> Option<DexExecutionResult> {
+    let to_string = builtin_method(
+        "Lorg/json/JSONObject;",
+        "toString",
+        "Ljava/lang/String;",
+        &[],
+    );
+
+    program.invoke_builtin_method(&to_string, Some(&test_invocation(vec![object.clone()])))
+}
+
+#[test]
+fn libcore_json_object_map_constructor_copies_wrapped_entries() {
+    // cite: libcore JSONObject.java#JSONObject, wrap
+    let program = DexProgram::new(Vec::new());
+    let (object, result) = json_object_from_map(
+        &program,
+        &[
+            ("a", DexValue::String(std::rc::Rc::from("x"))),
+            (
+                "b",
+                DexValue::Reference(std::rc::Rc::from("Ljava/lang/Boolean;:true")),
+            ),
+        ],
+    );
+
+    assert_eq!(result, Some(DexExecutionResult::Void));
+    assert_eq!(
+        json_to_string(&program, &object),
+        Some(DexExecutionResult::Value(DexValue::String(
+            std::rc::Rc::from("{\"a\":\"x\",\"b\":true}")
+        )))
+    );
+}
+
+#[test]
+fn libcore_json_object_map_constructor_null_map_throws_null_pointer_exception() {
+    // cite: libcore JSONObject.java#JSONObject
+    let program = DexProgram::new(Vec::new());
+    let object = program.allocate_object("Lorg/json/JSONObject;".to_owned());
+    let constructor = builtin_method("Lorg/json/JSONObject;", "<init>", "V", &["Ljava/util/Map;"]);
+
+    let Some(DexExecutionResult::Throw(exception)) = program.invoke_builtin_method(
+        &constructor,
+        Some(&test_invocation(vec![object, DexValue::Null])),
+    ) else {
+        panic!("null map should throw");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
+}
+
+#[test]
+fn libcore_json_object_map_constructor_unwrappable_value_is_a_missing_primitive() {
+    // cite: libcore JSONObject.java#wrap
+    let program = DexProgram::new(Vec::new());
+    let (_, result) = json_object_from_map(&program, &[("a", DexValue::Float(1.5))]);
+
+    assert_eq!(result, None);
+}
+
+#[test]
+fn libcore_json_object_map_constructor_null_key_throws_null_pointer_exception() {
+    // cite: libcore JSONObject.java#JSONObject
+    let program = DexProgram::new(Vec::new());
+    let (_, result) = json_object_from_keyed_map(
+        &program,
+        &[(DexValue::Null, DexValue::String(std::rc::Rc::from("x")))],
+    );
+
+    let Some(DexExecutionResult::Throw(exception)) = result else {
+        panic!("null key should throw: {result:?}");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
+}

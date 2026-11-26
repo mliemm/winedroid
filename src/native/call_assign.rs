@@ -31,7 +31,13 @@ impl CallBuilder {
             stack_top: 0,
             padding: 0,
         };
-        Self { frame, next_general: 0, next_vector: 0, stack: Vec::new(), copies: Vec::new() }
+        Self {
+            frame,
+            next_general: 0,
+            next_vector: 0,
+            stack: Vec::new(),
+            copies: Vec::new(),
+        }
     }
 
     fn pad_stack_to_sixteen(&mut self) {
@@ -140,9 +146,12 @@ impl CallBuilder {
             if self.next_vector + count <= VECTOR_REGISTERS {
                 for member in 0..count {
                     let mut register = [0u8; 16];
-                    register[..element].copy_from_slice(&bytes[member * element..(member + 1) * element]);
-                    self.frame.q[self.next_vector + member] =
-                        [u64::from_le_bytes(register[..8].try_into().expect("8 bytes")), u64::from_le_bytes(register[8..].try_into().expect("8 bytes"))];
+                    register[..element]
+                        .copy_from_slice(&bytes[member * element..(member + 1) * element]);
+                    self.frame.q[self.next_vector + member] = [
+                        u64::from_le_bytes(register[..8].try_into().expect("8 bytes")),
+                        u64::from_le_bytes(register[8..].try_into().expect("8 bytes")),
+                    ];
                 }
                 self.next_vector += count;
             } else {
@@ -153,7 +162,13 @@ impl CallBuilder {
         }
         if bytes.len() > COMPOSITE_REGISTER_LIMIT {
             let mut copy = vec![0u128; bytes.len().div_ceil(16)].into_boxed_slice();
-            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), copy.as_mut_ptr() as *mut u8, bytes.len()) };
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    bytes.as_ptr(),
+                    copy.as_mut_ptr() as *mut u8,
+                    bytes.len(),
+                )
+            };
             let pointer = copy.as_ptr() as usize;
             self.copies.push(copy);
             return self.ptr(pointer);

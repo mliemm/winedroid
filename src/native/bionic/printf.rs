@@ -64,7 +64,9 @@ impl Cursor<'_> {
     fn number(&mut self) -> usize {
         let mut value = 0usize;
         while let Some(digit) = self.peek().filter(u8::is_ascii_digit) {
-            value = value.saturating_mul(10).saturating_add(usize::from(digit - b'0'));
+            value = value
+                .saturating_mul(10)
+                .saturating_add(usize::from(digit - b'0'));
             self.index += 1;
         }
         value
@@ -91,7 +93,13 @@ fn parse_length(cursor: &mut Cursor) -> Length {
     let mut length = Length::Int;
     loop {
         match cursor.peek() {
-            Some(b'h') => length = if length == Length::Short { Length::Char } else { Length::Short },
+            Some(b'h') => {
+                length = if length == Length::Short {
+                    Length::Char
+                } else {
+                    Length::Short
+                }
+            }
             Some(b'l' | b'j' | b'z' | b't' | b'q') => length = Length::Long,
             Some(b'L') => length = Length::Double,
             Some(b'w') => {
@@ -137,7 +145,12 @@ fn parse_spec(cursor: &mut Cursor, args: &mut GuestVaList) -> Result<Spec, Strin
             precision = Some(cursor.number());
         }
     }
-    Ok(Spec { flags, width, precision, length: parse_length(cursor) })
+    Ok(Spec {
+        flags,
+        width,
+        precision,
+        length: parse_length(cursor),
+    })
 }
 
 fn pad(out: &mut Vec<u8>, count: usize, byte: u8) {
@@ -163,7 +176,11 @@ fn finish(out: &mut Vec<u8>, spec: &Spec, prefix: &[u8], digits: &[u8], zero_pad
 }
 
 fn digits_of(mut value: u64, base: u64, upper: bool) -> Vec<u8> {
-    let table: &[u8; 16] = if upper { b"0123456789ABCDEF" } else { b"0123456789abcdef" };
+    let table: &[u8; 16] = if upper {
+        b"0123456789ABCDEF"
+    } else {
+        b"0123456789abcdef"
+    };
     let mut digits = Vec::new();
     loop {
         digits.push(table[(value % base) as usize]);
@@ -176,9 +193,22 @@ fn digits_of(mut value: u64, base: u64, upper: bool) -> Vec<u8> {
     digits
 }
 
-fn integer(out: &mut Vec<u8>, spec: &Spec, negative: bool, magnitude: u64, base: u64, upper: bool, signed: bool, always_prefix: bool) {
+fn integer(
+    out: &mut Vec<u8>,
+    spec: &Spec,
+    negative: bool,
+    magnitude: u64,
+    base: u64,
+    upper: bool,
+    signed: bool,
+    always_prefix: bool,
+) {
     // cite: bionic vfprintf.cpp#vfprintf
-    let mut digits = if spec.precision == Some(0) && magnitude == 0 { Vec::new() } else { digits_of(magnitude, base, upper) };
+    let mut digits = if spec.precision == Some(0) && magnitude == 0 {
+        Vec::new()
+    } else {
+        digits_of(magnitude, base, upper)
+    };
     if let Some(minimum) = spec.precision {
         while digits.len() < minimum {
             digits.insert(0, b'0');
@@ -208,7 +238,13 @@ fn integer(out: &mut Vec<u8>, spec: &Spec, negative: bool, magnitude: u64, base:
 
 fn host_float(spec: &Spec, conversion: u8, value: f64) -> Vec<u8> {
     let mut format = String::from("%");
-    for (enabled, letter) in [(spec.flags.left, '-'), (spec.flags.plus, '+'), (spec.flags.space, ' '), (spec.flags.alternate, '#'), (spec.flags.zero, '0')] {
+    for (enabled, letter) in [
+        (spec.flags.left, '-'),
+        (spec.flags.plus, '+'),
+        (spec.flags.space, ' '),
+        (spec.flags.alternate, '#'),
+        (spec.flags.zero, '0'),
+    ] {
         if enabled {
             format.push(letter);
         }
@@ -222,13 +258,22 @@ fn host_float(spec: &Spec, conversion: u8, value: f64) -> Vec<u8> {
     let format = std::ffi::CString::new(format).expect("no interior nul");
     let needed = unsafe { libc::snprintf(std::ptr::null_mut(), 0, format.as_ptr(), value) };
     let mut buffer = vec![0u8; needed.max(0) as usize + 1];
-    unsafe { libc::snprintf(buffer.as_mut_ptr() as *mut libc::c_char, buffer.len(), format.as_ptr(), value) };
+    unsafe {
+        libc::snprintf(
+            buffer.as_mut_ptr() as *mut libc::c_char,
+            buffer.len(),
+            format.as_ptr(),
+            value,
+        )
+    };
     buffer.truncate(needed.max(0) as usize);
     buffer
 }
 
 fn text(out: &mut Vec<u8>, spec: &Spec, bytes: &[u8]) {
-    let used = spec.precision.map_or(bytes.len(), |limit| bytes.len().min(limit));
+    let used = spec
+        .precision
+        .map_or(bytes.len(), |limit| bytes.len().min(limit));
     finish(out, spec, &[], &bytes[..used], true);
 }
 
@@ -276,8 +321,18 @@ fn long_alias(spec: &mut Spec, conversion: u8) -> u8 {
 
 fn value_kind(conversion: u8, length: Length) -> Option<ValueKind> {
     match conversion {
-        b'd' | b'i' | b'u' | b'o' | b'x' | b'X' | b'b' | b'B' => Some(if matches!(length, Length::Char | Length::Short | Length::Int) { ValueKind::Int } else { ValueKind::Long }),
-        b'c' => Some(if length == Length::Long { ValueKind::Long } else { ValueKind::Int }),
+        b'd' | b'i' | b'u' | b'o' | b'x' | b'X' | b'b' | b'B' => Some(
+            if matches!(length, Length::Char | Length::Short | Length::Int) {
+                ValueKind::Int
+            } else {
+                ValueKind::Long
+            },
+        ),
+        b'c' => Some(if length == Length::Long {
+            ValueKind::Long
+        } else {
+            ValueKind::Int
+        }),
         b's' | b'p' | b'n' => Some(ValueKind::Pointer),
         b'e' | b'E' | b'f' | b'F' | b'g' | b'G' | b'a' | b'A' => Some(ValueKind::Double),
         _ => None,
@@ -317,18 +372,86 @@ fn unsigned_of(value: Value, length: Length) -> u64 {
     }
 }
 
-fn render(out: &mut Vec<u8>, spec: &Spec, conversion: u8, value: Option<Value>) -> Result<(), String> {
+fn render(
+    out: &mut Vec<u8>,
+    spec: &Spec,
+    conversion: u8,
+    value: Option<Value>,
+) -> Result<(), String> {
     match conversion {
         b'd' | b'i' => {
             let number = signed_of(value.unwrap_or(Value::Int(0)), spec.length);
-            integer(out, spec, number < 0, number.unsigned_abs(), 10, false, true, false);
+            integer(
+                out,
+                spec,
+                number < 0,
+                number.unsigned_abs(),
+                10,
+                false,
+                true,
+                false,
+            );
         }
-        b'u' => integer(out, spec, false, unsigned_of(value.unwrap_or(Value::Int(0)), spec.length), 10, false, false, false),
-        b'o' => integer(out, spec, false, unsigned_of(value.unwrap_or(Value::Int(0)), spec.length), 8, false, false, false),
-        b'b' => integer(out, spec, false, unsigned_of(value.unwrap_or(Value::Int(0)), spec.length), 2, false, false, false),
-        b'B' => integer(out, spec, false, unsigned_of(value.unwrap_or(Value::Int(0)), spec.length), 2, true, false, false),
-        b'x' => integer(out, spec, false, unsigned_of(value.unwrap_or(Value::Int(0)), spec.length), 16, false, false, false),
-        b'X' => integer(out, spec, false, unsigned_of(value.unwrap_or(Value::Int(0)), spec.length), 16, true, false, false),
+        b'u' => integer(
+            out,
+            spec,
+            false,
+            unsigned_of(value.unwrap_or(Value::Int(0)), spec.length),
+            10,
+            false,
+            false,
+            false,
+        ),
+        b'o' => integer(
+            out,
+            spec,
+            false,
+            unsigned_of(value.unwrap_or(Value::Int(0)), spec.length),
+            8,
+            false,
+            false,
+            false,
+        ),
+        b'b' => integer(
+            out,
+            spec,
+            false,
+            unsigned_of(value.unwrap_or(Value::Int(0)), spec.length),
+            2,
+            false,
+            false,
+            false,
+        ),
+        b'B' => integer(
+            out,
+            spec,
+            false,
+            unsigned_of(value.unwrap_or(Value::Int(0)), spec.length),
+            2,
+            true,
+            false,
+            false,
+        ),
+        b'x' => integer(
+            out,
+            spec,
+            false,
+            unsigned_of(value.unwrap_or(Value::Int(0)), spec.length),
+            16,
+            false,
+            false,
+            false,
+        ),
+        b'X' => integer(
+            out,
+            spec,
+            false,
+            unsigned_of(value.unwrap_or(Value::Int(0)), spec.length),
+            16,
+            true,
+            false,
+            false,
+        ),
         b'p' => string_of_pointer(out, spec, value),
         b'c' => {
             if spec.length == Length::Long {
@@ -358,12 +481,16 @@ fn render(out: &mut Vec<u8>, spec: &Spec, conversion: u8, value: Option<Value>) 
         },
         b'm' => {
             let code = guest_errno();
-            let message = message(code).map_or_else(|| format!("Unknown error {code}"), str::to_string);
+            let message =
+                message(code).map_or_else(|| format!("Unknown error {code}"), str::to_string);
             text(out, spec, message.as_bytes());
         }
         b'e' | b'E' | b'f' | b'F' | b'g' | b'G' | b'a' | b'A' => {
             if spec.length == Length::Double {
-                return Err("printf long double; next missing primitive: binary128 printf conversion".to_string());
+                return Err(
+                    "printf long double; next missing primitive: binary128 printf conversion"
+                        .to_string(),
+                );
             }
             let number = match value {
                 Some(Value::Double(number)) => number,
@@ -394,7 +521,9 @@ fn has_positional_spec(format: &[u8]) -> bool {
             continue;
         }
         index += 1;
-        while index < format.len() && matches!(format[index], b'-' | b'+' | b' ' | b'#' | b'0' | b'\'') {
+        while index < format.len()
+            && matches!(format[index], b'-' | b'+' | b' ' | b'#' | b'0' | b'\'')
+        {
             index += 1;
         }
         let start = index;
@@ -404,7 +533,11 @@ fn has_positional_spec(format: &[u8]) -> bool {
         if index > start && index < format.len() && format[index] == b'$' {
             return true;
         }
-        while index < format.len() && format[index] != b'%' && !format[index].is_ascii_alphabetic() && format[index] != b'%' {
+        while index < format.len()
+            && format[index] != b'%'
+            && !format[index].is_ascii_alphabetic()
+            && format[index] != b'%'
+        {
             if format[index] == b'$' && index > start {
                 return true;
             }
@@ -424,7 +557,12 @@ struct Item {
     value_position: Option<usize>,
 }
 
-fn assign(kinds: &mut Vec<Option<ValueKind>>, position: Option<usize>, kind: ValueKind, next: &mut usize) -> Result<usize, String> {
+fn assign(
+    kinds: &mut Vec<Option<ValueKind>>,
+    position: Option<usize>,
+    kind: ValueKind,
+    next: &mut usize,
+) -> Result<usize, String> {
     let position = match position {
         Some(position) => position,
         None => {
@@ -433,7 +571,10 @@ fn assign(kinds: &mut Vec<Option<ValueKind>>, position: Option<usize>, kind: Val
         }
     };
     if position == 0 {
-        return Err("printf positional argument 0; next missing primitive: printf positional arguments".to_string());
+        return Err(
+            "printf positional argument 0; next missing primitive: printf positional arguments"
+                .to_string(),
+        );
     }
     if kinds.len() < position {
         kinds.resize(position, None);
@@ -441,7 +582,9 @@ fn assign(kinds: &mut Vec<Option<ValueKind>>, position: Option<usize>, kind: Val
     match kinds[position - 1] {
         None => kinds[position - 1] = Some(kind),
         Some(existing) if existing == kind => {}
-        Some(_) => return Err("printf positional argument reused with a different type".to_string()),
+        Some(_) => {
+            return Err("printf positional argument reused with a different type".to_string())
+        }
     }
     Ok(position)
 }
@@ -460,7 +603,11 @@ fn read_index(cursor: &mut Cursor, format: &[u8]) -> Option<usize> {
     None
 }
 
-fn parse_items(format: &[u8], kinds: &mut Vec<Option<ValueKind>>, next: &mut usize) -> Result<Vec<Item>, String> {
+fn parse_items(
+    format: &[u8],
+    kinds: &mut Vec<Option<ValueKind>>,
+    next: &mut usize,
+) -> Result<Vec<Item>, String> {
     let mut items = Vec::new();
     let mut literal = Vec::new();
     let mut cursor = Cursor { format, index: 0 };
@@ -499,7 +646,9 @@ fn parse_items(format: &[u8], kinds: &mut Vec<Option<ValueKind>>, next: &mut usi
             }
         }
         let length = parse_length(&mut cursor);
-        let Some(conversion) = cursor.take() else { break };
+        let Some(conversion) = cursor.take() else {
+            break;
+        };
         let (conversion, long) = match conversion {
             b'D' => (b'd', true),
             b'O' => (b'o', true),
@@ -508,7 +657,12 @@ fn parse_items(format: &[u8], kinds: &mut Vec<Option<ValueKind>>, next: &mut usi
             b'S' => (b's', true),
             other => (other, false),
         };
-        let mut spec = Spec { flags, width: fixed_width, precision: fixed_precision, length };
+        let mut spec = Spec {
+            flags,
+            width: fixed_width,
+            precision: fixed_precision,
+            length,
+        };
         if long {
             spec.length = Length::Long;
         }
@@ -517,12 +671,33 @@ fn parse_items(format: &[u8], kinds: &mut Vec<Option<ValueKind>>, next: &mut usi
             None => None,
         };
         if !literal.is_empty() {
-            items.push(Item { literal: std::mem::take(&mut literal), spec: None, conversion: 0, width_position: None, precision_position: None, value_position: None });
+            items.push(Item {
+                literal: std::mem::take(&mut literal),
+                spec: None,
+                conversion: 0,
+                width_position: None,
+                precision_position: None,
+                value_position: None,
+            });
         }
-        items.push(Item { literal: Vec::new(), spec: Some(spec), conversion, width_position, precision_position, value_position });
+        items.push(Item {
+            literal: Vec::new(),
+            spec: Some(spec),
+            conversion,
+            width_position,
+            precision_position,
+            value_position,
+        });
     }
     if !literal.is_empty() {
-        items.push(Item { literal, spec: None, conversion: 0, width_position: None, precision_position: None, value_position: None });
+        items.push(Item {
+            literal,
+            spec: None,
+            conversion: 0,
+            width_position: None,
+            precision_position: None,
+            value_position: None,
+        });
     }
     Ok(items)
 }
@@ -593,7 +768,9 @@ pub fn format(format: &[u8], args: &mut GuestVaList) -> Result<Vec<u8>, String> 
             continue;
         }
         let mut spec = parse_spec(&mut cursor, args)?;
-        let Some(conversion) = cursor.take() else { break };
+        let Some(conversion) = cursor.take() else {
+            break;
+        };
         let conversion = match conversion {
             b'D' => long_alias(&mut spec, b'd'),
             b'O' => long_alias(&mut spec, b'o'),

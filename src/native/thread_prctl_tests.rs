@@ -1,6 +1,6 @@
 use super::bionic::syscall::translate;
 use super::test_deadline::bounded_test;
-use super::thread_test_support::{shim};
+use super::thread_test_support::shim;
 
 bounded_test! {
     fn prctl_set_name_feeds_the_thread_name_table_that_pr_get_name_and_pthread_getname_np_read() {

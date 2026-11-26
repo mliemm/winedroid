@@ -18,10 +18,17 @@ pub struct GuestProcessArgs {
 impl GuestProcessArgs {
     pub fn new() -> Self {
         // cite: bionic linker_soinfo.cpp#call_constructors
-        let program = CString::new("/system/bin/app_process64").expect("no interior nul").into_raw();
-        let argv: &'static mut [*mut c_char; 2] = Box::leak(Box::new([program, std::ptr::null_mut()]));
+        let program = CString::new("/system/bin/app_process64")
+            .expect("no interior nul")
+            .into_raw();
+        let argv: &'static mut [*mut c_char; 2] =
+            Box::leak(Box::new([program, std::ptr::null_mut()]));
         let envp: &'static mut [*mut c_char; 1] = Box::leak(Box::new([std::ptr::null_mut()]));
-        Self { argc: 1, argv: argv.as_ptr() as usize, envp: envp.as_ptr() as usize }
+        Self {
+            argc: 1,
+            argv: argv.as_ptr() as usize,
+            envp: envp.as_ptr() as usize,
+        }
     }
 }
 
@@ -63,7 +70,10 @@ impl GuestResult {
     }
 
     pub fn hfa_f32(&self, members: usize) -> Vec<f32> {
-        self.q[..members].iter().map(|register| f32::from_bits(register[0] as u32)).collect()
+        self.q[..members]
+            .iter()
+            .map(|register| f32::from_bits(register[0] as u32))
+            .collect()
     }
 }
 
@@ -87,10 +97,15 @@ pub fn invoke_frame(frame: &mut GuestCallFrame) -> Result<GuestResult> {
     super::signal_state::set_in_guest(outer);
     ACTIVE.with(|active| active.borrow_mut().truncate(depth));
     if frame.aborted != 0 {
-        let message = ABORT.with(|abort| abort.borrow_mut().take()).unwrap_or_else(|| "guest call aborted".to_string());
+        let message = ABORT
+            .with(|abort| abort.borrow_mut().take())
+            .unwrap_or_else(|| "guest call aborted".to_string());
         return Err(WinedroidError::new(message));
     }
-    Ok(GuestResult { x: frame.ret_x, q: frame.ret_q })
+    Ok(GuestResult {
+        x: frame.ret_x,
+        q: frame.ret_q,
+    })
 }
 
 #[cfg(test)]
@@ -102,17 +117,27 @@ fn current_thread_label() -> String {
     let mut host_id = 0u64;
     unsafe { libc::pthread_threadid_np(0, &mut host_id) };
     let thread = std::thread::current();
-    format!("thread {} (id {host_id})", thread.name().unwrap_or("unnamed"))
+    format!(
+        "thread {} (id {host_id})",
+        thread.name().unwrap_or("unnamed")
+    )
 }
 
 pub fn abort_active_call(message: String) {
     let unwind_to_outermost = super::thread_exit::exit_requested();
     let frame = ACTIVE.with(|active| {
         let active = active.borrow();
-        if unwind_to_outermost { active.first().copied() } else { active.last().copied() }
+        if unwind_to_outermost {
+            active.first().copied()
+        } else {
+            active.last().copied()
+        }
     });
     let Some(frame) = frame else {
-        host_log::line(&format!("{message}; no active guest call on {}", current_thread_label()));
+        host_log::line(&format!(
+            "{message}; no active guest call on {}",
+            current_thread_label()
+        ));
         std::process::abort();
     };
     ABORT.with(|abort| *abort.borrow_mut() = Some(message));
@@ -132,7 +157,12 @@ pub fn call_guest(address: usize, args: &[u64]) -> Result<GuestResult> {
 }
 
 pub fn call_constructor(address: usize, args: &GuestProcessArgs) -> Result<()> {
-    CallBuilder::new(address).i32(args.argc).ptr(args.argv).ptr(args.envp).invoke().map(|_| ())
+    CallBuilder::new(address)
+        .i32(args.argc)
+        .ptr(args.argv)
+        .ptr(args.envp)
+        .invoke()
+        .map(|_| ())
 }
 
 pub fn call_init(address: usize) -> Result<()> {

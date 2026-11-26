@@ -5,15 +5,19 @@ use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use crate::error::{Result, WinedroidError};
 
-use super::data_fault::ensure_alternate_stack;
 use super::bionic::pthread_key;
+use super::data_fault::ensure_alternate_stack;
 use super::fork_gate;
 use super::host_log;
-use super::pthread_internal::{PthreadInternal, ATTR_FLAG_DETACHED, ATTR_FLAG_INHERIT, JOIN_DETACHED};
+use super::pthread_internal::{
+    PthreadInternal, ATTR_FLAG_DETACHED, ATTR_FLAG_INHERIT, JOIN_DETACHED,
+};
+use super::thread_block::{
+    block, host_thread_pointer, set_slot, slot_word, SLOT_ART_THREAD_SELF, SLOT_BIONIC_TLS,
+    SLOT_STACK_GUARD, SLOT_THREAD_ID,
+};
 use super::thread_exit;
 use super::thread_list;
-use super::thread_block::{block, host_thread_pointer, set_slot, slot_word, SLOT_ART_THREAD_SELF, SLOT_BIONIC_TLS, SLOT_STACK_GUARD, SLOT_THREAD_ID};
-
 
 pub(super) struct Registry {
     records: BTreeMap<usize, i32>,
@@ -74,7 +78,11 @@ pub fn tid_of(address: usize) -> Option<i32> {
 }
 
 pub fn live_records() -> Vec<(usize, i32)> {
-    registry().records.iter().map(|(address, tid)| (*address, *tid)).collect()
+    registry()
+        .records
+        .iter()
+        .map(|(address, tid)| (*address, *tid))
+        .collect()
 }
 
 pub fn detach_current() -> Result<()> {
@@ -99,7 +107,11 @@ pub(super) fn claim_primary(registry: &mut Registry, address: usize) -> bool {
 }
 
 pub(super) const fn empty_registry() -> Registry {
-    Registry { records: BTreeMap::new(), primary: None, primary_assigned: false }
+    Registry {
+        records: BTreeMap::new(),
+        primary: None,
+        primary_assigned: false,
+    }
 }
 
 fn record_layout() -> std::alloc::Layout {
@@ -109,7 +121,11 @@ fn record_layout() -> std::alloc::Layout {
 fn record_key() -> libc::pthread_key_t {
     *RECORD_KEY.get_or_init(|| {
         let mut key: libc::pthread_key_t = 0;
-        assert_eq!(unsafe { libc::pthread_key_create(&mut key, Some(free_record)) }, 0, "thread record key");
+        assert_eq!(
+            unsafe { libc::pthread_key_create(&mut key, Some(free_record)) },
+            0,
+            "thread record key"
+        );
         key
     })
 }
@@ -132,8 +148,15 @@ pub(super) fn next_tid() -> i32 {
     loop {
         let seen = NEXT_TID.load(Ordering::SeqCst);
         let candidate = if seen == 0 { pid + 1 } else { seen + 1 };
-        let candidate = if candidate == pid { candidate + 1 } else { candidate };
-        if NEXT_TID.compare_exchange(seen, candidate, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+        let candidate = if candidate == pid {
+            candidate + 1
+        } else {
+            candidate
+        };
+        if NEXT_TID
+            .compare_exchange(seen, candidate, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
             return candidate;
         }
     }
@@ -186,7 +209,11 @@ pub fn attach_current() -> Result<*mut PthreadInternal> {
         (*record).cached_pid = pid as u32;
         (*record).attr.flags = ATTR_FLAG_INHERIT | ATTR_FLAG_DETACHED;
         (*record).join_state = JOIN_DETACHED;
-        assert_eq!(libc::pthread_setspecific(record_key(), record as *const libc::c_void), 0, "thread record store");
+        assert_eq!(
+            libc::pthread_setspecific(record_key(), record as *const libc::c_void),
+            0,
+            "thread record store"
+        );
     }
     install_slots(record, None);
     thread_list::remember(address, unsafe { libc::pthread_self() }, false);

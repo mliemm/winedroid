@@ -36,7 +36,12 @@ pub fn set_host(host: libc::pthread_t, policy: i32, priority: i32) -> Result<(),
                 return Err(EINVAL);
             }
             let darwin = host_policy(policy).ok_or(EINVAL)?;
-            let (low, high) = unsafe { (libc::sched_get_priority_min(darwin), libc::sched_get_priority_max(darwin)) };
+            let (low, high) = unsafe {
+                (
+                    libc::sched_get_priority_min(darwin),
+                    libc::sched_get_priority_max(darwin),
+                )
+            };
             let scaled = low + (priority - 1) * (high - low) / (LINUX_PRIORITY_MAX - 1);
             let mut parameter: libc::sched_param = unsafe { std::mem::zeroed() };
             parameter.sched_priority = scaled;
@@ -57,11 +62,23 @@ pub fn get_host(host: libc::pthread_t) -> Result<(i32, i32), i32> {
         0 => {}
         code => return Err(linux_from_darwin(code).unwrap_or(EINVAL)),
     }
-    let (low, high) = unsafe { (libc::sched_get_priority_min(darwin), libc::sched_get_priority_max(darwin)) };
+    let (low, high) = unsafe {
+        (
+            libc::sched_get_priority_min(darwin),
+            libc::sched_get_priority_max(darwin),
+        )
+    };
     Ok(match darwin {
         libc::SCHED_FIFO | libc::SCHED_RR if high > low => {
-            let policy = if darwin == libc::SCHED_FIFO { SCHED_FIFO } else { SCHED_RR };
-            (policy, 1 + (parameter.sched_priority - low) * (LINUX_PRIORITY_MAX - 1) / (high - low))
+            let policy = if darwin == libc::SCHED_FIFO {
+                SCHED_FIFO
+            } else {
+                SCHED_RR
+            };
+            (
+                policy,
+                1 + (parameter.sched_priority - low) * (LINUX_PRIORITY_MAX - 1) / (high - low),
+            )
         }
         _ => (SCHED_OTHER, 0),
     })

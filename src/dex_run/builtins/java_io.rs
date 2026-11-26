@@ -255,6 +255,42 @@ impl DexProgram {
             return self.initialize_file_output_stream_from_file(invocation);
         }
 
+        if method.class_descriptor == "Ljava/io/RandomAccessFile;"
+            && method.name == "<init>"
+            && matches!(
+                method.proto.descriptor().as_str(),
+                "(Ljava/lang/String;Ljava/lang/String;)V" | "(Ljava/io/File;Ljava/lang/String;)V"
+            )
+        {
+            let invocation = invocation?;
+            let from_file = method
+                .proto
+                .descriptor_is("(Ljava/io/File;Ljava/lang/String;)V");
+            return self.initialize_random_access_file(invocation, from_file);
+        }
+
+        if method.class_descriptor == "Ljava/io/RandomAccessFile;"
+            && method.name == "getChannel"
+            && method
+                .proto
+                .descriptor_is("()Ljava/nio/channels/FileChannel;")
+        {
+            let invocation = invocation?;
+            let value = self.random_access_file_channel(invocation)?;
+
+            return Some(DexExecutionResult::Value(value));
+        }
+
+        if method.class_descriptor == "Ljava/io/RandomAccessFile;"
+            && method.name == "close"
+            && method.proto.descriptor_is("()V")
+        {
+            let invocation = invocation?;
+            self.close_random_access_file(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
         if method.class_descriptor == "Ljava/io/FileInputStream;"
             && method.name == "<init>"
             && method.proto.descriptor_is("(Ljava/io/File;)V")
@@ -963,7 +999,10 @@ impl DexProgram {
         .then_some(())
     }
 
-    fn initialize_file_from_parent_string_and_child(&self, invocation: &DexInvocation) -> Option<()> {
+    fn initialize_file_from_parent_string_and_child(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<()> {
         if invocation.arguments.len() != 3 || !dex_value_is_object_like(&invocation.arguments[0]) {
             return None;
         }
@@ -1275,11 +1314,10 @@ impl DexProgram {
         self.open_file_input_stream(&invocation.arguments[0], guest_path)
     }
 
-    fn open_file_input_stream(
+    pub(in crate::dex_run) fn open_guest_file_for_read(
         &self,
-        stream: &DexValue,
-        guest_path: String,
-    ) -> Option<DexExecutionResult> {
+        guest_path: &str,
+    ) -> std::result::Result<crate::guest_filesystem::ResolvedGuestPath, DexValue> {
         // cite: libcore File.java#isInvalid
         if guest_path.contains('\0') {
             let exception = self.allocate_object("Ljava/io/FileNotFoundException;".to_owned());
@@ -1288,38 +1326,35 @@ impl DexProgram {
                 &throwable_detail_message_field(),
                 DexValue::String(std::rc::Rc::from("Invalid file path")),
             );
-            return Some(DexExecutionResult::Throw(exception));
+            return Err(exception);
         }
 
-        let path = match self.resolved_guest_path_result(&guest_path, ExternalStorageAccess::Read) {
-            Ok(path) => path,
-            Err(detail) => {
-                let exception = self.file_not_found_exception_for_path(&guest_path, &detail);
-                return Some(DexExecutionResult::Throw(exception));
-            }
-        };
+        let path = self
+            .resolved_guest_path_result(guest_path, ExternalStorageAccess::Read)
+            .map_err(|detail| self.file_not_found_exception_for_path(guest_path, &detail))?;
 
-        // cite: libcore FileInputStream.java#FileInputStream
         // cite: libcore IoBridge.java#open
-        match path.open_read() {
-            Ok(file) => match file.metadata() {
-                Ok(metadata) if !metadata.is_dir() => {}
-                Ok(_) => {
-                    let exception =
-                        self.file_not_found_exception_for_path(&guest_path, "Is a directory");
-                    return Some(DexExecutionResult::Throw(exception));
-                }
-                Err(error) => {
-                    let exception =
-                        self.file_not_found_exception_for_path(&guest_path, &error.to_string());
-                    return Some(DexExecutionResult::Throw(exception));
-                }
-            },
-            Err(error) => {
-                let exception =
-                    self.file_not_found_exception_for_path(&guest_path, &error.to_string());
-                return Some(DexExecutionResult::Throw(exception));
-            }
+        let file = path.open_read().map_err(|error| {
+            self.file_not_found_exception_for_path(guest_path, &error.to_string())
+        })?;
+        let metadata = file.metadata().map_err(|error| {
+            self.file_not_found_exception_for_path(guest_path, &error.to_string())
+        })?;
+        if metadata.is_dir() {
+            return Err(self.file_not_found_exception_for_path(guest_path, "Is a directory"));
+        }
+
+        Ok(path)
+    }
+
+    fn open_file_input_stream(
+        &self,
+        stream: &DexValue,
+        guest_path: String,
+    ) -> Option<DexExecutionResult> {
+        // cite: libcore FileInputStream.java#FileInputStream
+        if let Err(exception) = self.open_guest_file_for_read(&guest_path) {
+            return Some(DexExecutionResult::Throw(exception));
         }
 
         self.write_stored_instance_field(
@@ -1328,6 +1363,121 @@ impl DexProgram {
             DexValue::String(std::rc::Rc::from(guest_path)),
         )
         .then_some(DexExecutionResult::Void)
+    }
+
+    // cite: libcore RandomAccessFile.java#RandomAccessFile
+    fn initialize_random_access_file(
+        &self,
+        invocation: &DexInvocation,
+        from_file: bool,
+    ) -> Option<DexExecutionResult> {
+        if invocation.arguments.len() != 3 || !dex_value_is_object_like(&invocation.arguments[0]) {
+            return None;
+        }
+
+        let name = match &invocation.arguments[1] {
+            DexValue::Null | DexValue::Int(0) => None,
+            value if from_file => Some(file_path_from_value(self, value)?),
+            DexValue::String(name) => Some(resolve_file_parent_and_child(None, name)),
+            _ => return None,
+        };
+        let mode = match &invocation.arguments[2] {
+            DexValue::String(mode) => mode.clone(),
+            DexValue::Null | DexValue::Int(0) => return Some(self.null_pointer_exception_result()),
+            _ => return None,
+        };
+        match mode.as_ref() {
+            "r" => {}
+            "rw" | "rws" | "rwd" => return None,
+            _ => {
+                return Some(DexExecutionResult::Throw(self.allocate_generated_exception(
+                    DexGeneratedException {
+                        class_descriptor: "Ljava/lang/IllegalArgumentException;".to_owned(),
+                        detail_message: Some(format!(
+                            "Illegal mode \"{mode}\" must be one of \"r\", \"rw\", \"rws\", or \"rwd\""
+                        )),
+                    },
+                )));
+            }
+        }
+        let Some(name) = name else {
+            return Some(DexExecutionResult::Throw(
+                self.allocate_generated_exception(DexGeneratedException {
+                    class_descriptor: "Ljava/lang/NullPointerException;".to_owned(),
+                    detail_message: Some("file == null".to_owned()),
+                }),
+            ));
+        };
+        if let Err(exception) = self.open_guest_file_for_read(&name) {
+            return Some(DexExecutionResult::Throw(exception));
+        }
+
+        self.write_stored_instance_field(
+            &invocation.arguments[0],
+            &random_access_file_field("Ljava/lang/String;", "path"),
+            DexValue::String(std::rc::Rc::from(name)),
+        )
+        .then_some(DexExecutionResult::Void)
+    }
+
+    // cite: libcore RandomAccessFile.java#getChannel
+    fn random_access_file_channel(&self, invocation: &DexInvocation) -> Option<DexValue> {
+        let file = invocation.arguments.first()?;
+        let channel_field = random_access_file_field("Ljava/nio/channels/FileChannel;", "channel");
+        if let Some(channel @ DexValue::Object(_)) =
+            self.read_stored_instance_field(file, &channel_field)
+        {
+            return Some(channel);
+        }
+
+        let DexValue::String(path) = self.read_stored_instance_field(
+            file,
+            &random_access_file_field("Ljava/lang/String;", "path"),
+        )?
+        else {
+            return None;
+        };
+        if self.random_access_file_is_closed(file) {
+            return None;
+        }
+        let channel = self.new_file_channel(path.to_string());
+        self.write_stored_instance_field(file, &channel_field, channel.clone());
+
+        Some(channel)
+    }
+
+    // cite: libcore RandomAccessFile.java#close
+    fn close_random_access_file(&self, invocation: &DexInvocation) -> Option<()> {
+        let file = invocation.arguments.first()?;
+        let DexValue::String(_) = self.read_stored_instance_field(
+            file,
+            &random_access_file_field("Ljava/lang/String;", "path"),
+        )?
+        else {
+            return None;
+        };
+        if let Some(channel @ DexValue::Object(_)) = self.read_stored_instance_field(
+            file,
+            &random_access_file_field("Ljava/nio/channels/FileChannel;", "channel"),
+        ) {
+            if self.file_channel_is_open(&channel)? {
+                self.close_file_channel(&channel);
+            }
+        }
+
+        self.write_stored_instance_field(
+            file,
+            &random_access_file_field("Z", "closed"),
+            DexValue::Int(1),
+        )
+        .then_some(())
+    }
+
+    fn random_access_file_is_closed(&self, file: &DexValue) -> bool {
+        matches!(
+            self.read_stored_instance_field(file, &random_access_file_field("Z", "closed")),
+            Some(DexValue::Int(closed)) if closed != 0
+        )
     }
 
     fn file_output_stream_channel(&self, invocation: &DexInvocation) -> Option<DexValue> {
@@ -1957,6 +2107,14 @@ fn file_path_field() -> DexFieldId {
         class_descriptor: "Ljava/io/File;".to_owned(),
         type_descriptor: "Ljava/lang/String;".to_owned(),
         name: "path".to_owned(),
+    }
+}
+
+fn random_access_file_field(type_descriptor: &str, name: &str) -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Ljava/io/RandomAccessFile;".to_owned(),
+        type_descriptor: type_descriptor.to_owned(),
+        name: name.to_owned(),
     }
 }
 

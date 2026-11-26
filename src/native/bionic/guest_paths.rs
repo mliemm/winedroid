@@ -55,7 +55,13 @@ pub enum Resolved {
 }
 
 // cite: bionic sysmacros.h#makedev
-const DEVICES: &[(&str, (u32, u32))] = &[("null", (1, 3)), ("zero", (1, 5)), ("random", (1, 8)), ("urandom", (1, 9)), ("tty", (5, 0))];
+const DEVICES: &[(&str, (u32, u32))] = &[
+    ("null", (1, 3)),
+    ("zero", (1, 5)),
+    ("random", (1, 8)),
+    ("urandom", (1, 9)),
+    ("tty", (5, 0)),
+];
 
 pub fn device_host_path(name: &str) -> &'static str {
     match name {
@@ -87,7 +93,10 @@ pub fn absolute(dirfd: i32, path: &[u8]) -> Result<String, i32> {
     if path.len() >= misc::PATH_MAX {
         return Err(ENAMETOOLONG);
     }
-    if path.split(|byte| *byte == b'/').any(|component| component.len() > misc::NAME_MAX) {
+    if path
+        .split(|byte| *byte == b'/')
+        .any(|component| component.len() > misc::NAME_MAX)
+    {
         return Err(ENAMETOOLONG);
     }
     let text = String::from_utf8_lossy(path).into_owned();
@@ -108,11 +117,18 @@ pub fn absolute(dirfd: i32, path: &[u8]) -> Result<String, i32> {
 
 fn rewrite_alias(path: &str) -> String {
     // cite: frameworks-base StrictMode.java#onCredentialProtectedPathAccess
-    for (alias, target) in [("/data/data", "/data/user/0"), ("/storage/self/primary", "/storage/emulated/0"), ("/mnt/sdcard", "/storage/emulated/0")] {
+    for (alias, target) in [
+        ("/data/data", "/data/user/0"),
+        ("/storage/self/primary", "/storage/emulated/0"),
+        ("/mnt/sdcard", "/storage/emulated/0"),
+    ] {
         if path == alias {
             return target.to_string();
         }
-        if let Some(rest) = path.strip_prefix(alias).and_then(|rest| rest.strip_prefix('/')) {
+        if let Some(rest) = path
+            .strip_prefix(alias)
+            .and_then(|rest| rest.strip_prefix('/'))
+        {
             return format!("{target}/{rest}");
         }
     }
@@ -120,7 +136,10 @@ fn rewrite_alias(path: &str) -> String {
 }
 
 fn directory_entries(names: &[&str]) -> Vec<(String, u8)> {
-    names.iter().map(|name| (name.to_string(), misc::DT_DIR)).collect()
+    names
+        .iter()
+        .map(|name| (name.to_string(), misc::DT_DIR))
+        .collect()
 }
 
 fn skeleton(path: &str, context: &GuestContext) -> Option<(Vec<(String, u8)>, u32, u32)> {
@@ -128,25 +147,50 @@ fn skeleton(path: &str, context: &GuestContext) -> Option<(Vec<(String, u8)>, u3
     let root_code = guest_app_paths::package_root(package);
     let app_dir = |name: &str| (name.to_string(), misc::DT_DIR);
     let (entries, mode, owner) = match path {
-        "/" => (directory_entries(&["data", "dev", "mnt", "proc", "storage", "sys", "system"]), 0o755, 0),
-        "/data" => (directory_entries(&["app", "data", "local", "user", "user_de"]), 0o771, 1000),
+        "/" => (
+            directory_entries(&["data", "dev", "mnt", "proc", "storage", "sys", "system"]),
+            0o755,
+            0,
+        ),
+        "/data" => (
+            directory_entries(&["app", "data", "local", "user", "user_de"]),
+            0o771,
+            1000,
+        ),
         "/data/user" | "/data/user_de" => (directory_entries(&["0"]), 0o711, 1000),
         "/data/user/0" | "/data/user_de/0" => (vec![app_dir(package)], 0o711, 1000),
         "/data/app" => (directory_entries(&["~~winedroid=="]), 0o751, 1000),
-        "/data/app/~~winedroid==" => (vec![app_dir(&format!("{package}-winedroid=="))], 0o755, 1000),
+        "/data/app/~~winedroid==" => (
+            vec![app_dir(&format!("{package}-winedroid=="))],
+            0o755,
+            1000,
+        ),
         "/data/local" => (directory_entries(&["tmp"]), 0o751, 2000),
         "/data/local/tmp" => (Vec::new(), 0o771, 2000),
         "/storage" => (directory_entries(&["emulated", "self"]), 0o755, 0),
         "/storage/emulated" => (directory_entries(&["0"]), 0o755, 0),
         "/storage/self" => (directory_entries(&["primary"]), 0o755, 0),
-        "/dev" => (DEVICES.iter().map(|(name, _)| (name.to_string(), misc::DT_CHR)).collect(), 0o755, 0),
+        "/dev" => (
+            DEVICES
+                .iter()
+                .map(|(name, _)| (name.to_string(), misc::DT_CHR))
+                .collect(),
+            0o755,
+            0,
+        ),
         "/mnt" => (Vec::new(), 0o755, 0),
         "/system" => (vec![("build.prop".to_string(), misc::DT_REG)], 0o755, 0),
         "/sys" => (directory_entries(&["devices"]), 0o555, 0),
         "/sys/devices" => (directory_entries(&["system"]), 0o755, 0),
         "/sys/devices/system" => (directory_entries(&["cpu"]), 0o755, 0),
-        other if other == root_code => (vec![("base.apk".to_string(), misc::DT_REG), app_dir("lib")], 0o755, 1000),
-        other if other == format!("{root_code}/lib") => (directory_entries(&["arm64"]), 0o755, 1000),
+        other if other == root_code => (
+            vec![("base.apk".to_string(), misc::DT_REG), app_dir("lib")],
+            0o755,
+            1000,
+        ),
+        other if other == format!("{root_code}/lib") => {
+            (directory_entries(&["arm64"]), 0o755, 1000)
+        }
         _ => return None,
     };
     Some((entries, mode, owner))
@@ -154,8 +198,9 @@ fn skeleton(path: &str, context: &GuestContext) -> Option<(Vec<(String, u8)>, u3
 
 fn private_mount(path: &str, context: &GuestContext) -> bool {
     let package = &context.package;
-    ["/data/user/0", "/data/user_de/0"].iter().any(|root| path == format!("{root}/{package}") || path.starts_with(&format!("{root}/{package}/")))
-        || path == "/storage/emulated/0"
+    ["/data/user/0", "/data/user_de/0"].iter().any(|root| {
+        path == format!("{root}/{package}") || path.starts_with(&format!("{root}/{package}/"))
+    }) || path == "/storage/emulated/0"
         || path.starts_with("/storage/emulated/0/")
         || path == "/sdcard"
         || path.starts_with("/sdcard/")
@@ -176,20 +221,40 @@ fn errno_of_io(error: &std::io::Error) -> i32 {
 }
 
 fn through_storage(path: &str, access: Access, context: &GuestContext) -> Result<Resolved, i32> {
-    let wanted = if access == Access::Write { ExternalStorageAccess::Write } else { ExternalStorageAccess::Read };
+    let wanted = if access == Access::Write {
+        ExternalStorageAccess::Write
+    } else {
+        ExternalStorageAccess::Read
+    };
     let policy = context.policy.read().expect("external storage policy");
-    let resolved = context.filesystem.resolve_typed(path, wanted, &policy).map_err(|failure| match failure.kind {
-        GuestPathError::OutsideMounts | GuestPathError::EscapesRoot | GuestPathError::HiddenDirectory => ENOENT,
-        GuestPathError::NulByte => EINVAL,
-        GuestPathError::ExternalScopeDenied => EACCES,
-    })?;
-    let (dir, leaf) = resolved.parent_and_leaf().map_err(|error| errno_of_io(&error))?;
-    let mount = match resolved.mount() {
+    let resolved = context
+        .filesystem
+        .resolve_typed(path, wanted, &policy)
+        .map_err(|failure| match failure.kind {
+            GuestPathError::OutsideMounts
+            | GuestPathError::EscapesRoot
+            | GuestPathError::HiddenDirectory => ENOENT,
+            GuestPathError::NulByte => EINVAL,
+            GuestPathError::ExternalScopeDenied => EACCES,
+        })?;
+    let (dir, leaf) = resolved
+        .parent_and_leaf()
+        .map_err(|error| errno_of_io(&error))?;
+    let guest_mount = resolved.mount();
+    let mount = match guest_mount {
         crate::guest_filesystem::GuestMount::CredentialProtected => "credential",
         crate::guest_filesystem::GuestMount::DeviceProtected => "device",
         crate::guest_filesystem::GuestMount::Shared => "shared",
+        crate::guest_filesystem::GuestMount::AppCode => "app code",
     };
-    Ok(Resolved::Host(HostRef { mount, protected: resolved.is_mutation_protected(), dir, leaf, read_only: false, guest_path: path.to_string() }))
+    Ok(Resolved::Host(HostRef {
+        mount,
+        protected: resolved.is_mutation_protected(),
+        dir,
+        leaf,
+        read_only: guest_mount == crate::guest_filesystem::GuestMount::AppCode,
+        guest_path: path.to_string(),
+    }))
 }
 
 fn app_code(path: &str, context: &GuestContext) -> Option<Result<Resolved, i32>> {
@@ -197,20 +262,33 @@ fn app_code(path: &str, context: &GuestContext) -> Option<Result<Resolved, i32>>
         let remainder = if path == mount.guest {
             Some("")
         } else {
-            path.strip_prefix(mount.guest.as_str()).and_then(|rest| rest.strip_prefix('/'))
+            path.strip_prefix(mount.guest.as_str())
+                .and_then(|rest| rest.strip_prefix('/'))
         };
         let Some(remainder) = remainder else { continue };
         let mut host: PathBuf = mount.host.clone();
         if !remainder.is_empty() {
             host.push(remainder);
         }
-        let parent = host.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"));
-        let leaf = host.file_name().map(|name| CString::new(name.as_encoded_bytes()).expect("path has no NUL"));
+        let parent = host
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/"));
+        let leaf = host
+            .file_name()
+            .map(|name| CString::new(name.as_encoded_bytes()).expect("path has no NUL"));
         let dir = match Directory::open_ambient(&parent) {
             Ok(dir) => dir,
             Err(error) => return Some(Err(errno_of_io(&error))),
         };
-        return Some(Ok(Resolved::Host(HostRef { mount: "code", protected: true, dir, leaf, read_only: true, guest_path: path.to_string() })));
+        return Some(Ok(Resolved::Host(HostRef {
+            mount: "code",
+            protected: true,
+            dir,
+            leaf,
+            read_only: true,
+            guest_path: path.to_string(),
+        })));
     }
     None
 }
@@ -222,7 +300,12 @@ pub fn resolve_absolute(path: &str, access: Access) -> Result<Resolved, i32> {
     })?;
     let path = rewrite_alias(path);
     if let Some((entries, mode, owner)) = skeleton(&path, &context) {
-        return Ok(Resolved::Virtual(VirtualDir { guest_path: path, entries, mode, owner }));
+        return Ok(Resolved::Virtual(VirtualDir {
+            guest_path: path,
+            entries,
+            mode,
+            owner,
+        }));
     }
     if private_mount(&path, &context) {
         return through_storage(&path, access, &context);
@@ -230,7 +313,11 @@ pub fn resolve_absolute(path: &str, access: Access) -> Result<Resolved, i32> {
     for root in ["/data/user/0/", "/data/user_de/0/"] {
         if let Some(rest) = path.strip_prefix(root) {
             let other = rest.split('/').next().unwrap_or("");
-            return Err(if context.prefix.join("apps").join(other).is_dir() { EACCES } else { ENOENT });
+            return Err(if context.prefix.join("apps").join(other).is_dir() {
+                EACCES
+            } else {
+                ENOENT
+            });
         }
     }
     if let Some(found) = app_code(&path, &context) {
@@ -238,11 +325,20 @@ pub fn resolve_absolute(path: &str, access: Access) -> Result<Resolved, i32> {
     }
     if let Some(name) = path.strip_prefix("/dev/") {
         if let Some((device, rdev)) = DEVICES.iter().find(|(device, _)| *device == name) {
-            return Ok(Resolved::Device(Device { name: device, rdev: *rdev }));
+            return Ok(Resolved::Device(Device {
+                name: device,
+                rdev: *rdev,
+            }));
         }
-        if let Some(descriptor) = ["stdin", "stdout", "stderr"].iter().position(|stream| *stream == name) {
+        if let Some(descriptor) = ["stdin", "stdout", "stderr"]
+            .iter()
+            .position(|stream| *stream == name)
+        {
             let target = format!("/proc/self/fd/{descriptor}");
-            return Ok(Resolved::Synthetic(Synthetic::link(super::synthetic_node::PROC_DEVICE, move || target.clone()), path));
+            return Ok(Resolved::Synthetic(
+                Synthetic::link(super::synthetic_node::PROC_DEVICE, move || target.clone()),
+                path,
+            ));
         }
         host_log::line(&format!("FIXME: missing-primitive guest device {path}: no host equivalent; next missing primitive: guest device {path}"));
         return Err(ENOENT);
@@ -283,8 +379,14 @@ pub fn resolve_follow_with_path(path: &str, access: Access) -> Result<(Resolved,
             Resolved::Synthetic(Synthetic::Link { target, .. }, _) => Some(target()),
             _ => None,
         };
-        let Some(target) = target else { return Ok((resolved, current)) };
-        current = if target.starts_with('/') { normalize(&target) } else { normalize(&format!("{}/{target}", parent_of(&current))) };
+        let Some(target) = target else {
+            return Ok((resolved, current));
+        };
+        current = if target.starts_with('/') {
+            normalize(&target)
+        } else {
+            normalize(&format!("{}/{target}", parent_of(&current)))
+        };
     }
     Err(ELOOP)
 }
@@ -304,7 +406,13 @@ pub fn host_ref(resolved: Resolved, access: Access) -> Result<HostRef, i32> {
             }
             Ok(reference)
         }
-        Resolved::Device(_) | Resolved::Virtual(_) | Resolved::Synthetic(..) => Err(if access == Access::Write { EACCES } else { ENOENT }),
+        Resolved::Device(_) | Resolved::Virtual(_) | Resolved::Synthetic(..) => {
+            Err(if access == Access::Write {
+                EACCES
+            } else {
+                ENOENT
+            })
+        }
     }
 }
 
@@ -313,7 +421,11 @@ pub fn to_guest(host_path: &str) -> Option<String> {
     let host = PathBuf::from(host_path);
     for mount in &context.app_code {
         if let Ok(rest) = host.strip_prefix(&mount.host) {
-            return Some(if rest.as_os_str().is_empty() { mount.guest.clone() } else { format!("{}/{}", mount.guest, rest.display()) });
+            return Some(if rest.as_os_str().is_empty() {
+                mount.guest.clone()
+            } else {
+                format!("{}/{}", mount.guest, rest.display())
+            });
         }
     }
     None

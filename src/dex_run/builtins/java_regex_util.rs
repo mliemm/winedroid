@@ -229,6 +229,14 @@ impl DexProgram {
             return Some(DexExecutionResult::Int(value));
         }
 
+        if method.matches_builtin_signature("Ljava/util/Random;", "nextFloat", "()F") {
+            let invocation = invocation?;
+            // cite: libcore Random.java#nextFloat, next
+            let value = self.random_next_float(invocation).ok()??;
+
+            return Some(DexExecutionResult::Value(DexValue::Float(value)));
+        }
+
         if method.matches_builtin_signature("Ljava/util/Random;", "nextInt", "(I)I") {
             let invocation = invocation?;
             // cite: libcore Random.java#nextInt, next

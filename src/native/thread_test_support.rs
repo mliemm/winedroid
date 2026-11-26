@@ -26,7 +26,10 @@ pub fn wait_until_last_thread_is_released(bridged: &Bridged) {
     let record = unsafe { *(bridged.symbol("fx_last_thread") as *const usize) };
     let started = Instant::now();
     while super::guest_thread::is_live_address(record) {
-        assert!(started.elapsed().as_secs() < 10, "the detached thread never released its record");
+        assert!(
+            started.elapsed().as_secs() < 10,
+            "the detached thread never released its record"
+        );
         std::thread::yield_now();
     }
 }

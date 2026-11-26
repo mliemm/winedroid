@@ -32,7 +32,14 @@ thread_local! {
 
 pub fn set_application_target_sdk_version(version: i32) {
     // cite: bionic linker_sdk_versions.cpp#set_application_target_sdk_version
-    TARGET_SDK.store(if version == 0 { TARGET_SDK_FUTURE } else { version }, Ordering::SeqCst);
+    TARGET_SDK.store(
+        if version == 0 {
+            TARGET_SDK_FUTURE
+        } else {
+            version
+        },
+        Ordering::SeqCst,
+    );
 }
 
 fn runtime(context: &mut CallContext) -> Option<&'static NativeRuntime> {
@@ -46,7 +53,9 @@ fn runtime(context: &mut CallContext) -> Option<&'static NativeRuntime> {
 fn interned(text: &str) -> usize {
     let mut guard = STRINGS.lock().expect("dl strings");
     let map = guard.get_or_insert_with(HashMap::new);
-    *map.entry(text.to_string()).or_insert_with(|| Box::leak(Box::new(CString::new(text).unwrap_or_default())).as_ptr() as usize)
+    *map.entry(text.to_string()).or_insert_with(|| {
+        Box::leak(Box::new(CString::new(text).unwrap_or_default())).as_ptr() as usize
+    })
 }
 
 fn name_argument(address: usize) -> Option<String> {
@@ -59,15 +68,24 @@ fn open(loader: &Loader, name: Option<&str>, flags: i32, caller: usize) -> u64 {
 
 fn dlopen_handler(context: &mut CallContext) {
     // cite: bionic dlfcn.cpp#__loader_dlopen
-    let Some(runtime) = runtime(context) else { return };
-    let handle = open(runtime.loader(), name_argument(context.arg_ptr(0)).as_deref(), context.arg_i32(1), context.return_address() as usize);
+    let Some(runtime) = runtime(context) else {
+        return;
+    };
+    let handle = open(
+        runtime.loader(),
+        name_argument(context.arg_ptr(0)).as_deref(),
+        context.arg_i32(1),
+        context.return_address() as usize,
+    );
     context.ret_u64(handle);
 }
 
 fn extended_flags_error(flags: u64, namespace: u64) -> Option<String> {
     // cite: bionic linker.cpp#do_dlopen
     if flags & !EXT_VALID_BITS != 0 {
-        return Some(format!("invalid extended flags to android_dlopen_ext: {flags:#x}"));
+        return Some(format!(
+            "invalid extended flags to android_dlopen_ext: {flags:#x}"
+        ));
     }
     if flags & EXT_USE_LIBRARY_FD_OFFSET != 0 && flags & EXT_USE_LIBRARY_FD == 0 {
         return Some(format!(
@@ -75,16 +93,24 @@ fn extended_flags_error(flags: u64, namespace: u64) -> Option<String> {
         ));
     }
     if flags & EXT_USE_NAMESPACE != 0 && namespace == 0 {
-        return Some("ANDROID_DLEXT_USE_NAMESPACE is set but extinfo->library_namespace is null".to_string());
+        return Some(
+            "ANDROID_DLEXT_USE_NAMESPACE is set but extinfo->library_namespace is null".to_string(),
+        );
     }
     None
 }
 
 fn android_dlopen_ext_handler(context: &mut CallContext) {
     // cite: bionic dlfcn.cpp#__loader_android_dlopen_ext
-    let Some(runtime) = runtime(context) else { return };
+    let Some(runtime) = runtime(context) else {
+        return;
+    };
     let (flags, extinfo) = (context.arg_i32(1), context.arg_ptr(2));
-    let ext_flags = if extinfo != 0 { read_value::<u64>(extinfo) } else { 0 };
+    let ext_flags = if extinfo != 0 {
+        read_value::<u64>(extinfo)
+    } else {
+        0
+    };
     let problem = if flags & !RTLD_VALID != 0 {
         Some(format!("invalid flags to dlopen: {flags:x}"))
     } else if extinfo != 0 {
@@ -99,19 +125,36 @@ fn android_dlopen_ext_handler(context: &mut CallContext) {
         context.ret_u64(0);
         return;
     }
-    let handle = open(runtime.loader(), name_argument(context.arg_ptr(0)).as_deref(), flags, context.return_address() as usize);
+    let handle = open(
+        runtime.loader(),
+        name_argument(context.arg_ptr(0)).as_deref(),
+        flags,
+        context.return_address() as usize,
+    );
     context.ret_u64(handle);
 }
 
 fn dlsym_handler(context: &mut CallContext) {
     // cite: bionic dlfcn.cpp#__loader_dlsym
-    let Some(runtime) = runtime(context) else { return };
+    let Some(runtime) = runtime(context) else {
+        return;
+    };
     let Some(name) = name_argument(context.arg_ptr(1)) else {
-        let _ = set_dl_error::<()>("", Err(WinedroidError::new("dlsym failed: symbol name is null")));
+        let _ = set_dl_error::<()>(
+            "",
+            Err(WinedroidError::new("dlsym failed: symbol name is null")),
+        );
         context.ret_u64(0);
         return;
     };
-    let address = runtime.loader().dlsym(DlHandle::from_raw(context.arg_u64(0)), &name, Some(context.return_address() as usize)).unwrap_or(0);
+    let address = runtime
+        .loader()
+        .dlsym(
+            DlHandle::from_raw(context.arg_u64(0)),
+            &name,
+            Some(context.return_address() as usize),
+        )
+        .unwrap_or(0);
     context.ret_ptr(address);
 }
 
@@ -130,7 +173,9 @@ fn dlerror_handler(context: &mut CallContext) {
 
 fn dladdr_handler(context: &mut CallContext) {
     // cite: bionic linker.cpp#do_dladdr
-    let Some(runtime) = runtime(context) else { return };
+    let Some(runtime) = runtime(context) else {
+        return;
+    };
     let (address, destination) = (context.arg_ptr(0), context.arg_ptr(1));
     let Some(info) = runtime.loader().dladdr(address) else {
         context.ret_i32(0);
@@ -163,12 +208,19 @@ fn phdr_block(info: &PhdrInfo, loads: u64, unloads: u64) -> [u8; DL_PHDR_INFO_SI
 
 fn iterate_phdr_handler(context: &mut CallContext) {
     // cite: bionic dlfcn.cpp#__loader_dl_iterate_phdr
-    let Some(runtime) = runtime(context) else { return };
+    let Some(runtime) = runtime(context) else {
+        return;
+    };
     let (callback, data) = (context.arg_ptr(0), context.arg_u64(1));
     let mut failure = None;
     let result = runtime.loader().dl_iterate_phdr(&mut |info| {
         let block = phdr_block(info, info.adds, info.subs);
-        match CallBuilder::new(callback).ptr(block.as_ptr() as usize).int(DL_PHDR_INFO_SIZE as u64).int(data).invoke() {
+        match CallBuilder::new(callback)
+            .ptr(block.as_ptr() as usize)
+            .int(DL_PHDR_INFO_SIZE as u64)
+            .int(data)
+            .invoke()
+        {
             Ok(outcome) => outcome.i32(),
             Err(error) => {
                 failure = Some(error.to_string());
@@ -184,9 +236,15 @@ fn iterate_phdr_handler(context: &mut CallContext) {
 
 fn ld_library_path_handler(context: &mut CallContext) {
     // cite: bionic dlfcn.cpp#__loader_android_get_LD_LIBRARY_PATH
-    let Some(runtime) = runtime(context) else { return };
+    let Some(runtime) = runtime(context) else {
+        return;
+    };
     let (buffer, length) = (context.arg_ptr(0), context.arg_u64(1) as usize);
-    let paths: Vec<String> = runtime.library_dirs().iter().map(|path| path.to_string_lossy().into_owned()).collect();
+    let paths: Vec<String> = runtime
+        .library_dirs()
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
     let required: usize = paths.iter().map(|path| path.len() + 1).sum();
     if length < required {
         fatal(None, &format!("android_get_LD_LIBRARY_PATH failed, buffer too small: buffer len {length}, required len {required}"));
@@ -207,8 +265,14 @@ pub fn register() {
     in_libdl("dladdr", dladdr_handler);
     in_libdl("dl_iterate_phdr", iterate_phdr_handler);
     in_libdl("dlclose", |context| {
-        let Some(runtime) = runtime(context) else { return };
-        context.ret_i32(if runtime.loader().dlclose(context.arg_u64(0)).is_ok() { 0 } else { -1 });
+        let Some(runtime) = runtime(context) else {
+            return;
+        };
+        context.ret_i32(if runtime.loader().dlclose(context.arg_u64(0)).is_ok() {
+            0
+        } else {
+            -1
+        });
     });
     in_libdl("android_get_LD_LIBRARY_PATH", ld_library_path_handler);
     in_libdl("android_get_application_target_sdk_version", |context| {

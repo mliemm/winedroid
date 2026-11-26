@@ -38,10 +38,25 @@ pub fn create(initial: u32, flags: i32) -> i64 {
     if initial > 0 {
         bell.ring();
     }
-    let state = Arc::new(EventFdState { bell, counter: Mutex::new(u64::from(initial)), changed: Condvar::new(), semaphore: flags & flags_of::EFD_SEMAPHORE != 0 });
-    let guest_flags = open::RDWR | if flags & flags_of::EFD_NONBLOCK != 0 { open::NONBLOCK } else { 0 };
+    let state = Arc::new(EventFdState {
+        bell,
+        counter: Mutex::new(u64::from(initial)),
+        changed: Condvar::new(),
+        semaphore: flags & flags_of::EFD_SEMAPHORE != 0,
+    });
+    let guest_flags = open::RDWR
+        | if flags & flags_of::EFD_NONBLOCK != 0 {
+            open::NONBLOCK
+        } else {
+            0
+        };
     let entry = FdEntry::new(FdKind::EventFd, "anon_inode:[eventfd]", guest_flags)
-        .with_synthetic(SyntheticStat { mode: S_IFREG | 0o600, dev: (0, 0xe), rdev: (0, 0), zero_size: false })
+        .with_synthetic(SyntheticStat {
+            mode: S_IFREG | 0o600,
+            dev: (0, 0xe),
+            rdev: (0, 0),
+            zero_size: false,
+        })
         .with_payload(state);
     fd_table::adopt(fd, entry);
     i64::from(fd)
@@ -55,7 +70,9 @@ pub fn read(entry: &FdEntry, buffer: usize, length: usize) -> i64 {
     if buffer == 0 {
         return error(EFAULT);
     }
-    let Some(state) = entry.payload_as::<EventFdState>() else { return error(EINVAL) };
+    let Some(state) = entry.payload_as::<EventFdState>() else {
+        return error(EINVAL);
+    };
     loop {
         let mut counter = state.counter.lock().expect("eventfd counter");
         if *counter > 0 {
@@ -86,7 +103,9 @@ pub fn write(entry: &FdEntry, buffer: usize, length: usize) -> i64 {
     if buffer == 0 {
         return error(EFAULT);
     }
-    let Some(state) = entry.payload_as::<EventFdState>() else { return error(EINVAL) };
+    let Some(state) = entry.payload_as::<EventFdState>() else {
+        return error(EINVAL);
+    };
     let value = read_value::<u64>(buffer);
     if value == u64::MAX {
         return error(EINVAL);

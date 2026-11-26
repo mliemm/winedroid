@@ -34,7 +34,11 @@ pub fn open_flags_to_host(linux: i32) -> i32 {
 
 pub fn status_flags_from_host(host: i32) -> i32 {
     let mut linux = 0;
-    for (to, from) in [(open::APPEND, libc::O_APPEND), (open::NONBLOCK, libc::O_NONBLOCK), (open::FASYNC, libc::O_ASYNC)] {
+    for (to, from) in [
+        (open::APPEND, libc::O_APPEND),
+        (open::NONBLOCK, libc::O_NONBLOCK),
+        (open::FASYNC, libc::O_ASYNC),
+    ] {
         if host & from != 0 {
             linux |= to;
         }
@@ -44,7 +48,11 @@ pub fn status_flags_from_host(host: i32) -> i32 {
 
 pub fn status_flags_to_host(linux: i32) -> i32 {
     let mut host = 0;
-    for (from, to) in [(open::APPEND, libc::O_APPEND), (open::NONBLOCK, libc::O_NONBLOCK), (open::FASYNC, libc::O_ASYNC)] {
+    for (from, to) in [
+        (open::APPEND, libc::O_APPEND),
+        (open::NONBLOCK, libc::O_NONBLOCK),
+        (open::FASYNC, libc::O_ASYNC),
+    ] {
         if linux & from != 0 {
             host |= to;
         }
@@ -84,7 +92,11 @@ pub fn lock_type_from_host(host: i16) -> i16 {
 pub fn map_flags_to_host(linux: i32) -> i32 {
     // cite: bionic mman-common.h#MAP_FIXED_NOREPLACE
     let mut host = 0;
-    for (from, to) in [(mman::MAP_FIXED, libc::MAP_FIXED), (mman::MAP_ANONYMOUS, libc::MAP_ANON), (mman::MAP_NORESERVE, 0x40)] {
+    for (from, to) in [
+        (mman::MAP_FIXED, libc::MAP_FIXED),
+        (mman::MAP_ANONYMOUS, libc::MAP_ANON),
+        (mman::MAP_NORESERVE, 0x40),
+    ] {
         if linux & from != 0 {
             host |= to;
         }
@@ -96,7 +108,19 @@ pub fn map_flags_to_host(linux: i32) -> i32 {
 }
 
 pub fn prot_to_host(linux: i32) -> i32 {
-    (if linux & mman::PROT_READ != 0 { libc::PROT_READ } else { 0 }) | (if linux & mman::PROT_WRITE != 0 { libc::PROT_WRITE } else { 0 }) | (if linux & mman::PROT_EXEC != 0 { libc::PROT_EXEC } else { 0 })
+    (if linux & mman::PROT_READ != 0 {
+        libc::PROT_READ
+    } else {
+        0
+    }) | (if linux & mman::PROT_WRITE != 0 {
+        libc::PROT_WRITE
+    } else {
+        0
+    }) | (if linux & mman::PROT_EXEC != 0 {
+        libc::PROT_EXEC
+    } else {
+        0
+    })
 }
 
 pub fn at_remove_dir_to_host() -> i32 {
@@ -134,7 +158,12 @@ pub fn message_flags_to_host(linux: i32) -> Option<i32> {
 
 pub fn message_flags_from_host(host: i32) -> i32 {
     let mut linux = 0;
-    for (from, to) in [(libc::MSG_EOR, socket::MSG_EOR), (libc::MSG_TRUNC, socket::MSG_TRUNC), (libc::MSG_CTRUNC, socket::MSG_CTRUNC), (libc::MSG_OOB, socket::MSG_OOB)] {
+    for (from, to) in [
+        (libc::MSG_EOR, socket::MSG_EOR),
+        (libc::MSG_TRUNC, socket::MSG_TRUNC),
+        (libc::MSG_CTRUNC, socket::MSG_CTRUNC),
+        (libc::MSG_OOB, socket::MSG_OOB),
+    ] {
         if host & from != 0 {
             linux |= to;
         }

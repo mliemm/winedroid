@@ -34,8 +34,20 @@ fn property_level(key: &str) -> u8 {
     let Some(value) = property(key) else { return 0 };
     let bytes = value.as_bytes();
     match bytes.first().copied() {
-        Some(first @ (b't' | b'T')) => if value[1..].eq_ignore_ascii_case("rue") { BOOLEAN_TRUE } else { first },
-        Some(first @ (b'f' | b'F')) => if value[1..].eq_ignore_ascii_case("alse") { BOOLEAN_FALSE } else { first },
+        Some(first @ (b't' | b'T')) => {
+            if value[1..].eq_ignore_ascii_case("rue") {
+                BOOLEAN_TRUE
+            } else {
+                first
+            }
+        }
+        Some(first @ (b'f' | b'F')) => {
+            if value[1..].eq_ignore_ascii_case("alse") {
+                BOOLEAN_FALSE
+            } else {
+                first
+            }
+        }
         Some(first) => first,
         None => 0,
     }
@@ -56,7 +68,10 @@ fn level_of(level: u8) -> Option<i32> {
 }
 
 fn first_level(keys: &[String]) -> u8 {
-    keys.iter().map(|key| property_level(key)).find(|level| *level != 0).unwrap_or(0)
+    keys.iter()
+        .map(|key| property_level(key))
+        .find(|level| *level != 0)
+        .unwrap_or(0)
 }
 
 fn tag_priority(tag: Option<&[u8]>) -> Option<i32> {
@@ -66,7 +81,11 @@ fn tag_priority(tag: Option<&[u8]>) -> Option<i32> {
         _ => default_tag(),
     };
     let specific = first_level(&[format!("log.tag.{tag}"), format!("persist.log.tag.{tag}")]);
-    let level = if level_of(specific).is_some() { specific } else { first_level(&["log.tag".to_string(), "persist.log.tag".to_string()]) };
+    let level = if level_of(specific).is_some() {
+        specific
+    } else {
+        first_level(&["log.tag".to_string(), "persist.log.tag".to_string()])
+    };
     level_of(level)
 }
 
@@ -84,7 +103,11 @@ pub fn is_loggable(priority: i32, tag: Option<&[u8]>, default_priority: i32) -> 
 }
 
 fn default_tag() -> String {
-    DEFAULT_TAG.lock().expect("default tag").clone().unwrap_or_else(program_name)
+    DEFAULT_TAG
+        .lock()
+        .expect("default tag")
+        .clone()
+        .unwrap_or_else(program_name)
 }
 
 fn buffer_is_writable(buffer: i32) -> bool {
@@ -95,8 +118,15 @@ fn call_logger(record: &LogRecord) -> Result<(), String> {
     let logger = LOGGER.load(Ordering::SeqCst);
     if logger == 0 {
         // cite: logging logger_write.cpp#__android_log_logd_logger
-        let buffer = if record.buffer == BUFFER_DEFAULT { 0 } else { record.buffer };
-        emit(LogRecord { buffer, ..record.clone() });
+        let buffer = if record.buffer == BUFFER_DEFAULT {
+            0
+        } else {
+            record.buffer
+        };
+        emit(LogRecord {
+            buffer,
+            ..record.clone()
+        });
         return Ok(());
     }
     let tag = CString::new(record.tag.clone()).unwrap_or_default();
@@ -108,7 +138,11 @@ fn call_logger(record: &LogRecord) -> Result<(), String> {
     block[16..24].copy_from_slice(&(tag.as_ptr() as u64).to_le_bytes());
     block[32..36].copy_from_slice(&record.line.to_le_bytes());
     block[40..48].copy_from_slice(&(message.as_ptr() as u64).to_le_bytes());
-    CallBuilder::new(logger).ptr(block.as_ptr() as usize).invoke().map(|_| ()).map_err(|error| error.to_string())
+    CallBuilder::new(logger)
+        .ptr(block.as_ptr() as usize)
+        .invoke()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 fn write_record(buffer: i32, priority: i32, tag: Option<&[u8]>, text: &[u8]) -> Result<(), String> {
@@ -116,12 +150,21 @@ fn write_record(buffer: i32, priority: i32, tag: Option<&[u8]>, text: &[u8]) -> 
     if !buffer_is_writable(buffer) {
         return Ok(());
     }
-    let tag = tag.map_or_else(default_tag, |bytes| String::from_utf8_lossy(bytes).into_owned());
+    let tag = tag.map_or_else(default_tag, |bytes| {
+        String::from_utf8_lossy(bytes).into_owned()
+    });
     let message = String::from_utf8_lossy(text).into_owned();
     if priority == PRIORITY_FATAL {
         set_abort_message(&message);
     }
-    call_logger(&LogRecord { buffer, priority, tag, file: None, line: 0, message })
+    call_logger(&LogRecord {
+        buffer,
+        priority,
+        tag,
+        file: None,
+        line: 0,
+        message,
+    })
 }
 
 fn simple_write(context: &mut CallContext, buffer: i32, priority: i32, tag: usize, text: usize) {
@@ -129,13 +172,25 @@ fn simple_write(context: &mut CallContext, buffer: i32, priority: i32, tag: usiz
         context.ret_i32(-1);
         return;
     }
-    match write_record(buffer, priority, optional_cstr(tag), optional_cstr(text).unwrap_or(b"")) {
+    match write_record(
+        buffer,
+        priority,
+        optional_cstr(tag),
+        optional_cstr(text).unwrap_or(b""),
+    ) {
         Ok(()) => context.ret_i32(1),
         Err(message) => context.fail(message),
     }
 }
 
-fn formatted_write(context: &mut CallContext, buffer: i32, priority: i32, tag: usize, format_pointer: usize, mut args: GuestVaList) {
+fn formatted_write(
+    context: &mut CallContext,
+    buffer: i32,
+    priority: i32,
+    tag: usize,
+    format_pointer: usize,
+    mut args: GuestVaList,
+) {
     if !is_loggable(priority, optional_cstr(tag), PRIORITY_VERBOSE) {
         context.ret_i32(-1);
         return;
@@ -154,7 +209,8 @@ fn formatted_write(context: &mut CallContext, buffer: i32, priority: i32, tag: u
 fn assert_fatal(context: &mut CallContext) {
     // cite: logging logger_write.cpp#__android_log_assert
     let regs = *context.regs();
-    let (condition, tag, format_pointer) = (context.arg_ptr(0), context.arg_ptr(1), context.arg_ptr(2));
+    let (condition, tag, format_pointer) =
+        (context.arg_ptr(0), context.arg_ptr(1), context.arg_ptr(2));
     let text = if format_pointer != 0 {
         let mut args = GuestVaList::from_regs(&regs, 3, 0);
         let mut rendered = match format(cstr_bytes(format_pointer), &mut args) {
@@ -179,7 +235,10 @@ fn assert_fatal(context: &mut CallContext) {
     let aborter = ABORTER.load(Ordering::SeqCst);
     if aborter != 0 {
         let message = CString::new(text).unwrap_or_default();
-        if let Err(error) = CallBuilder::new(aborter).ptr(message.as_ptr() as usize).invoke() {
+        if let Err(error) = CallBuilder::new(aborter)
+            .ptr(message.as_ptr() as usize)
+            .invoke()
+        {
             return context.fail(error.to_string());
         }
     } else {
@@ -193,7 +252,11 @@ fn record_from_message(address: usize) -> LogRecord {
     LogRecord {
         buffer: read_value::<i32>(address + 8),
         priority: read_value::<i32>(address + 12),
-        tag: if pointer(16) == 0 { "nullptr".to_string() } else { cstr_lossy(pointer(16)) },
+        tag: if pointer(16) == 0 {
+            "nullptr".to_string()
+        } else {
+            cstr_lossy(pointer(16))
+        },
         file: (pointer(24) != 0).then(|| cstr_lossy(pointer(24))),
         line: read_value::<u32>(address + 32),
         message: cstr_lossy(pointer(40)),
@@ -201,27 +264,71 @@ fn record_from_message(address: usize) -> LogRecord {
 }
 
 fn register_writers() {
-    in_liblog("__android_log_write", |context| simple_write(context, 0, context.arg_i32(0), context.arg_ptr(1), context.arg_ptr(2)));
-    in_liblog("__android_log_buf_write", |context| simple_write(context, context.arg_i32(0), context.arg_i32(1), context.arg_ptr(2), context.arg_ptr(3)));
+    in_liblog("__android_log_write", |context| {
+        simple_write(
+            context,
+            0,
+            context.arg_i32(0),
+            context.arg_ptr(1),
+            context.arg_ptr(2),
+        )
+    });
+    in_liblog("__android_log_buf_write", |context| {
+        simple_write(
+            context,
+            context.arg_i32(0),
+            context.arg_i32(1),
+            context.arg_ptr(2),
+            context.arg_ptr(3),
+        )
+    });
     in_liblog("__android_log_print", |context| {
         let regs = *context.regs();
         let args = GuestVaList::from_regs(&regs, 3, 0);
-        formatted_write(context, 0, context.arg_i32(0), context.arg_ptr(1), context.arg_ptr(2), args);
+        formatted_write(
+            context,
+            0,
+            context.arg_i32(0),
+            context.arg_ptr(1),
+            context.arg_ptr(2),
+            args,
+        );
     });
     in_liblog("__android_log_buf_print", |context| {
         let regs = *context.regs();
         let args = GuestVaList::from_regs(&regs, 4, 0);
-        formatted_write(context, context.arg_i32(0), context.arg_i32(1), context.arg_ptr(2), context.arg_ptr(3), args);
+        formatted_write(
+            context,
+            context.arg_i32(0),
+            context.arg_i32(1),
+            context.arg_ptr(2),
+            context.arg_ptr(3),
+            args,
+        );
     });
-    in_liblog("__android_log_vprint", |context| match context.va_list_arg(3) {
-        Ok(args) => formatted_write(context, 0, context.arg_i32(0), context.arg_ptr(1), context.arg_ptr(2), args),
-        Err(error) => context.fail(error.to_string()),
+    in_liblog("__android_log_vprint", |context| {
+        match context.va_list_arg(3) {
+            Ok(args) => formatted_write(
+                context,
+                0,
+                context.arg_i32(0),
+                context.arg_ptr(1),
+                context.arg_ptr(2),
+                args,
+            ),
+            Err(error) => context.fail(error.to_string()),
+        }
     });
     in_liblog("__android_log_assert", assert_fatal);
     in_liblog("__android_log_write_log_message", |context| {
         let record = record_from_message(context.arg_ptr(0));
         let tag = (record.tag != "nullptr").then(|| record.tag.clone());
-        match write_record(record.buffer, record.priority, tag.as_deref().map(str::as_bytes), record.message.as_bytes()) {
+        match write_record(
+            record.buffer,
+            record.priority,
+            tag.as_deref().map(str::as_bytes),
+            record.message.as_bytes(),
+        ) {
             Ok(()) => {}
             Err(message) => context.fail(message),
         }
@@ -229,10 +336,18 @@ fn register_writers() {
 }
 
 fn register_configuration() {
-    in_liblog("__android_log_set_logger", |context| LOGGER.store(context.arg_ptr(0), Ordering::SeqCst));
-    in_liblog("__android_log_logd_logger", |context| emit(record_from_message(context.arg_ptr(0))));
-    in_liblog("__android_log_stderr_logger", |context| write_stderr(&record_from_message(context.arg_ptr(0))));
-    in_liblog("__android_log_set_aborter", |context| ABORTER.store(context.arg_ptr(0), Ordering::SeqCst));
+    in_liblog("__android_log_set_logger", |context| {
+        LOGGER.store(context.arg_ptr(0), Ordering::SeqCst)
+    });
+    in_liblog("__android_log_logd_logger", |context| {
+        emit(record_from_message(context.arg_ptr(0)))
+    });
+    in_liblog("__android_log_stderr_logger", |context| {
+        write_stderr(&record_from_message(context.arg_ptr(0)))
+    });
+    in_liblog("__android_log_set_aborter", |context| {
+        ABORTER.store(context.arg_ptr(0), Ordering::SeqCst)
+    });
     in_liblog("__android_log_call_aborter", |context| {
         let aborter = ABORTER.load(Ordering::SeqCst);
         if aborter == 0 {
@@ -248,17 +363,33 @@ fn register_configuration() {
         guest_abort()
     });
     in_liblog("__android_log_is_loggable", |context| {
-        let loggable = is_loggable(context.arg_i32(0), optional_cstr(context.arg_ptr(1)), context.arg_i32(2));
+        let loggable = is_loggable(
+            context.arg_i32(0),
+            optional_cstr(context.arg_ptr(1)),
+            context.arg_i32(2),
+        );
         context.ret_i32(i32::from(loggable));
     });
     in_liblog("__android_log_is_loggable_len", |context| {
-        let tag = (context.arg_ptr(1) != 0).then(|| unsafe { std::slice::from_raw_parts(context.arg_ptr(1) as *const u8, context.arg_u64(2) as usize) });
-        context.ret_i32(i32::from(is_loggable(context.arg_i32(0), tag, context.arg_i32(3))));
+        let tag = (context.arg_ptr(1) != 0).then(|| unsafe {
+            std::slice::from_raw_parts(context.arg_ptr(1) as *const u8, context.arg_u64(2) as usize)
+        });
+        context.ret_i32(i32::from(is_loggable(
+            context.arg_i32(0),
+            tag,
+            context.arg_i32(3),
+        )));
     });
-    in_liblog("__android_log_set_minimum_priority", |context| context.ret_i32(MINIMUM.swap(context.arg_i32(0), Ordering::SeqCst)));
-    in_liblog("__android_log_get_minimum_priority", |context| context.ret_i32(MINIMUM.load(Ordering::SeqCst)));
+    in_liblog("__android_log_set_minimum_priority", |context| {
+        context.ret_i32(MINIMUM.swap(context.arg_i32(0), Ordering::SeqCst))
+    });
+    in_liblog("__android_log_get_minimum_priority", |context| {
+        context.ret_i32(MINIMUM.load(Ordering::SeqCst))
+    });
     in_liblog("__android_log_set_default_tag", |context| {
-        let tag = optional_cstr(context.arg_ptr(0)).map(|bytes| String::from_utf8_lossy(&bytes[..bytes.len().min(TAG_LIMIT)]).into_owned());
+        let tag = optional_cstr(context.arg_ptr(0)).map(|bytes| {
+            String::from_utf8_lossy(&bytes[..bytes.len().min(TAG_LIMIT)]).into_owned()
+        });
         *DEFAULT_TAG.lock().expect("default tag") = tag;
     });
 }

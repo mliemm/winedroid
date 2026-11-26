@@ -1190,8 +1190,9 @@ fn builtin_tree_set_constructor_stores_comparator_and_feeds_set_iteration() {
     );
 }
 
+// cite: libcore TreeMap.java#compare
 #[test]
-fn tree_set_add_without_comparator_reports_missing_natural_ordering() {
+fn tree_set_add_without_comparator_reports_missing_natural_ordering_for_unsupported_values() {
     let program = DexProgram::new(Vec::new());
     let constructor = DexMethodId {
         class_descriptor: "Ljava/util/TreeSet;".to_owned(),
@@ -1215,6 +1216,14 @@ fn tree_set_add_without_comparator_reports_missing_natural_ordering() {
         id: 102,
         class_descriptor: std::rc::Rc::from("Ljava/util/TreeSet;"),
     });
+    let first = DexValue::Object(DexObjectRef {
+        id: 103,
+        class_descriptor: std::rc::Rc::from("Lcom/example/NotBuiltinComparable;"),
+    });
+    let second = DexValue::Object(DexObjectRef {
+        id: 104,
+        class_descriptor: std::rc::Rc::from("Lcom/example/NotBuiltinComparable;"),
+    });
 
     assert_eq!(
         program.invoke_builtin_method(&constructor, Some(&test_invocation(vec![tree_set.clone()]))),
@@ -1230,12 +1239,106 @@ fn tree_set_add_without_comparator_reports_missing_natural_ordering() {
         ),
         None
     );
+    assert_eq!(
+        program
+            .tree_set_add_value(&test_invocation(vec![tree_set.clone(), first]), 0)
+            .unwrap(),
+        1
+    );
     assert!(program
-        .tree_set_add_value(
-            &test_invocation(vec![tree_set, DexValue::String(std::rc::Rc::from("node"))]),
-            0,
-        )
+        .tree_set_add_value(&test_invocation(vec![tree_set, second]), 0)
         .is_err());
+}
+
+// cite: libcore ConcurrentSkipListSet.java#ConcurrentSkipListSet, add
+// cite: libcore ConcurrentSkipListMap.java#cpr, doPut
+#[test]
+fn concurrent_skip_list_set_natural_ordering_keeps_sorted_unique_values_and_rejects_null() {
+    let program = DexProgram::new(Vec::new());
+    let constructor = DexMethodId {
+        class_descriptor: "Ljava/util/concurrent/ConcurrentSkipListSet;".to_owned(),
+        name: "<init>".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "V".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let set = program.allocate_object("Ljava/util/concurrent/ConcurrentSkipListSet;".to_owned());
+    let add = |value: &str| {
+        program
+            .tree_set_add_value(
+                &test_invocation(vec![
+                    set.clone(),
+                    DexValue::String(std::rc::Rc::from(value)),
+                ]),
+                0,
+            )
+            .unwrap()
+    };
+
+    assert_eq!(
+        program.invoke_builtin_method(&constructor, Some(&test_invocation(vec![set.clone()]))),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(add("pear"), 1);
+    assert_eq!(add("apple"), 1);
+    assert_eq!(add("pear"), 0);
+    assert_eq!(add("mango"), 1);
+    assert_eq!(
+        program
+            .runtime
+            .borrow()
+            .list_entries
+            .get(&map_identity_key(&set))
+            .cloned(),
+        Some(vec![
+            DexValue::String(std::rc::Rc::from("apple")),
+            DexValue::String(std::rc::Rc::from("mango")),
+            DexValue::String(std::rc::Rc::from("pear")),
+        ])
+    );
+    for null in [DexValue::Null, DexValue::Int(0)] {
+        assert!(program.sorted_set_add_rejects_null(&test_invocation(vec![set.clone(), null])));
+    }
+    assert!(!program.sorted_set_add_rejects_null(&test_invocation(vec![
+        set,
+        DexValue::String(std::rc::Rc::from("x"))
+    ])));
+}
+
+// cite: libcore ConcurrentSkipListMap.java#doPut
+// cite: libcore TreeMap.java#put
+#[test]
+fn concurrent_skip_list_set_rejects_null_even_with_a_comparator_but_tree_set_does_not() {
+    let program = DexProgram::new(Vec::new());
+    let comparator = program.allocate_object("Lcom/example/Order;".to_owned());
+    let constructor = |class_descriptor: &str| DexMethodId {
+        class_descriptor: class_descriptor.to_owned(),
+        name: "<init>".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VL".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec!["Ljava/util/Comparator;".to_owned()],
+        },
+    };
+    let rejects_null = |class_descriptor: &str| {
+        let set = program.allocate_object(class_descriptor.to_owned());
+        assert_eq!(
+            program.invoke_builtin_method(
+                &constructor(class_descriptor),
+                Some(&test_invocation(vec![set.clone(), comparator.clone()])),
+            ),
+            Some(DexExecutionResult::Void)
+        );
+        program.sorted_set_add_rejects_null(&test_invocation(vec![set, DexValue::Null]))
+    };
+
+    assert!(rejects_null("Ljava/util/concurrent/ConcurrentSkipListSet;"));
+    assert!(!rejects_null("Ljava/util/TreeSet;"));
+
+    let natural = program.allocate_object("Ljava/util/TreeSet;".to_owned());
+    assert!(program.sorted_set_add_rejects_null(&test_invocation(vec![natural, DexValue::Null])));
 }
 
 #[test]
@@ -1395,8 +1498,14 @@ fn libcore_abstract_set_remove_all_removes_matching_returns_false_for_none_and_t
 
     assert_eq!(remove_all_result(other), Some(DexExecutionResult::Int(0)));
     assert_eq!(remove_all_result(empty), Some(DexExecutionResult::Int(0)));
-    assert_eq!(remove_all_result(matching.clone()), Some(DexExecutionResult::Int(1)));
-    assert_eq!(remove_all_result(matching), Some(DexExecutionResult::Int(0)));
+    assert_eq!(
+        remove_all_result(matching.clone()),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(
+        remove_all_result(matching),
+        Some(DexExecutionResult::Int(0))
+    );
     assert_eq!(
         program
             .runtime
@@ -1805,4 +1914,81 @@ fn builtin_list_last_index_of_finds_the_final_occurrence() {
         program.invoke_builtin_method(&last_index_of, Some(&test_invocation(vec![list, target]))),
         Some(DexExecutionResult::Int(2))
     );
+}
+
+#[test]
+fn libcore_map_contains_value_follows_hash_map_and_concurrent_hash_map_java() {
+    // cite: libcore ConcurrentHashMap.java#contains, containsValue
+    // cite: libcore HashMap.java#containsValue
+    let program = DexProgram::new(Vec::new());
+    let method = |class_descriptor: &str, name: &str| DexMethodId {
+        class_descriptor: class_descriptor.to_owned(),
+        name: name.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "ZL".to_owned(),
+            return_type: "Z".to_owned(),
+            parameters: vec!["Ljava/lang/Object;".to_owned()],
+        },
+    };
+    let fill = |class_descriptor: &str| {
+        let map = program.allocate_object(class_descriptor.to_owned());
+        let map_key = map_identity_key(&map);
+        for (key, value) in [
+            ("k1", DexValue::String(std::rc::Rc::from("v"))),
+            ("k2", DexValue::Null),
+        ] {
+            program
+                .runtime
+                .borrow_mut()
+                .map_entries
+                .insert((map_key.clone(), key.to_owned()), value);
+        }
+        map
+    };
+    let call = |method: &DexMethodId, map: &DexValue, needle: DexValue| {
+        program
+            .invoke_java_collection_equality_method(
+                method,
+                &test_invocation(vec![map.clone(), needle]),
+                0,
+            )
+            .expect("containsValue should run")
+    };
+    let text = |value: &str| DexValue::String(std::rc::Rc::from(value));
+
+    let hash_map = fill("Ljava/util/HashMap;");
+    let contains_value = method("Ljava/util/HashMap;", "containsValue");
+    assert_eq!(
+        call(&contains_value, &hash_map, text("v")),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(
+        call(&contains_value, &hash_map, text("w")),
+        Some(DexExecutionResult::Int(0))
+    );
+    assert_eq!(
+        call(&contains_value, &hash_map, DexValue::Null),
+        Some(DexExecutionResult::Int(1))
+    );
+
+    let concurrent = program.allocate_object("Ljava/util/concurrent/ConcurrentHashMap;".to_owned());
+    program
+        .runtime
+        .borrow_mut()
+        .map_entries
+        .insert((map_identity_key(&concurrent), "k".to_owned()), text("v"));
+    let contains = method("Ljava/util/concurrent/ConcurrentHashMap;", "contains");
+    assert_eq!(
+        call(&contains, &concurrent, text("v")),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(
+        call(&contains, &concurrent, text("w")),
+        Some(DexExecutionResult::Int(0))
+    );
+    let Some(DexExecutionResult::Throw(exception)) = call(&contains, &concurrent, DexValue::Null)
+    else {
+        panic!("ConcurrentHashMap.contains(null) should throw");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
 }

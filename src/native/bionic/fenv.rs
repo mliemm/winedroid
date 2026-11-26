@@ -73,8 +73,12 @@ pub fn register() {
         raise_exceptions(context.arg_u32(0));
         context.ret_i32(0);
     });
-    in_libm("fetestexcept", |context| context.ret_i32(test_exceptions(context.arg_u32(0)) as i32));
-    in_libm("fegetround", |context| context.ret_i32(rounding_mode() as i32));
+    in_libm("fetestexcept", |context| {
+        context.ret_i32(test_exceptions(context.arg_u32(0)) as i32)
+    });
+    in_libm("fegetround", |context| {
+        context.ret_i32(rounding_mode() as i32)
+    });
     in_libm("fesetround", |context| {
         let accepted = set_rounding_mode(context.arg_u32(0));
         context.ret_i32(if accepted { 0 } else { -1 });
@@ -85,7 +89,10 @@ pub fn register() {
         context.ret_i32(0);
     });
     in_libm("fesetenv", |context| {
-        let (control, status) = (read_value::<u32>(context.arg_ptr(0)), read_value::<u32>(context.arg_ptr(0) + 4));
+        let (control, status) = (
+            read_value::<u32>(context.arg_ptr(0)),
+            read_value::<u32>(context.arg_ptr(0) + 4),
+        );
         if control != read_fpcr() {
             write_fpcr(control);
         }
@@ -100,7 +107,10 @@ pub fn register() {
     });
     in_libm("feupdateenv", |context| {
         let pending = read_fpsr() & ALL_EXCEPTIONS;
-        let (control, status) = (read_value::<u32>(context.arg_ptr(0)), read_value::<u32>(context.arg_ptr(0) + 4));
+        let (control, status) = (
+            read_value::<u32>(context.arg_ptr(0)),
+            read_value::<u32>(context.arg_ptr(0) + 4),
+        );
         if control != read_fpcr() {
             write_fpcr(control);
         }

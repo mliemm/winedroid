@@ -4,11 +4,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::error::{Result, WinedroidError};
 
-use super::data_fault;
-use super::host_log;
 use super::bionic::errno_map::{is_linux_errno, linux_from_darwin};
+use super::data_fault;
 use super::guest_call::abort_active_call;
 use super::guest_regs::Regs;
+use super::host_log;
 use super::link_resolution::{ImportKind, SystemLibraryProvider};
 use super::stub_table::{initialize, stub_address};
 use super::system_libraries::is_system_soname;
@@ -35,11 +35,19 @@ struct Names {
     owners: HashMap<String, &'static str>,
 }
 
-static ENTRIES: [AtomicPtr<Entry>; STUB_COUNT] = [const { AtomicPtr::new(std::ptr::null_mut()) }; STUB_COUNT];
+static ENTRIES: [AtomicPtr<Entry>; STUB_COUNT] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; STUB_COUNT];
 static NAMES: OnceLock<Mutex<Names>> = OnceLock::new();
 
 fn names() -> &'static Mutex<Names> {
-    NAMES.get_or_init(|| Mutex::new(Names { ids: HashMap::new(), data: HashMap::new(), raw: HashMap::new(), owners: HashMap::new() }))
+    NAMES.get_or_init(|| {
+        Mutex::new(Names {
+            ids: HashMap::new(),
+            data: HashMap::new(),
+            raw: HashMap::new(),
+            owners: HashMap::new(),
+        })
+    })
 }
 
 pub struct CallContext<'a> {
@@ -51,7 +59,12 @@ pub struct CallContext<'a> {
 
 impl<'a> CallContext<'a> {
     pub fn new(regs: &'a mut Regs, symbol: &'a str) -> Self {
-        Self { regs, symbol, failure: None, errno: None }
+        Self {
+            regs,
+            symbol,
+            failure: None,
+            errno: None,
+        }
     }
 
     pub fn symbol(&self) -> &str {
@@ -184,14 +197,27 @@ fn leak_entry(entry: Entry) -> *mut Entry {
     Box::into_raw(Box::new(entry))
 }
 
-fn bind(names: &mut Names, entries: &[AtomicPtr<Entry>], name: &str, binding: Binding) -> std::result::Result<usize, String> {
+fn bind(
+    names: &mut Names,
+    entries: &[AtomicPtr<Entry>],
+    name: &str,
+    binding: Binding,
+) -> std::result::Result<usize, String> {
     let overflow = entries.len() - 1;
     if let Some(&id) = names.ids.get(name) {
         let current = unsafe { &*entries[id].load(Ordering::Acquire) };
         match (&current.binding, &binding) {
-            (Binding::Handler(_), Binding::Handler(_)) => return Err(format!("native handler already registered: {name}")),
+            (Binding::Handler(_), Binding::Handler(_)) => {
+                return Err(format!("native handler already registered: {name}"))
+            }
             (Binding::Missing { .. }, Binding::Handler(_)) => {
-                entries[id].store(leak_entry(Entry { name: name.to_string(), binding }), Ordering::Release);
+                entries[id].store(
+                    leak_entry(Entry {
+                        name: name.to_string(),
+                        binding,
+                    }),
+                    Ordering::Release,
+                );
             }
             _ => {}
         }
@@ -201,29 +227,53 @@ fn bind(names: &mut Names, entries: &[AtomicPtr<Entry>], name: &str, binding: Bi
     if id >= overflow {
         host_log::line(&format!("FIXME: native import stub table is full, {name} cannot get a stub; next missing primitive: more native import stub slots"));
         if entries[overflow].load(Ordering::Acquire).is_null() {
-            entries[overflow].store(leak_entry(Entry { name: "native import stub table is full".to_string(), binding: Binding::Overflow }), Ordering::Release);
+            entries[overflow].store(
+                leak_entry(Entry {
+                    name: "native import stub table is full".to_string(),
+                    binding: Binding::Overflow,
+                }),
+                Ordering::Release,
+            );
         }
         return Ok(overflow);
     }
-    entries[id].store(leak_entry(Entry { name: name.to_string(), binding }), Ordering::Release);
+    entries[id].store(
+        leak_entry(Entry {
+            name: name.to_string(),
+            binding,
+        }),
+        Ordering::Release,
+    );
     names.ids.insert(name.to_string(), id);
     Ok(id)
 }
 
 fn register_binding(name: &str, binding: Binding) -> usize {
     initialize(spk_dispatch);
-    let bound = bind(&mut names().lock().expect("bridge names"), &ENTRIES, name, binding);
+    let bound = bind(
+        &mut names().lock().expect("bridge names"),
+        &ENTRIES,
+        name,
+        binding,
+    );
     match bound {
         Ok(id) => stub_address(id),
         Err(message) => panic!("{message}"),
     }
 }
 
-pub fn register_handler(name: &str, handler: impl Fn(&mut CallContext) + Send + Sync + 'static) -> usize {
+pub fn register_handler(
+    name: &str,
+    handler: impl Fn(&mut CallContext) + Send + Sync + 'static,
+) -> usize {
     register_binding(name, Binding::Handler(Arc::new(handler)))
 }
 
-pub fn register_handler_in(soname: &'static str, name: &str, handler: impl Fn(&mut CallContext) + Send + Sync + 'static) -> usize {
+pub fn register_handler_in(
+    soname: &'static str,
+    name: &str,
+    handler: impl Fn(&mut CallContext) + Send + Sync + 'static,
+) -> usize {
     claim_owner(soname, name);
     register_handler(name, handler)
 }
@@ -250,7 +300,12 @@ pub fn register_data_in(soname: &'static str, name: &str, bytes: usize) -> usize
 }
 
 pub fn register_missing(importer: &str, name: &str) -> usize {
-    register_binding(name, Binding::Missing { importer: importer.to_string() })
+    register_binding(
+        name,
+        Binding::Missing {
+            importer: importer.to_string(),
+        },
+    )
 }
 
 pub fn handler_address(name: &str) -> Option<usize> {
@@ -270,11 +325,21 @@ pub fn register_data(name: &str, bytes: usize) -> usize {
 }
 
 fn owner_allows(soname: &str, name: &str) -> bool {
-    names().lock().expect("bridge names").owners.get(name).is_none_or(|owner| *owner == soname)
+    names()
+        .lock()
+        .expect("bridge names")
+        .owners
+        .get(name)
+        .is_none_or(|owner| *owner == soname)
 }
 
 fn data_address(name: &str) -> Option<usize> {
-    names().lock().expect("bridge names").data.get(name).copied()
+    names()
+        .lock()
+        .expect("bridge names")
+        .data
+        .get(name)
+        .copied()
 }
 
 fn raw_address(name: &str) -> Option<usize> {
@@ -286,7 +351,8 @@ fn unmapped_data_address(importer: &str, name: &str) -> usize {
     let mut names = names().lock().expect("bridge names");
     *names.data.entry(key).or_insert_with(|| {
         let message = missing_data_message(importer, name);
-        let address = data_fault::reserve(message.clone()).unwrap_or_else(|| panic!("no unresolved data slot left for {importer} {name}"));
+        let address = data_fault::reserve(message.clone())
+            .unwrap_or_else(|| panic!("no unresolved data slot left for {importer} {name}"));
         host_log::line(&message);
         address
     })
@@ -305,7 +371,10 @@ fn run_handler(entry: &Entry, handler: &Handler, regs: &mut Regs) -> Option<Stri
     let mut context = CallContext::new(regs, &entry.name);
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(&mut context)));
     if outcome.is_err() {
-        host_log::line(&format!("host handler panicked in {} lr={:#x}", entry.name, context.regs.lr));
+        host_log::line(&format!(
+            "host handler panicked in {} lr={:#x}",
+            entry.name, context.regs.lr
+        ));
         std::process::abort();
     }
     unsafe { *libc::__error() = context.errno.unwrap_or(saved_errno) };
@@ -350,7 +419,9 @@ impl SystemLibraryProvider for BridgeProvider {
         if !owner_allows(soname, name) {
             return None;
         }
-        raw_address(name).or_else(|| data_address(name)).or_else(|| handler_address(name))
+        raw_address(name)
+            .or_else(|| data_address(name))
+            .or_else(|| handler_address(name))
     }
 
     fn unresolved(&self, importer: &str, name: &str, kind: ImportKind) -> usize {
@@ -362,9 +433,25 @@ impl SystemLibraryProvider for BridgeProvider {
 }
 
 #[cfg(test)]
-pub(super) fn bind_for_test(entries: &[AtomicPtr<Entry>], names: &mut HashMap<String, usize>, name: &str, handler: bool) -> usize {
-    let mut scratch = Names { ids: std::mem::take(names), data: HashMap::new(), raw: HashMap::new(), owners: HashMap::new() };
-    let binding = if handler { Binding::Handler(Arc::new(|_| {})) } else { Binding::Missing { importer: "test".to_string() } };
+pub(super) fn bind_for_test(
+    entries: &[AtomicPtr<Entry>],
+    names: &mut HashMap<String, usize>,
+    name: &str,
+    handler: bool,
+) -> usize {
+    let mut scratch = Names {
+        ids: std::mem::take(names),
+        data: HashMap::new(),
+        raw: HashMap::new(),
+        owners: HashMap::new(),
+    };
+    let binding = if handler {
+        Binding::Handler(Arc::new(|_| {}))
+    } else {
+        Binding::Missing {
+            importer: "test".to_string(),
+        }
+    };
     let id = bind(&mut scratch, entries, name, binding);
     *names = scratch.ids;
     id.unwrap_or_else(|message| panic!("{message}"))
@@ -372,5 +459,6 @@ pub(super) fn bind_for_test(entries: &[AtomicPtr<Entry>], names: &mut HashMap<St
 
 #[cfg(test)]
 pub(super) fn entry_is_overflow(entries: &[AtomicPtr<Entry>], id: usize) -> bool {
-    unsafe { entries[id].load(Ordering::Acquire).as_ref() }.is_some_and(|entry| matches!(entry.binding, Binding::Overflow))
+    unsafe { entries[id].load(Ordering::Acquire).as_ref() }
+        .is_some_and(|entry| matches!(entry.binding, Binding::Overflow))
 }

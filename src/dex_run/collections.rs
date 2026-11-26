@@ -197,6 +197,44 @@ impl DexProgram {
         Some(i32::from(contains_key))
     }
 
+    fn java_map_contains_value(
+        &self,
+        method: &DexMethodId,
+        invocation: &DexInvocation,
+        depth: usize,
+    ) -> Result<DexExecutionResult> {
+        let [map, needle] = invocation.arguments.as_slice() else {
+            return Err(WinedroidError::new(format!(
+                "Map.{}(Object) expected 2 arguments, got {}",
+                method.name,
+                invocation.arguments.len()
+            )));
+        };
+        let receiver_descriptor =
+            value_class_descriptor(map).unwrap_or(method.class_descriptor.as_str());
+        if *needle == DexValue::Null && rejects_null_map_value(receiver_descriptor) {
+            return Ok(self.null_pointer_exception_result());
+        }
+
+        let map_key = map_identity_key(map);
+        let values = self
+            .runtime
+            .borrow()
+            .map_entries
+            .iter()
+            .filter(|((entry_map_key, _), _)| entry_map_key == &map_key)
+            .map(|(_, value)| value.clone())
+            .collect::<Vec<_>>();
+        let contains = if receiver_descriptor == "Ljava/util/IdentityHashMap;" {
+            values.contains(needle)
+        } else {
+            self.java_collection_index_of(&values, needle, depth + 1)?
+                .is_some()
+        };
+
+        Ok(DexExecutionResult::Int(i32::from(contains)))
+    }
+
     pub(super) fn java_hash_map_contains_key(
         &self,
         invocation: &DexInvocation,
@@ -496,7 +534,7 @@ impl DexProgram {
         Ok(i32::from(equal))
     }
 
-    fn runtime_values_equal(
+    pub(super) fn runtime_values_equal(
         &self,
         left: &DexValue,
         right: &DexValue,
@@ -2034,15 +2072,13 @@ impl DexProgram {
             (comparator, values)
         };
 
-        if comparator == DexValue::Null {
-            return Err(WinedroidError::new(
-                "TreeSet.add(Object) natural ordering is not implemented\nnext missing primitive: TreeSet natural ordering",
-            ));
-        }
-
         let mut insert_at = values.len();
         for (index, existing) in values.iter().enumerate() {
-            let order = self.compare_with_comparator(&comparator, &value, existing, depth + 1)?;
+            let order = if comparator == DexValue::Null {
+                self.natural_order_compare(&value, existing)?
+            } else {
+                self.compare_with_comparator(&comparator, &value, existing, depth + 1)?
+            };
             if order == 0 {
                 return Ok(0);
             }
@@ -2059,6 +2095,45 @@ impl DexProgram {
             .insert(set_key, values);
 
         Ok(1)
+    }
+
+    // cite: libcore ConcurrentSkipListSet.java#add
+    // cite: libcore ConcurrentSkipListMap.java#cpr, doPut
+    pub(super) fn sorted_set_add_rejects_null(&self, invocation: &DexInvocation) -> bool {
+        let [set, value] = invocation.arguments.as_slice() else {
+            return false;
+        };
+        let set_key = map_identity_key(set);
+        let natural_ordering = !matches!(
+            self.runtime.borrow().tree_set_comparators.get(&set_key),
+            Some(comparator) if *comparator != DexValue::Null
+        );
+        let skip_list = value_class_descriptor(set)
+            .map(|descriptor| {
+                self.descriptor_matches_type(
+                    descriptor,
+                    "Ljava/util/concurrent/ConcurrentSkipListSet;",
+                )
+            })
+            .unwrap_or(false);
+
+        (natural_ordering || skip_list) && matches!(value, DexValue::Null | DexValue::Int(0))
+    }
+
+    // cite: libcore ConcurrentSkipListMap.java#cpr
+    fn natural_order_compare(&self, left: &DexValue, right: &DexValue) -> Result<i32> {
+        self.comparable_compare_to(&DexInvocation {
+            kind: DexInvokeKind::Virtual,
+            range: false,
+            method_index: 0,
+            argument_registers: Default::default(),
+            arguments: vec![left.clone(), right.clone()].into(),
+        })
+        .ok_or_else(|| {
+            WinedroidError::new(format!(
+                "natural ordering of the added value is not implemented\nnext missing primitive: Comparable.compareTo for {left} against {right}"
+            ))
+        })
     }
 
     pub(super) fn tree_set_first(&self, invocation: &DexInvocation) -> Option<DexValue> {
@@ -2948,6 +3023,9 @@ impl DexProgram {
     }
 
     pub(super) fn map_entry_key(&self, invocation: &DexInvocation) -> Option<DexValue> {
+        if let Some(entry) = self.simple_entry_receiver(invocation) {
+            return self.read_stored_instance_field(entry, &simple_entry_field("key"));
+        }
         let entry_key = map_entry_object_key(invocation)?;
         self.runtime
             .borrow()
@@ -2957,12 +3035,57 @@ impl DexProgram {
     }
 
     pub(super) fn map_entry_value(&self, invocation: &DexInvocation) -> Option<DexValue> {
+        if let Some(entry) = self.simple_entry_receiver(invocation) {
+            return self.read_stored_instance_field(entry, &simple_entry_field("value"));
+        }
         let entry_key = map_entry_object_key(invocation)?;
         self.runtime
             .borrow()
             .map_entry_objects
             .get(&entry_key)
             .map(|(_key, value)| value.clone())
+    }
+
+    fn simple_entry_receiver<'a>(&self, invocation: &'a DexInvocation) -> Option<&'a DexValue> {
+        let [entry] = invocation.arguments.as_slice() else {
+            return None;
+        };
+
+        (value_class_descriptor(entry) == Some(SIMPLE_ENTRY)).then_some(entry)
+    }
+
+    // cite: libcore AbstractMap.java#SimpleEntry
+    pub(super) fn simple_entry_init(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        let (entry, key, value) = match invocation.arguments.as_slice() {
+            [entry, key, value] => (entry, key.clone(), value.clone()),
+            [entry, source] => {
+                if is_null_value(source) {
+                    return Some(DexExecutionResult::Throw(
+                        self.allocate_generated_exception(DexGeneratedException {
+                            class_descriptor: "Ljava/lang/NullPointerException;".to_owned(),
+                            detail_message: None,
+                        }),
+                    ));
+                }
+                let source_invocation = DexInvocation {
+                    arguments: std::iter::once(source.clone()).collect(),
+                    ..invocation.clone()
+                };
+                (
+                    entry,
+                    self.map_entry_key(&source_invocation)?,
+                    self.map_entry_value(&source_invocation)?,
+                )
+            }
+            _ => return None,
+        };
+        let stored = self.write_stored_instance_field(entry, &simple_entry_field("key"), key)
+            && self.write_stored_instance_field(entry, &simple_entry_field("value"), value);
+
+        stored.then_some(DexExecutionResult::Void)
     }
 
     pub(super) fn write_json_object_value(&self, invocation: &DexInvocation) -> Option<DexValue> {
@@ -4062,6 +4185,87 @@ impl DexProgram {
         }
 
         Some(())
+    }
+
+    // cite: libcore JSONObject.java#JSONObject, wrap
+    pub(super) fn init_json_object_from_map(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        let [object, source] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        if matches!(source, DexValue::Null) {
+            return Some(DexExecutionResult::Throw(
+                self.allocate_object("Ljava/lang/NullPointerException;".to_owned()),
+            ));
+        }
+        if !self.value_is_map_like(source) {
+            return None;
+        }
+        let object_key = map_identity_key(object);
+        let source_key = map_identity_key(source);
+
+        let mut copied = Vec::new();
+        {
+            let runtime = self.runtime.borrow();
+            for ((map_key, entry_key), value) in &runtime.map_entries {
+                if map_key != &source_key {
+                    continue;
+                }
+                let key = runtime
+                    .map_entry_keys
+                    .get(&(map_key.clone(), entry_key.clone()))?;
+                copied.push((key.clone(), value.clone()));
+            }
+        }
+
+        let mut wrapped = Vec::new();
+        for (key, value) in copied {
+            match key {
+                DexValue::String(key) => wrapped.push((key.to_string(), self.json_wrap(&value)?)),
+                DexValue::Null => {
+                    return Some(DexExecutionResult::Throw(
+                        self.allocate_object("Ljava/lang/NullPointerException;".to_owned()),
+                    ));
+                }
+                _ => return None,
+            }
+        }
+
+        let mut runtime = self.runtime.borrow_mut();
+        for (entry_key, value) in wrapped {
+            runtime
+                .json_entries
+                .insert((object_key.clone(), entry_key), value);
+        }
+
+        Some(DexExecutionResult::Void)
+    }
+
+    // cite: libcore JSONObject.java#wrap
+    fn json_wrap(&self, value: &DexValue) -> Option<DexValue> {
+        match value {
+            DexValue::String(_) | DexValue::Int(_) | DexValue::Long(_) => Some(value.clone()),
+            DexValue::Object(object)
+                if matches!(
+                    &*object.class_descriptor,
+                    "Lorg/json/JSONObject;" | "Lorg/json/JSONArray;"
+                ) =>
+            {
+                Some(value.clone())
+            }
+            DexValue::Reference(reference)
+                if boxed_reference_display_value(reference).is_some() =>
+            {
+                Some(value.clone())
+            }
+            DexValue::Null
+            | DexValue::Uninitialized
+            | DexValue::Float(_)
+            | DexValue::Object(_)
+            | DexValue::Reference(_) => None,
+        }
     }
 
     pub(super) fn json_object_get_value(&self, invocation: &DexInvocation) -> Option<DexValue> {
@@ -5465,6 +5669,34 @@ impl DexProgram {
         Ok(Some(java_random_next_bits(seed, 32)))
     }
 
+    pub(super) fn random_next_float<A: MethodIntrinsicArguments + ?Sized>(
+        &self,
+        invocation: &A,
+    ) -> Result<Option<f32>> {
+        if invocation.argument_count() != 1 {
+            return Ok(None);
+        }
+
+        let Some(receiver) = invocation.argument_value(0)? else {
+            return Ok(None);
+        };
+        if !dex_value_is_object_like(&receiver) {
+            return Ok(None);
+        }
+
+        let random_key = map_identity_key(&receiver);
+        let mut runtime = self.runtime.borrow_mut();
+        let seed = runtime
+            .random_seeds
+            .entry(random_key)
+            .or_insert_with(|| java_random_initial_scramble(0));
+
+        // cite: libcore Random.java#nextFloat, next
+        Ok(Some(
+            java_random_next_bits(seed, 24) as f32 / (1 << 24) as f32,
+        ))
+    }
+
     pub(super) fn random_next_int<A: MethodIntrinsicArguments + ?Sized>(
         &self,
         invocation: &A,
@@ -5755,6 +5987,20 @@ impl DexProgram {
             return Ok(Some(DexExecutionResult::Int(value)));
         }
 
+        // cite: libcore ConcurrentHashMap.java#contains, containsValue
+        // cite: libcore Hashtable.java#contains, containsValue
+        // cite: libcore HashMap.java#containsValue
+        // cite: libcore IdentityHashMap.java#containsValue
+        if is_supported_map_class(&method.class_descriptor)
+            && method.proto.descriptor_is("(Ljava/lang/Object;)Z")
+            && (method.name == "containsValue"
+                || (method.name == "contains"
+                    && is_map_legacy_contains_class(&method.class_descriptor)))
+        {
+            let value = self.java_map_contains_value(method, invocation, depth + 1)?;
+            return Ok(Some(value));
+        }
+
         if uses_key_eq
             && method.name == "put"
             && method.proto.descriptor()
@@ -5793,7 +6039,7 @@ impl DexProgram {
         if is_supported_set_class(&method.class_descriptor)
             && method.name == "add"
             && method.proto.descriptor_is("(Ljava/lang/Object;)Z")
-            && method.class_descriptor != "Ljava/util/TreeSet;"
+            && !is_sorted_set_class(&method.class_descriptor)
         {
             let value = self.java_add_set_value(invocation, depth + 1)?;
             return Ok(Some(DexExecutionResult::Int(value)));
@@ -5872,11 +6118,13 @@ impl DexProgram {
             return Ok(Some(DexExecutionResult::Int(value)));
         }
 
+        // cite: libcore LinkedList.java#contains, indexOf
         if matches!(
             method.class_descriptor.as_str(),
             "Ljava/util/List;"
                 | "Ljava/util/AbstractList;"
                 | "Ljava/util/ArrayList;"
+                | "Ljava/util/LinkedList;"
                 | "Ljava/util/concurrent/CopyOnWriteArrayList;"
         ) && method.name == "contains"
             && method.proto.descriptor_is("(Ljava/lang/Object;)Z")
@@ -5925,9 +6173,7 @@ impl DexProgram {
         // cite: libcore AbstractSet.java#removeAll
         if matches!(
             method.class_descriptor.as_str(),
-            "Ljava/util/Collection;"
-                | "Ljava/util/AbstractCollection;"
-                | "Ljava/util/AbstractSet;"
+            "Ljava/util/Collection;" | "Ljava/util/AbstractCollection;" | "Ljava/util/AbstractSet;"
         ) && method.name == "removeAll"
             && method.proto.descriptor_is("(Ljava/util/Collection;)Z")
         {
@@ -5981,6 +6227,20 @@ fn iterator_storage_key(reference: &str) -> Option<&str> {
         .or_else(|| reference.strip_prefix("Ljava/util/ListIterator;:"))
 }
 
+const SIMPLE_ENTRY: &str = "Ljava/util/AbstractMap$SimpleEntry;";
+
+fn simple_entry_field(name: &str) -> DexFieldId {
+    DexFieldId {
+        class_descriptor: SIMPLE_ENTRY.to_owned(),
+        type_descriptor: "Ljava/lang/Object;".to_owned(),
+        name: name.to_owned(),
+    }
+}
+
+fn is_null_value(value: &DexValue) -> bool {
+    matches!(value, DexValue::Null | DexValue::Int(0))
+}
+
 pub(super) fn map_entry_object_key(invocation: &DexInvocation) -> Option<String> {
     if invocation.arguments.len() != 1 {
         return None;
@@ -6006,6 +6266,7 @@ pub(super) fn is_supported_map_class(class_descriptor: &str) -> bool {
             | "Ljava/util/Hashtable;"
             | "Ljava/util/Properties;"
             | "Ljava/util/concurrent/ConcurrentHashMap;"
+            | "Landroid/util/ArrayMap;"
     )
 }
 
@@ -6020,6 +6281,7 @@ pub(super) fn is_supported_map_implementation_class(class_descriptor: &str) -> b
             | "Ljava/util/Hashtable;"
             | "Ljava/util/Properties;"
             | "Ljava/util/concurrent/ConcurrentHashMap;"
+            | "Landroid/util/ArrayMap;"
     )
 }
 
@@ -6034,6 +6296,7 @@ fn is_java_key_equality_map_class(class_descriptor: &str) -> bool {
             | "Ljava/util/Hashtable;"
             | "Ljava/util/Properties;"
             | "Ljava/util/concurrent/ConcurrentHashMap;"
+            | "Landroid/util/ArrayMap;"
     )
 }
 
@@ -6044,6 +6307,19 @@ fn is_hashtable_class(class_descriptor: &str) -> bool {
     )
 }
 
+fn is_map_legacy_contains_class(class_descriptor: &str) -> bool {
+    matches!(
+        class_descriptor,
+        "Ljava/util/Hashtable;"
+            | "Ljava/util/Properties;"
+            | "Ljava/util/concurrent/ConcurrentHashMap;"
+    )
+}
+
+fn rejects_null_map_value(class_descriptor: &str) -> bool {
+    is_map_legacy_contains_class(class_descriptor)
+}
+
 pub(super) fn is_supported_set_class(class_descriptor: &str) -> bool {
     matches!(
         class_descriptor,
@@ -6051,8 +6327,16 @@ pub(super) fn is_supported_set_class(class_descriptor: &str) -> bool {
             | "Ljava/util/HashSet;"
             | "Ljava/util/LinkedHashSet;"
             | "Ljava/util/TreeSet;"
+            | "Ljava/util/concurrent/ConcurrentSkipListSet;"
             | "Ljava/util/concurrent/CopyOnWriteArraySet;"
             | "Ls/e;"
+    )
+}
+
+pub(super) fn is_sorted_set_class(class_descriptor: &str) -> bool {
+    matches!(
+        class_descriptor,
+        "Ljava/util/TreeSet;" | "Ljava/util/concurrent/ConcurrentSkipListSet;"
     )
 }
 

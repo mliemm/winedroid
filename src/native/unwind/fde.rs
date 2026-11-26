@@ -34,11 +34,21 @@ pub struct Memory {
 impl Memory {
     pub fn module(image: Arc<GuestImage>) -> Self {
         let bias = image.mapped.load_bias();
-        Self { image: Some(image), bias, start: 0, end: 0 }
+        Self {
+            image: Some(image),
+            bias,
+            start: 0,
+            end: 0,
+        }
     }
 
     pub fn block(start: usize, end: usize) -> Self {
-        Self { image: None, bias: 0, start, end }
+        Self {
+            image: None,
+            bias: 0,
+            start,
+            end,
+        }
     }
 
     pub fn image(&self) -> Option<&Arc<GuestImage>> {
@@ -49,10 +59,9 @@ impl Memory {
         match &self.image {
             Some(image) => {
                 let vaddr = address.wrapping_sub(self.bias) as u64;
-                image
-                    .mapped
-                    .bytes(vaddr, len as u64)
-                    .map_err(|error| format!("{error}; next missing primitive: guest unwind section"))
+                image.mapped.bytes(vaddr, len as u64).map_err(|error| {
+                    format!("{error}; next missing primitive: guest unwind section")
+                })
             }
             None => {
                 let end = address.checked_add(len);
@@ -72,15 +81,21 @@ impl Memory {
     }
 
     fn u16(&self, address: usize) -> Result<u16, String> {
-        Ok(u16::from_le_bytes(self.bytes(address, 2)?.try_into().expect("2 bytes")))
+        Ok(u16::from_le_bytes(
+            self.bytes(address, 2)?.try_into().expect("2 bytes"),
+        ))
     }
 
     fn u32(&self, address: usize) -> Result<u32, String> {
-        Ok(u32::from_le_bytes(self.bytes(address, 4)?.try_into().expect("4 bytes")))
+        Ok(u32::from_le_bytes(
+            self.bytes(address, 4)?.try_into().expect("4 bytes"),
+        ))
     }
 
     fn u64(&self, address: usize) -> Result<u64, String> {
-        Ok(u64::from_le_bytes(self.bytes(address, 8)?.try_into().expect("8 bytes")))
+        Ok(u64::from_le_bytes(
+            self.bytes(address, 8)?.try_into().expect("8 bytes"),
+        ))
     }
 
     fn augmentation(&self, address: usize) -> Result<Vec<u8>, String> {
@@ -298,7 +313,16 @@ pub fn parse_cie(memory: &Memory, address: usize, datarel: u64) -> Result<Cie, S
     if instructions.0 > end {
         return Err(format!("unwind CIE at {address:#x} ends before its instructions; next missing primitive: unwind CIE record"));
     }
-    Ok(Cie { code_align, data_align, return_register, pointer_encoding, lsda_encoding, personality, has_z, instructions })
+    Ok(Cie {
+        code_align,
+        data_align,
+        return_register,
+        pointer_encoding,
+        lsda_encoding,
+        personality,
+        has_z,
+        instructions,
+    })
 }
 
 pub fn parse_fde(memory: &Memory, address: usize, datarel: u64) -> Result<Fde, String> {
@@ -326,7 +350,14 @@ pub fn parse_fde(memory: &Memory, address: usize, datarel: u64) -> Result<Fde, S
     if at > end {
         return Err(format!("unwind FDE at {address:#x} header is past the record end; next missing primitive: unwind FDE record"));
     }
-    Ok(Fde { address, initial_location, range, lsda, cie, instructions: (at, end) })
+    Ok(Fde {
+        address,
+        initial_location,
+        range,
+        lsda,
+        cie,
+        instructions: (at, end),
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -339,7 +370,10 @@ struct Header {
 static HEADERS: Mutex<Vec<(ModuleId, usize, Header)>> = Mutex::new(Vec::new());
 
 pub fn forget(ids: &[ModuleId]) {
-    HEADERS.lock().expect("unwind header cache").retain(|(id, _, _)| !ids.contains(id));
+    HEADERS
+        .lock()
+        .expect("unwind header cache")
+        .retain(|(id, _, _)| !ids.contains(id));
 }
 
 fn read_header(memory: &Memory, base: usize) -> Result<Header, String> {
@@ -347,7 +381,10 @@ fn read_header(memory: &Memory, base: usize) -> Result<Header, String> {
     let pointer_encoding = memory.u8(base + 1)?;
     let count_encoding = memory.u8(base + 2)?;
     let table_encoding = memory.u8(base + 3)?;
-    if version != VERSION_ONE || table_encoding != TABLE_ENCODING || !POINTER_ENCODINGS.contains(&pointer_encoding) {
+    if version != VERSION_ONE
+        || table_encoding != TABLE_ENCODING
+        || !POINTER_ENCODINGS.contains(&pointer_encoding)
+    {
         return Err(format!(
             "unsupported eh_frame_hdr layout at {base:#x} (version {version}, pointer {pointer_encoding:#x}, table {table_encoding:#x}); next missing primitive: eh_frame_hdr layout"
         ));
@@ -359,17 +396,31 @@ fn read_header(memory: &Memory, base: usize) -> Result<Header, String> {
     if count > RECORD_LIMIT {
         return Err(format!("eh_frame_hdr at {base:#x} claims {count} FDEs; next missing primitive: eh_frame_hdr table size"));
     }
-    memory.bytes(at, count * 8).map_err(|error| format!("{error}; next missing primitive: eh_frame_hdr table"))?;
-    Ok(Header { count, table: at, datarel })
+    memory
+        .bytes(at, count * 8)
+        .map_err(|error| format!("{error}; next missing primitive: eh_frame_hdr table"))?;
+    Ok(Header {
+        count,
+        table: at,
+        datarel,
+    })
 }
 
 fn header_for(id: ModuleId, memory: &Memory, base: usize) -> Result<Header, String> {
-    if let Some((_, _, header)) = HEADERS.lock().expect("unwind header cache").iter().find(|(cached, cached_base, _)| *cached == id && *cached_base == base) {
+    if let Some((_, _, header)) = HEADERS
+        .lock()
+        .expect("unwind header cache")
+        .iter()
+        .find(|(cached, cached_base, _)| *cached == id && *cached_base == base)
+    {
         return Ok(*header);
     }
     let header = read_header(memory, base)?;
     let mut cache = HEADERS.lock().expect("unwind header cache");
-    if !cache.iter().any(|(cached, cached_base, _)| *cached == id && *cached_base == base) {
+    if !cache
+        .iter()
+        .any(|(cached, cached_base, _)| *cached == id && *cached_base == base)
+    {
         cache.push((id, base, header));
     }
     Ok(header)
@@ -380,7 +431,10 @@ fn search_header(memory: &Memory, header: &Header, pc: u64) -> Result<Option<usi
         let at = header.table + index * 8;
         let start = memory.u32(at)? as i32 as i64;
         let fde = memory.u32(at + 4)? as i32 as i64;
-        Ok((header.datarel.wrapping_add(start as u64), header.datarel.wrapping_add(fde as u64) as usize))
+        Ok((
+            header.datarel.wrapping_add(start as u64),
+            header.datarel.wrapping_add(fde as u64) as usize,
+        ))
     };
     let (mut low, mut high) = (0usize, header.count);
     while low < high {
@@ -411,7 +465,10 @@ pub fn register_frame(begin: usize) {
 
 pub fn deregister_frame(begin: usize) {
     // cite: bionic libc.map.txt#__deregister_frame
-    FRAMES.lock().expect("registered unwind frames").retain(|frame| *frame != begin);
+    FRAMES
+        .lock()
+        .expect("registered unwind frames")
+        .retain(|frame| *frame != begin);
 }
 
 fn raw_u32(address: usize) -> u32 {
@@ -436,7 +493,11 @@ fn search_registered(pc: u64) -> Result<Option<Found>, String> {
                 let memory = Memory::block(begin, at + 4 + length);
                 let fde = parse_fde(&memory, at, 0)?;
                 if pc >= fde.initial_location && pc - fde.initial_location < fde.range {
-                    return Ok(Some(Found { memory, fde, name: format!("registered frame at {begin:#x}") }));
+                    return Ok(Some(Found {
+                        memory,
+                        fde,
+                        name: format!("registered frame at {begin:#x}"),
+                    }));
                 }
             }
             at += 4 + length;
@@ -462,7 +523,9 @@ pub fn lookup(pc: u64) -> Result<Option<Found>, String> {
         return Ok(Some(found));
     }
     for (id, image, path) in module_snapshot() {
-        let Some(header) = image.elf.eh_frame_hdr() else { continue };
+        let Some(header) = image.elf.eh_frame_hdr() else {
+            continue;
+        };
         let bias = image.mapped.load_bias();
         if !image.mapped.contains_vaddr(pc.wrapping_sub(bias as u64), 1) {
             continue;
@@ -470,15 +533,24 @@ pub fn lookup(pc: u64) -> Result<Option<Found>, String> {
         let base = bias.wrapping_add(header.vaddr as usize);
         let memory = Memory::module(image);
         let header = header_for(id, &memory, base)?;
-        let Some(address) = search_header(&memory, &header, pc)? else { continue };
+        let Some(address) = search_header(&memory, &header, pc)? else {
+            continue;
+        };
         let fde = parse_fde(&memory, address, header.datarel)?;
         if pc >= fde.initial_location && pc - fde.initial_location < fde.range {
-            return Ok(Some(Found { memory, fde, name: path }));
+            return Ok(Some(Found {
+                memory,
+                fde,
+                name: path,
+            }));
         }
     }
     Ok(None)
 }
 
 pub fn find_enclosing(pc: u64) -> Option<u64> {
-    lookup(pc).ok().flatten().map(|found| found.fde.initial_location)
+    lookup(pc)
+        .ok()
+        .flatten()
+        .map(|found| found.fde.initial_location)
 }

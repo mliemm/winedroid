@@ -35,8 +35,16 @@ impl ImageLayout {
             return Err(WinedroidError::new("image has no loadable bytes"));
         }
         let aligned = image.loads().all(|load| load.align >= host_page) && lo % host_page == 0;
-        let lowest_writable = image.loads().filter(|load| load.flags & PF_W != 0).map(|load| load.vaddr & !(ELF_PAGE - 1)).min();
-        let shift = if aligned { 0 } else { shift_for(lo, lowest_writable, host_page) };
+        let lowest_writable = image
+            .loads()
+            .filter(|load| load.flags & PF_W != 0)
+            .map(|load| load.vaddr & !(ELF_PAGE - 1))
+            .min();
+        let shift = if aligned {
+            0
+        } else {
+            shift_for(lo, lowest_writable, host_page)
+        };
         Ok(Self {
             lo,
             hi,
@@ -73,7 +81,9 @@ impl ImageLayout {
                 *slot = Some(slot.unwrap_or(0) | load.flags);
             }
         }
-        for page in (self.veneer_start / self.host_page)..(self.veneer_start + self.veneer_len).div_ceil(self.host_page) {
+        for page in (self.veneer_start / self.host_page)
+            ..(self.veneer_start + self.veneer_len).div_ceil(self.host_page)
+        {
             flags[page as usize] = Some(PF_X);
         }
         let mut ranges: Vec<PageRange> = Vec::new();
@@ -92,7 +102,11 @@ impl ImageLayout {
             };
             match ranges.last_mut() {
                 Some(last) if last.prot == prot => last.len += self.host_page,
-                _ => ranges.push(PageRange { start: page_start, len: self.host_page, prot }),
+                _ => ranges.push(PageRange {
+                    start: page_start,
+                    len: self.host_page,
+                    prot,
+                }),
             }
         }
         Ok(ranges)
@@ -102,7 +116,11 @@ impl ImageLayout {
         // cite: bionic linker_phdr.cpp#phdr_table_protect_gnu_relro
         let start = round_up(self.region_offset(relro.vaddr), self.host_page);
         let end = (self.region_offset(relro.vaddr) + relro.memsz) / self.host_page * self.host_page;
-        (end > start).then(|| PageRange { start, len: end - start, prot: libc::PROT_READ })
+        (end > start).then(|| PageRange {
+            start,
+            len: end - start,
+            prot: libc::PROT_READ,
+        })
     }
 }
 

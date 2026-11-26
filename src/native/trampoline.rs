@@ -152,5 +152,8 @@ extern "C" {
 }
 
 pub fn template_bounds() -> (usize, usize) {
-    (std::ptr::addr_of!(spk_stub_template_start) as usize, std::ptr::addr_of!(spk_stub_template_end) as usize)
+    (
+        std::ptr::addr_of!(spk_stub_template_start) as usize,
+        std::ptr::addr_of!(spk_stub_template_end) as usize,
+    )
 }

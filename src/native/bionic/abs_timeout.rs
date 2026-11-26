@@ -17,16 +17,27 @@ pub struct Deadline {
 
 impl Deadline {
     pub fn remaining_ns(&self) -> i64 {
-        let Ok(now) = clocks::now(self.clock) else { return 0 };
+        let Ok(now) = clocks::now(self.clock) else {
+            return 0;
+        };
         let seconds = i128::from(self.seconds) - i128::from(now.tv_sec);
         let nanos = i128::from(self.nanos) - i128::from(now.tv_nsec);
         (seconds * NANOS_PER_SECOND + nanos).clamp(-LONGEST_NS, LONGEST_NS) as i64
     }
 
     pub fn after_ns(clock: i32, nanos: i64) -> Self {
-        let now = clocks::now(clock).unwrap_or(libc::timespec { tv_sec: 0, tv_nsec: 0 });
+        let now = clocks::now(clock).unwrap_or(libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        });
         let total = i128::from(now.tv_nsec) + i128::from(nanos);
-        Self { clock, seconds: now.tv_sec.saturating_add(total.div_euclid(NANOS_PER_SECOND) as i64), nanos: total.rem_euclid(NANOS_PER_SECOND) as i64 }
+        Self {
+            clock,
+            seconds: now
+                .tv_sec
+                .saturating_add(total.div_euclid(NANOS_PER_SECOND) as i64),
+            nanos: total.rem_euclid(NANOS_PER_SECOND) as i64,
+        }
     }
 }
 
@@ -52,7 +63,11 @@ pub fn check_timespec(address: usize, null_allowed: bool) -> i32 {
 pub fn deadline_at(address: usize, clock: i32) -> Option<Deadline> {
     (address != 0).then(|| {
         let (seconds, nanos) = read_timespec(address);
-        Deadline { clock, seconds, nanos }
+        Deadline {
+            clock,
+            seconds,
+            nanos,
+        }
     })
 }
 
@@ -82,7 +97,10 @@ mod tests {
 
         let remaining = deadline.remaining_ns();
 
-        assert!(remaining > 400_000_000 && remaining <= 500_000_000, "{remaining}");
+        assert!(
+            remaining > 400_000_000 && remaining <= 500_000_000,
+            "{remaining}"
+        );
         assert!(Deadline::after_ns(CLOCK_REALTIME, -1_000_000_000).remaining_ns() < 0);
     }
 }

@@ -4228,7 +4228,10 @@ fn builtin_resources_and_context_get_assets_return_bootstrap_asset_manager() {
     // cite: frameworks-base ContextImpl.java#getAssets
     let program = DexProgram::new(Vec::new());
 
-    for class_descriptor in ["Landroid/content/res/Resources;", "Landroid/content/Context;"] {
+    for class_descriptor in [
+        "Landroid/content/res/Resources;",
+        "Landroid/content/Context;",
+    ] {
         let get_assets = builtin_method(
             class_descriptor,
             "getAssets",

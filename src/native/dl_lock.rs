@@ -15,7 +15,11 @@ pub struct RecursiveGuard<'a, T> {
 
 impl<T> RecursiveLock<T> {
     pub fn new(value: T) -> Self {
-        Self { owner: Mutex::new((None, 0)), released: Condvar::new(), value }
+        Self {
+            owner: Mutex::new((None, 0)),
+            released: Condvar::new(),
+            value,
+        }
     }
 
     pub fn lock(&self) -> RecursiveGuard<'_, T> {
@@ -71,7 +75,10 @@ mod tests {
             let _ = sender.send(());
         });
 
-        assert!(receiver.recv_timeout(Duration::from_secs(10)).is_ok(), "nested lock on the same thread deadlocked");
+        assert!(
+            receiver.recv_timeout(Duration::from_secs(10)).is_ok(),
+            "nested lock on the same thread deadlocked"
+        );
     }
 
     #[test]
@@ -93,7 +100,10 @@ mod tests {
                 drop(outer);
             })
         };
-        assert!(held_receiver.recv_timeout(Duration::from_secs(10)).is_ok(), "nested lock on the holder thread deadlocked");
+        assert!(
+            held_receiver.recv_timeout(Duration::from_secs(10)).is_ok(),
+            "nested lock on the holder thread deadlocked"
+        );
         let contender = {
             let (lock, entered) = (lock.clone(), entered.clone());
             thread::spawn(move || {
@@ -103,10 +113,16 @@ mod tests {
         };
 
         thread::sleep(Duration::from_millis(100));
-        assert!(!entered.load(Ordering::SeqCst), "contender entered while both guards were held");
+        assert!(
+            !entered.load(Ordering::SeqCst),
+            "contender entered while both guards were held"
+        );
         release_inner.send(()).unwrap();
         thread::sleep(Duration::from_millis(100));
-        assert!(!entered.load(Ordering::SeqCst), "contender entered while the outer guard was held");
+        assert!(
+            !entered.load(Ordering::SeqCst),
+            "contender entered while the outer guard was held"
+        );
         release_outer.send(()).unwrap();
         holder.join().unwrap();
         contender.join().unwrap();

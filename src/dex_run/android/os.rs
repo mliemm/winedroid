@@ -1153,6 +1153,32 @@ impl DexProgram {
         Some(())
     }
 
+    pub(in crate::dex_run) fn initialize_handler_with_callback(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<()> {
+        let [handler, _, callback] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        let looper_only = DexInvocation {
+            arguments: invocation.arguments.iter().take(2).cloned().collect(),
+            ..invocation.clone()
+        };
+        self.initialize_handler(&looper_only)?;
+
+        // cite: frameworks-base Handler.java#Handler, mCallback
+        self.write_stored_instance_field(
+            handler,
+            &DexFieldId {
+                class_descriptor: "Landroid/os/Handler;".to_owned(),
+                type_descriptor: "Landroid/os/Handler$Callback;".to_owned(),
+                name: "mCallback".to_owned(),
+            },
+            callback.clone(),
+        )
+        .then_some(())
+    }
+
     pub(in crate::dex_run) fn create_async_handler(
         &self,
         invocation: &DexInvocation,
@@ -1242,10 +1268,7 @@ impl DexProgram {
         let known_executor = match executor {
             DexValue::Reference(executor) => {
                 executor.as_ref() == "Ljava/util/concurrent/Executor;.main"
-                    || executor.as_ref() == "Ljava/util/concurrent/ExecutorService;.single"
-                    || executor.as_ref() == "Ljava/util/concurrent/ExecutorService;.cached"
-                    || executor.as_ref() == "Ljava/util/concurrent/ScheduledExecutorService;.single"
-                    || executor.starts_with("Ljava/util/concurrent/ExecutorService;.fixed/")
+                    || is_executors_factory_reference(executor)
             }
             DexValue::Object(_) => self.is_thread_pool_executor(executor),
             _ => false,
@@ -1255,6 +1278,22 @@ impl DexProgram {
         }
 
         self.post_handler_runnable(invocation)
+    }
+
+    // cite: libcore ThreadPoolExecutor.java#isShutdown, runStateAtLeast
+    // cite: libcore ExecutorService.java#isShutdown
+    pub(in crate::dex_run) fn executor_service_is_shutdown(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<bool> {
+        let executor = invocation.arguments.first()?;
+        let known_service = match executor {
+            DexValue::Reference(executor) => is_executors_factory_reference(executor),
+            DexValue::Object(_) => self.is_thread_pool_executor(executor),
+            _ => false,
+        };
+
+        known_service.then_some(false)
     }
 
     pub(in crate::dex_run) fn is_thread_pool_executor(&self, value: &DexValue) -> bool {
@@ -1283,18 +1322,18 @@ impl DexProgram {
             return None;
         }
         if *core < 0 || *maximum <= 0 || maximum < core || *keep_alive < 0 {
-            return Some(DexExecutionResult::Throw(self.allocate_object(
-                "Ljava/lang/IllegalArgumentException;".to_owned(),
-            )));
+            return Some(DexExecutionResult::Throw(
+                self.allocate_object("Ljava/lang/IllegalArgumentException;".to_owned()),
+            ));
         }
         if *work_queue == DexValue::Null
             || *thread_factory == DexValue::Null
             || handler == Some(&DexValue::Null)
             || *unit == DexValue::Null
         {
-            return Some(DexExecutionResult::Throw(self.allocate_object(
-                "Ljava/lang/NullPointerException;".to_owned(),
-            )));
+            return Some(DexExecutionResult::Throw(
+                self.allocate_object("Ljava/lang/NullPointerException;".to_owned()),
+            ));
         }
         let keep_alive_nanos = scale_to_nanos(time_unit_reference_name(unit)?, *keep_alive)?;
 
@@ -1326,14 +1365,14 @@ impl DexProgram {
             return None;
         }
         if *core < 0 {
-            return Some(DexExecutionResult::Throw(self.allocate_object(
-                "Ljava/lang/IllegalArgumentException;".to_owned(),
-            )));
+            return Some(DexExecutionResult::Throw(
+                self.allocate_object("Ljava/lang/IllegalArgumentException;".to_owned()),
+            ));
         }
         if *thread_factory == DexValue::Null {
-            return Some(DexExecutionResult::Throw(self.allocate_object(
-                "Ljava/lang/NullPointerException;".to_owned(),
-            )));
+            return Some(DexExecutionResult::Throw(
+                self.allocate_object("Ljava/lang/NullPointerException;".to_owned()),
+            ));
         }
         let work_queue = self.allocate_object(
             "Ljava/util/concurrent/ScheduledThreadPoolExecutor$DelayedWorkQueue;".to_owned(),
@@ -1359,7 +1398,11 @@ impl DexProgram {
         receiver: &DexValue,
         state: ThreadPoolExecutorState,
     ) {
-        self.write_stored_instance_field(receiver, &thread_pool_executor_core_field(), DexValue::Int(state.core));
+        self.write_stored_instance_field(
+            receiver,
+            &thread_pool_executor_core_field(),
+            DexValue::Int(state.core),
+        );
         self.write_stored_instance_field(
             receiver,
             &thread_pool_executor_maximum_field(),
@@ -1403,12 +1446,14 @@ impl DexProgram {
         let value = i32::from(*flag != 0);
         let keep_alive_nanos = self.thread_pool_executor_keep_alive_nanos(receiver)?;
         if value != 0 && keep_alive_nanos <= 0 {
-            return Some(DexExecutionResult::Throw(self.allocate_generated_exception(
-                DexGeneratedException {
+            return Some(DexExecutionResult::Throw(
+                self.allocate_generated_exception(DexGeneratedException {
                     class_descriptor: "Ljava/lang/IllegalArgumentException;".to_owned(),
-                    detail_message: Some("Core threads must have nonzero keep alive times".to_owned()),
-                },
-            )));
+                    detail_message: Some(
+                        "Core threads must have nonzero keep alive times".to_owned(),
+                    ),
+                }),
+            ));
         }
         let field = thread_pool_executor_allow_core_thread_time_out_field();
         let current = match self.read_stored_instance_field(receiver, &field) {
@@ -1418,6 +1463,100 @@ impl DexProgram {
         if value != current {
             self.write_stored_instance_field(receiver, &field, DexValue::Int(value));
         }
+
+        Some(DexExecutionResult::Void)
+    }
+
+    pub(in crate::dex_run) fn scheduled_thread_pool_executor_schedule_runnable(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        // cite: libcore ScheduledThreadPoolExecutor.java#schedule, triggerTime, delayedExecute
+        let [executor, command, DexValue::Long(delay), DexValue::Long(delay_high), unit] =
+            invocation.arguments.as_slice()
+        else {
+            return None;
+        };
+        if delay != delay_high || !self.is_thread_pool_executor(executor) {
+            return None;
+        }
+        if is_android_null_value(command) || is_android_null_value(unit) {
+            return Some(DexExecutionResult::Throw(
+                self.allocate_object("Ljava/lang/NullPointerException;".to_owned()),
+            ));
+        }
+        if !dex_value_is_object_like(command) {
+            return None;
+        }
+        let trigger_nanos = scale_to_nanos(time_unit_reference_name(unit)?, (*delay).max(0))?;
+        let delay_millis = trigger_nanos.saturating_add(999_999) / 1_000_000;
+
+        // cite: libcore ScheduledThreadPoolExecutor.java#ScheduledFutureTask
+        let task = self.allocate_object(
+            "Ljava/util/concurrent/ScheduledThreadPoolExecutor$ScheduledFutureTask;".to_owned(),
+        );
+        self.write_stored_instance_field(&task, &future_task_runnable_field(), command.clone());
+        self.write_stored_instance_field(
+            &task,
+            &future_task_runnable_result_field(),
+            DexValue::Null,
+        );
+        self.runtime.borrow_mut().post_handler_runnable(
+            map_identity_key(executor),
+            task.clone(),
+            delay_millis,
+            false,
+        );
+
+        Some(DexExecutionResult::Value(task))
+    }
+
+    pub(in crate::dex_run) fn thread_pool_executor_set_keep_alive_time(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        // cite: libcore ThreadPoolExecutor.java#setKeepAliveTime, allowsCoreThreadTimeOut, interruptIdleWorkers
+        let [receiver, DexValue::Long(time), DexValue::Long(time_high), unit] =
+            invocation.arguments.as_slice()
+        else {
+            return None;
+        };
+        if time != time_high || !self.is_thread_pool_executor(receiver) {
+            return None;
+        }
+        if *time < 0 {
+            return Some(DexExecutionResult::Throw(
+                self.allocate_object("Ljava/lang/IllegalArgumentException;".to_owned()),
+            ));
+        }
+        let allows_core_time_out = matches!(
+            self.read_stored_instance_field(
+                receiver,
+                &thread_pool_executor_allow_core_thread_time_out_field()
+            ),
+            Some(DexValue::Int(flag)) if flag != 0
+        );
+        if *time == 0 && allows_core_time_out {
+            return Some(DexExecutionResult::Throw(
+                self.allocate_generated_exception(DexGeneratedException {
+                    class_descriptor: "Ljava/lang/IllegalArgumentException;".to_owned(),
+                    detail_message: Some(
+                        "Core threads must have nonzero keep alive times".to_owned(),
+                    ),
+                }),
+            ));
+        }
+        if *unit == DexValue::Null {
+            return Some(DexExecutionResult::Throw(
+                self.allocate_object("Ljava/lang/NullPointerException;".to_owned()),
+            ));
+        }
+        let keep_alive_nanos = scale_to_nanos(time_unit_reference_name(unit)?, *time)?;
+        self.write_stored_instance_field(
+            receiver,
+            &thread_pool_executor_keep_alive_field(),
+            DexValue::Long(keep_alive_nanos),
+        );
 
         Some(DexExecutionResult::Void)
     }
@@ -1795,40 +1934,53 @@ impl DexProgram {
         Some(())
     }
 
+    // cite: frameworks-base Handler.java#obtainMessage
+    // cite: frameworks-base Message.java#obtain
     pub(in crate::dex_run) fn handler_obtain_message(
         &self,
         invocation: &DexInvocation,
     ) -> Option<DexValue> {
-        if invocation.arguments.len() != 3 {
+        let (handler, arguments) = invocation.arguments.split_first()?;
+        if !dex_value_is_object_like(handler) {
             return None;
         }
-
-        if !dex_value_is_object_like(&invocation.arguments[0]) {
-            return None;
-        }
-        let DexValue::Int(what) = invocation.arguments[1] else {
-            return None;
-        };
-        let object = match &invocation.arguments[2] {
-            DexValue::Null | DexValue::Int(0) => DexValue::Null,
-            DexValue::Object(_) | DexValue::Reference(_) => invocation.arguments[2].clone(),
-            DexValue::Uninitialized
-            | DexValue::Int(_)
-            | DexValue::Long(_)
-            | DexValue::Float(_)
-            | DexValue::String(_) => return None,
+        let (what, arg1, arg2, object) = match arguments {
+            [] => (0, 0, 0, DexValue::Null),
+            [DexValue::Int(what)] => (*what, 0, 0, DexValue::Null),
+            [DexValue::Int(what), object] => (*what, 0, 0, message_object_argument(object)?),
+            [DexValue::Int(what), DexValue::Int(arg1), DexValue::Int(arg2)] => {
+                (*what, *arg1, *arg2, DexValue::Null)
+            }
+            [DexValue::Int(what), DexValue::Int(arg1), DexValue::Int(arg2), object] => {
+                (*what, *arg1, *arg2, message_object_argument(object)?)
+            }
+            _ => return None,
         };
 
         let message = self.allocate_object("Landroid/os/Message;".to_owned());
         self.write_stored_instance_field(&message, &message_int_field("what"), DexValue::Int(what));
+        self.write_stored_instance_field(&message, &message_int_field("arg1"), DexValue::Int(arg1));
+        self.write_stored_instance_field(&message, &message_int_field("arg2"), DexValue::Int(arg2));
         self.write_stored_instance_field(&message, &message_object_field("obj"), object);
         self.write_stored_instance_field(
             &message,
             &message_handler_field("target"),
-            invocation.arguments[0].clone(),
+            handler.clone(),
         );
 
         Some(message)
+    }
+}
+
+fn message_object_argument(value: &DexValue) -> Option<DexValue> {
+    match value {
+        DexValue::Null | DexValue::Int(0) => Some(DexValue::Null),
+        DexValue::Object(_) | DexValue::Reference(_) => Some(value.clone()),
+        DexValue::Uninitialized
+        | DexValue::Int(_)
+        | DexValue::Long(_)
+        | DexValue::Float(_)
+        | DexValue::String(_) => None,
     }
 }
 
@@ -2142,4 +2294,13 @@ struct ThreadPoolExecutorState<'a> {
     work_queue: &'a DexValue,
     thread_factory: &'a DexValue,
     handler: Option<&'a DexValue>,
+}
+
+fn is_executors_factory_reference(reference: &str) -> bool {
+    matches!(
+        reference,
+        "Ljava/util/concurrent/ExecutorService;.single"
+            | "Ljava/util/concurrent/ExecutorService;.cached"
+            | "Ljava/util/concurrent/ScheduledExecutorService;.single"
+    ) || reference.starts_with("Ljava/util/concurrent/ExecutorService;.fixed/")
 }

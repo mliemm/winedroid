@@ -6,16 +6,27 @@ use super::fs_result::from_host;
 use super::linux_abi::open;
 
 pub fn anonymous_file() -> i64 {
-    let Some(context) = guest_context::current() else { return -2 };
+    let Some(context) = guest_context::current() else {
+        return -2;
+    };
     let template = context.temp_dir.join("wd-anon-XXXXXX");
-    let Ok(template) = CString::new(template.as_os_str().as_encoded_bytes()) else { return -22 };
+    let Ok(template) = CString::new(template.as_os_str().as_encoded_bytes()) else {
+        return -22;
+    };
     let mut bytes = template.into_bytes_with_nul();
     let fd = unsafe { libc::mkstemp(bytes.as_mut_ptr() as *mut libc::c_char) };
     if fd < 0 {
         return from_host();
     }
     unsafe { libc::unlink(bytes.as_ptr() as *const libc::c_char) };
-    fd_table::adopt(fd, FdEntry::new(FdKind::Host, context.temp_dir.join("anon").display().to_string(), open::RDWR));
+    fd_table::adopt(
+        fd,
+        FdEntry::new(
+            FdKind::Host,
+            context.temp_dir.join("anon").display().to_string(),
+            open::RDWR,
+        ),
+    );
     i64::from(fd)
 }
 

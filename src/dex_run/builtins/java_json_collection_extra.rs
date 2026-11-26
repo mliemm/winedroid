@@ -60,6 +60,15 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Lorg/json/JSONObject;"
+            && method.name == "<init>"
+            && method.proto.descriptor_is("(Ljava/util/Map;)V")
+        {
+            let invocation = invocation?;
+
+            return self.init_json_object_from_map(invocation);
+        }
+
+        if method.class_descriptor == "Lorg/json/JSONObject;"
             && method.name == "put"
             && method
                 .proto
@@ -364,6 +373,28 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        if method.class_descriptor == "Ljava/util/concurrent/ConcurrentLinkedQueue;"
+            && method.name == "clear"
+            && method.proto.descriptor_is("()V")
+        {
+            // cite: libcore ConcurrentLinkedQueue.java#clear
+            let invocation = invocation?;
+            self.clear_list(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.class_descriptor == "Ljava/util/concurrent/ConcurrentLinkedDeque;"
+            && method.name == "<init>"
+            && method.proto.descriptor_is("()V")
+        {
+            // cite: libcore ConcurrentLinkedDeque.java#ConcurrentLinkedDeque
+            let invocation = invocation?;
+            self.initialize_empty_list(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
         if method.class_descriptor == "Ljava/util/concurrent/LinkedBlockingQueue;"
             && method.name == "<init>"
             && method.proto.descriptor_is("()V")
@@ -518,6 +549,17 @@ impl DexProgram {
             && method.name == "clear"
             && method.proto.descriptor_is("()V")
         {
+            let invocation = invocation?;
+            self.clear_list(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.class_descriptor == "Ljava/util/concurrent/CopyOnWriteArrayList;"
+            && method.name == "clear"
+            && method.proto.descriptor_is("()V")
+        {
+            // cite: libcore CopyOnWriteArrayList.java#clear
             let invocation = invocation?;
             self.clear_list(invocation)?;
 

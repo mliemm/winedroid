@@ -46,7 +46,10 @@ const LOOKBACK_WORDS: usize = 6;
 
 fn source_calls(source: &str, receiver: &str) -> BTreeSet<String> {
     let pattern = Regex::new(&format!(r"\(\*{receiver}\)->(\w+)\(")).unwrap();
-    pattern.captures_iter(source).map(|capture| capture[1].to_owned()).collect()
+    pattern
+        .captures_iter(source)
+        .map(|capture| capture[1].to_owned())
+        .collect()
 }
 
 fn slot_offsets(header: &str, struct_name: &str, names: &BTreeSet<String>) -> BTreeSet<u64> {
@@ -72,7 +75,9 @@ fn called_table_offsets(binary: &[u8]) -> BTreeSet<u64> {
         let definer = words[index.saturating_sub(LOOKBACK_WORDS)..index]
             .iter()
             .rev()
-            .find(|&&earlier| earlier & 31 == register && earlier & LDR_X_MASK == LDR_X_UNSIGNED_OFFSET);
+            .find(|&&earlier| {
+                earlier & 31 == register && earlier & LDR_X_MASK == LDR_X_UNSIGNED_OFFSET
+            });
         let definer = definer.filter(|&&load| (load >> 5) & 31 != PLT_BASE_REGISTER);
         if let Some(&load) = definer {
             offsets.insert(u64::from((load >> 10) & 0xFFF) * SLOT_SIZE);
@@ -87,21 +92,47 @@ fn fixture_source_fx_jni_calls_exactly_the_jni_slots_its_source_names() {
     let header = read_header();
     let env_calls = source_calls(&source, "env");
     let vm_calls = source_calls(&source, "vm");
-    assert_eq!(env_calls, ENV_CALLS.iter().map(|name| (*name).to_owned()).collect::<BTreeSet<_>>());
-    assert_eq!(vm_calls, VM_CALLS.iter().map(|name| (*name).to_owned()).collect::<BTreeSet<_>>());
+    assert_eq!(
+        env_calls,
+        ENV_CALLS
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<BTreeSet<_>>()
+    );
+    assert_eq!(
+        vm_calls,
+        VM_CALLS
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<BTreeSet<_>>()
+    );
     let mut expected = slot_offsets(&header, "JNINativeInterface", &env_calls);
     expected.extend(slot_offsets(&header, "JNIInvokeInterface", &vm_calls));
 
-    assert_eq!(expected.len(), 11, "eleven distinct slot offsets are named in the source, FindClass and GetEnv share one");
+    assert_eq!(
+        expected.len(),
+        11,
+        "eleven distinct slot offsets are named in the source, FindClass and GetEnv share one"
+    );
     for directory in VARIANT_DIRECTORIES {
-        let binary = fs::read(manifest_path("tests/native_fixtures/bin").join(directory).join("libfx_jni.so")).unwrap();
+        let binary = fs::read(
+            manifest_path("tests/native_fixtures/bin")
+                .join(directory)
+                .join("libfx_jni.so"),
+        )
+        .unwrap();
 
-        assert_eq!(called_table_offsets(&binary), expected, "{directory} JNI table slots called");
+        assert_eq!(
+            called_table_offsets(&binary),
+            expected,
+            "{directory} JNI table slots called"
+        );
     }
 }
 
 #[test]
-fn llvm_mc_aarch64_encodings_scanner_reports_the_slot_of_a_load_followed_by_blr_and_ignores_plt_loads() {
+fn llvm_mc_aarch64_encodings_scanner_reports_the_slot_of_a_load_followed_by_blr_and_ignores_plt_loads(
+) {
     let words: [u32; 6] = [
         0xF940_0C09,
         0xF940_0008,
@@ -112,26 +143,54 @@ fn llvm_mc_aarch64_encodings_scanner_reports_the_slot_of_a_load_followed_by_blr_
     ];
     let binary: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
 
-    assert_eq!(called_table_offsets(&binary), BTreeSet::from([14 * SLOT_SIZE]));
+    assert_eq!(
+        called_table_offsets(&binary),
+        BTreeSet::from([14 * SLOT_SIZE])
+    );
 }
 
 fn header_index(header: &str, struct_name: &str, name: &str) -> u64 {
-    header_slots(header, struct_name).iter().position(|slot| slot.name == name).unwrap() as u64
+    header_slots(header, struct_name)
+        .iter()
+        .position(|slot| slot.name == name)
+        .unwrap() as u64
 }
 
 #[test]
-fn art_jni_internal_cc_gjninativeinterface_called_slots_sit_at_the_art_indices_in_header_and_binary() {
+fn art_jni_internal_cc_gjninativeinterface_called_slots_sit_at_the_art_indices_in_header_and_binary(
+) {
     let header = read_header();
     for (name, index) in ART_ENV_SLOTS {
-        assert_eq!(header_index(&header, "JNINativeInterface", name), index, "{name} header slot");
+        assert_eq!(
+            header_index(&header, "JNINativeInterface", name),
+            index,
+            "{name} header slot"
+        );
     }
     for (name, index) in ART_VM_SLOTS {
-        assert_eq!(header_index(&header, "JNIInvokeInterface", name), index, "{name} header slot");
+        assert_eq!(
+            header_index(&header, "JNIInvokeInterface", name),
+            index,
+            "{name} header slot"
+        );
     }
-    let expected: BTreeSet<u64> = ART_ENV_SLOTS.iter().chain(&ART_VM_SLOTS).map(|(_, index)| index * SLOT_SIZE).collect();
+    let expected: BTreeSet<u64> = ART_ENV_SLOTS
+        .iter()
+        .chain(&ART_VM_SLOTS)
+        .map(|(_, index)| index * SLOT_SIZE)
+        .collect();
     for directory in VARIANT_DIRECTORIES {
-        let binary = fs::read(manifest_path("tests/native_fixtures/bin").join(directory).join("libfx_jni.so")).unwrap();
+        let binary = fs::read(
+            manifest_path("tests/native_fixtures/bin")
+                .join(directory)
+                .join("libfx_jni.so"),
+        )
+        .unwrap();
 
-        assert_eq!(called_table_offsets(&binary), expected, "{directory} JNI table offsets called");
+        assert_eq!(
+            called_table_offsets(&binary),
+            expected,
+            "{directory} JNI table offsets called"
+        );
     }
 }

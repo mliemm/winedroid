@@ -4,7 +4,9 @@ use super::bridge::{register_data, register_handler, CallContext};
 use super::guest_thread::attach_current;
 use super::thread_block::block;
 
-fn thread_record(context: &mut CallContext) -> Option<*mut super::pthread_internal::PthreadInternal> {
+fn thread_record(
+    context: &mut CallContext,
+) -> Option<*mut super::pthread_internal::PthreadInternal> {
     match attach_current() {
         Ok(record) => Some(record),
         Err(error) => {
@@ -39,7 +41,11 @@ fn register_all_thread_handlers() {
         if let Some(record) = thread_record(context) {
             // cite: bionic getpid.cpp#__get_cached_pid
             let cached = unsafe { (*record).cached_pid };
-            let pid = if cached != 0 { cached as i32 } else { unsafe { libc::getpid() } };
+            let pid = if cached != 0 {
+                cached as i32
+            } else {
+                unsafe { libc::getpid() }
+            };
             context.ret_i32(pid);
         }
     });

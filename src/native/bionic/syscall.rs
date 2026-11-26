@@ -30,9 +30,15 @@ pub fn translate(number: i64, arguments: [u64; 6]) -> i64 {
         NR_GETPID => i64::from(unsafe { libc::getpid() }),
         NR_SCHED_YIELD => i64::from(unsafe { libc::sched_yield() }),
         NR_RSEQ | NR_MEMBARRIER => -ENOSYS,
-        NR_TGKILL => super::signal_handlers::tgkill(arguments[0] as i32, arguments[1] as i32, arguments[2] as i32),
+        NR_TGKILL => super::signal_handlers::tgkill(
+            arguments[0] as i32,
+            arguments[1] as i32,
+            arguments[2] as i32,
+        ),
         other => {
-            host_log::line(&format!("FIXME: syscall {other} is not translated; next missing primitive: syscall {other}"));
+            host_log::line(&format!(
+                "FIXME: syscall {other} is not translated; next missing primitive: syscall {other}"
+            ));
             -ENOSYS
         }
     }
@@ -41,7 +47,14 @@ pub fn translate(number: i64, arguments: [u64; 6]) -> i64 {
 pub fn register() {
     in_libc("syscall", |context| {
         // cite: bionic syscall.S#syscall
-        let arguments = [context.arg_u64(1), context.arg_u64(2), context.arg_u64(3), context.arg_u64(4), context.arg_u64(5), context.arg_u64(6)];
+        let arguments = [
+            context.arg_u64(1),
+            context.arg_u64(2),
+            context.arg_u64(3),
+            context.arg_u64(4),
+            context.arg_u64(5),
+            context.arg_u64(6),
+        ];
         let result = translate(context.arg_u64(0) as i64, arguments);
         if (-MAX_ERRNO..0).contains(&result) {
             context.set_errno((-result) as i32);

@@ -676,12 +676,12 @@ impl DexProgram {
         // cite: art java_lang_Class.cc#Class_getDeclaredField, GetDeclaredField
         let field_name = match &invocation.arguments[1] {
             DexValue::Null | DexValue::Int(0) => {
-                return Some(DexExecutionResult::Throw(self.allocate_generated_exception(
-                    DexGeneratedException {
+                return Some(DexExecutionResult::Throw(
+                    self.allocate_generated_exception(DexGeneratedException {
                         class_descriptor: "Ljava/lang/NullPointerException;".to_owned(),
                         detail_message: Some("name == null".to_owned()),
-                    },
-                )));
+                    }),
+                ));
             }
             DexValue::String(field_name) => field_name,
             _ => return None,

@@ -68,7 +68,11 @@ fn poll_from_guest(pointer: usize, count: usize) -> Result<Vec<libc::pollfd>, i3
         let fd = read_value::<i32>(address);
         let requested = read_value::<i16>(address + 4);
         let usable = fd >= 0 && fd_table::contains(fd);
-        list.push(libc::pollfd { fd: if usable { fd } else { -1 }, events: event_to_host(requested), revents: 0 });
+        list.push(libc::pollfd {
+            fd: if usable { fd } else { -1 },
+            events: event_to_host(requested),
+            revents: 0,
+        });
         if !usable && fd >= 0 {
             write_value::<i16>(address + 6, events::NVAL);
         }
@@ -113,12 +117,17 @@ fn ppoll_impl(pointer: usize, count: i64, timeout_pointer: usize, mask_pointer: 
     let timeout = if timeout_pointer == 0 {
         -1
     } else {
-        let (seconds, nanos) = (read_value::<i64>(timeout_pointer), read_value::<i64>(timeout_pointer + 8));
+        let (seconds, nanos) = (
+            read_value::<i64>(timeout_pointer),
+            read_value::<i64>(timeout_pointer + 8),
+        );
         if seconds < 0 || !(0..1_000_000_000).contains(&nanos) {
             super::super::signal_state::set_mask(previous);
             return error(EINVAL);
         }
-        let total = seconds.saturating_mul(1000).saturating_add((nanos + 999_999) / 1_000_000);
+        let total = seconds
+            .saturating_mul(1000)
+            .saturating_add((nanos + 999_999) / 1_000_000);
         i32::try_from(total).unwrap_or(i32::MAX)
     };
     let status = poll_impl(pointer, count, timeout);
@@ -163,7 +172,15 @@ fn copy_back(source: usize, target: usize, count: usize) {
     }
 }
 
-fn select_impl(count: i32, read: usize, write: usize, except: usize, timeout: usize, mask: usize, timespec_timeout: bool) -> i64 {
+fn select_impl(
+    count: i32,
+    read: usize,
+    write: usize,
+    except: usize,
+    timeout: usize,
+    mask: usize,
+    timespec_timeout: bool,
+) -> i64 {
     // cite: bionic poll.cpp#select
     if count < 0 || count as usize > FD_LIMIT {
         return error(EINVAL);
@@ -172,8 +189,16 @@ fn select_impl(count: i32, read: usize, write: usize, except: usize, timeout: us
     let mut host_read = [0u8; POLL_SET_SIZE];
     let mut host_write = [0u8; POLL_SET_SIZE];
     let mut host_except = [0u8; POLL_SET_SIZE];
-    let (read_pointer, write_pointer, except_pointer) = (host_read.as_mut_ptr() as usize, host_write.as_mut_ptr() as usize, host_except.as_mut_ptr() as usize);
-    for (source, target) in [(read, read_pointer), (write, write_pointer), (except, except_pointer)] {
+    let (read_pointer, write_pointer, except_pointer) = (
+        host_read.as_mut_ptr() as usize,
+        host_write.as_mut_ptr() as usize,
+        host_except.as_mut_ptr() as usize,
+    );
+    for (source, target) in [
+        (read, read_pointer),
+        (write, write_pointer),
+        (except, except_pointer),
+    ] {
         if source != 0 {
             if let Err(failure) = build_host_set(source, target, count) {
                 return failure;
@@ -208,9 +233,21 @@ fn select_impl(count: i32, read: usize, write: usize, except: usize, timeout: us
     let status = unsafe {
         libc::select(
             count as libc::c_int,
-            if read != 0 { read_pointer as *mut libc::fd_set } else { std::ptr::null_mut() },
-            if write != 0 { write_pointer as *mut libc::fd_set } else { std::ptr::null_mut() },
-            if except != 0 { except_pointer as *mut libc::fd_set } else { std::ptr::null_mut() },
+            if read != 0 {
+                read_pointer as *mut libc::fd_set
+            } else {
+                std::ptr::null_mut()
+            },
+            if write != 0 {
+                write_pointer as *mut libc::fd_set
+            } else {
+                std::ptr::null_mut()
+            },
+            if except != 0 {
+                except_pointer as *mut libc::fd_set
+            } else {
+                std::ptr::null_mut()
+            },
             timeout_pointer as *mut libc::timeval,
         )
     };
@@ -228,7 +265,11 @@ fn select_impl(count: i32, read: usize, write: usize, except: usize, timeout: us
         }
         return 0;
     }
-    for (source, target) in [(read, read_pointer), (write, write_pointer), (except, except_pointer)] {
+    for (source, target) in [
+        (read, read_pointer),
+        (write, write_pointer),
+        (except, except_pointer),
+    ] {
         if source != 0 {
             copy_back(target, source, count);
         }
@@ -241,13 +282,25 @@ pub fn register() {
         in_libc(name, move |context: &mut CallContext| {
             let pointer = context.arg_ptr(0);
             let count = context.arg_u64(1) as i64;
-            let result = if ppoll { ppoll_impl(pointer, count, context.arg_ptr(2), context.arg_ptr(3)) } else { poll_impl(pointer, count, context.arg_i32(2)) };
+            let result = if ppoll {
+                ppoll_impl(pointer, count, context.arg_ptr(2), context.arg_ptr(3))
+            } else {
+                poll_impl(pointer, count, context.arg_i32(2))
+            };
             finish_int(context, result);
         });
     }
     for (name, masked) in [("select", false), ("pselect", true), ("pselect64", true)] {
         in_libc(name, move |context: &mut CallContext| {
-            let result = select_impl(context.arg_i32(0), context.arg_ptr(1), context.arg_ptr(2), context.arg_ptr(3), context.arg_ptr(4), if masked { context.arg_ptr(5) } else { 0 }, masked);
+            let result = select_impl(
+                context.arg_i32(0),
+                context.arg_ptr(1),
+                context.arg_ptr(2),
+                context.arg_ptr(3),
+                context.arg_ptr(4),
+                if masked { context.arg_ptr(5) } else { 0 },
+                masked,
+            );
             finish_int(context, result);
         });
     }

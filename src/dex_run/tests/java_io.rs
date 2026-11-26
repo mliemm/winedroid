@@ -98,10 +98,8 @@ fn libcore_file_get_parent_returns_the_path_before_the_last_separator_or_null() 
         };
 
         assert_eq!(
-            program.invoke_builtin_method(
-                &get_parent,
-                Some(&test_invocation(vec![file_value(path)]))
-            ),
+            program
+                .invoke_builtin_method(&get_parent, Some(&test_invocation(vec![file_value(path)]))),
             Some(DexExecutionResult::Value(expected)),
             "{path}"
         );
@@ -2032,17 +2030,35 @@ fn libcore_file_equals_compares_paths_of_file_arguments_only() {
         )
     };
 
-    assert_eq!(run(&file_value("/a/b"), file_value("/a/b")), Some(DexExecutionResult::Int(1)));
-    assert_eq!(run(&object_file, file_value("/a/b")), Some(DexExecutionResult::Int(1)));
-    assert_eq!(run(&file_value("/a/b"), object_file.clone()), Some(DexExecutionResult::Int(1)));
-    assert_eq!(run(&file_value("/a/b"), file_value("/a/c")), Some(DexExecutionResult::Int(0)));
-    assert_eq!(run(&file_value("/a/b"), file_value("/A/b")), Some(DexExecutionResult::Int(0)));
+    assert_eq!(
+        run(&file_value("/a/b"), file_value("/a/b")),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(
+        run(&object_file, file_value("/a/b")),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(
+        run(&file_value("/a/b"), object_file.clone()),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(
+        run(&file_value("/a/b"), file_value("/a/c")),
+        Some(DexExecutionResult::Int(0))
+    );
+    assert_eq!(
+        run(&file_value("/a/b"), file_value("/A/b")),
+        Some(DexExecutionResult::Int(0))
+    );
     for other in [
         DexValue::Null,
         DexValue::Int(0),
         DexValue::String(std::rc::Rc::from("/a/b")),
     ] {
-        assert_eq!(run(&file_value("/a/b"), other), Some(DexExecutionResult::Int(0)));
+        assert_eq!(
+            run(&file_value("/a/b"), other),
+            Some(DexExecutionResult::Int(0))
+        );
     }
 }
 
@@ -2060,8 +2076,12 @@ fn libcore_file_get_free_space_reports_statvfs_free_bytes_or_zero() {
         )
     };
     let stat_fs = object_value(1, "Landroid/os/StatFs;");
-    let stat_fs_constructor =
-        builtin_method("Landroid/os/StatFs;", "<init>", "V", &["Ljava/lang/String;"]);
+    let stat_fs_constructor = builtin_method(
+        "Landroid/os/StatFs;",
+        "<init>",
+        "V",
+        &["Ljava/lang/String;"],
+    );
     let stat_fs_block_size = builtin_method("Landroid/os/StatFs;", "getBlockSizeLong", "J", &[]);
     let stat_fs_total_bytes = builtin_method("Landroid/os/StatFs;", "getTotalBytes", "J", &[]);
     assert_eq!(
@@ -2092,7 +2112,10 @@ fn libcore_file_get_free_space_reports_statvfs_free_bytes_or_zero() {
     };
     assert!(value > 0 && value <= total_bytes);
     assert_eq!(value % block_size, 0);
-    assert_eq!(free_space("/etc"), Some(DexExecutionResult::Value(DexValue::Long(0))));
+    assert_eq!(
+        free_space("/etc"),
+        Some(DexExecutionResult::Value(DexValue::Long(0)))
+    );
     assert_eq!(
         free_space("/data/user/0/com.example/files\0x"),
         Some(DexExecutionResult::Value(DexValue::Long(0)))
@@ -2104,4 +2127,507 @@ fn libcore_file_get_free_space_reports_statvfs_free_bytes_or_zero() {
         ),
         None
     );
+}
+
+fn invoke_value(
+    program: &DexProgram,
+    method: &DexMethodId,
+    arguments: Vec<DexValue>,
+) -> DexExecutionResult {
+    program
+        .invoke_builtin_method(method, Some(&test_invocation(arguments)))
+        .unwrap_or_else(|| panic!("{} should be a builtin", method.display_signature()))
+}
+
+fn int_array_bytes(program: &DexProgram, buffer: &DexValue, bytes: &[u8]) {
+    let array_method = java_io_method("Ljava/nio/ByteBuffer;", "array", "[B", &[]);
+    let DexExecutionResult::Value(array) =
+        invoke_value(program, &array_method, vec![buffer.clone()])
+    else {
+        panic!("array() should return the backing array");
+    };
+    for (index, byte) in bytes.iter().enumerate() {
+        program
+            .write_array_value(&array, index as i32, DexValue::Int(i32::from(*byte as i8)))
+            .expect("backing array write");
+    }
+}
+
+fn allocate_byte_buffer(program: &DexProgram, capacity: i32) -> DexValue {
+    let allocate = java_io_method(
+        "Ljava/nio/ByteBuffer;",
+        "allocate",
+        "Ljava/nio/ByteBuffer;",
+        &["I"],
+    );
+    let DexExecutionResult::Value(buffer) =
+        invoke_value(program, &allocate, vec![DexValue::Int(capacity)])
+    else {
+        panic!("allocate should return a buffer");
+    };
+    buffer
+}
+
+fn little_endian() -> DexValue {
+    DexValue::Reference(std::rc::Rc::from("Ljava/nio/ByteOrder;:LITTLE_ENDIAN"))
+}
+
+fn thrown_class(result: DexExecutionResult) -> String {
+    let DexExecutionResult::Throw(exception) = result else {
+        panic!("expected a thrown exception, got {result}");
+    };
+    value_class_descriptor(&exception)
+        .expect("exception class")
+        .to_owned()
+}
+
+#[test]
+fn libcore_heap_byte_buffer_reads_integers_in_the_configured_byte_order() {
+    // cite: libcore HeapByteBuffer.java#getShort, getInt, getLong
+    let program = DexProgram::new(Vec::new());
+    let buffer = allocate_byte_buffer(&program, 8);
+    int_array_bytes(&program, &buffer, &[0x01, 0x02, 0x03, 0x84, 0, 0, 0, 0x80]);
+    let get_int = java_io_method("Ljava/nio/ByteBuffer;", "getInt", "I", &["I"]);
+    let get_short = java_io_method("Ljava/nio/ByteBuffer;", "getShort", "S", &["I"]);
+    let get_long = java_io_method("Ljava/nio/ByteBuffer;", "getLong", "J", &["I"]);
+    let order = java_io_method(
+        "Ljava/nio/ByteBuffer;",
+        "order",
+        "Ljava/nio/ByteBuffer;",
+        &["Ljava/nio/ByteOrder;"],
+    );
+
+    assert_eq!(
+        invoke_value(&program, &get_int, vec![buffer.clone(), DexValue::Int(0)]),
+        DexExecutionResult::Int(0x0102_0384_u32 as i32)
+    );
+    assert_eq!(
+        invoke_value(&program, &get_short, vec![buffer.clone(), DexValue::Int(2)]),
+        DexExecutionResult::Int(0x0384)
+    );
+    assert_eq!(
+        invoke_value(&program, &order, vec![buffer.clone(), little_endian()]),
+        DexExecutionResult::Value(buffer.clone())
+    );
+    assert_eq!(
+        invoke_value(&program, &get_int, vec![buffer.clone(), DexValue::Int(0)]),
+        DexExecutionResult::Int(0x8403_0201_u32 as i32)
+    );
+    assert_eq!(
+        invoke_value(&program, &get_short, vec![buffer.clone(), DexValue::Int(2)]),
+        DexExecutionResult::Int(0x8403_u16 as i16 as i32)
+    );
+    assert_eq!(
+        invoke_value(&program, &get_long, vec![buffer, DexValue::Int(0)]),
+        DexExecutionResult::Value(DexValue::Long(0x8000_0000_8403_0201_u64 as i64))
+    );
+}
+
+#[test]
+fn libcore_heap_byte_buffer_relative_and_absolute_reads_enforce_limit_and_position() {
+    // cite: libcore Buffer.java#nextGetIndex, checkIndex, position, limit
+    let program = DexProgram::new(Vec::new());
+    let buffer = allocate_byte_buffer(&program, 6);
+    int_array_bytes(&program, &buffer, &[0, 0, 0, 7, 0, 9]);
+    let get_int = java_io_method("Ljava/nio/ByteBuffer;", "getInt", "I", &[]);
+    let get_int_at = java_io_method("Ljava/nio/ByteBuffer;", "getInt", "I", &["I"]);
+    let position = java_io_method("Ljava/nio/Buffer;", "position", "I", &[]);
+    let set_position = java_io_method("Ljava/nio/Buffer;", "position", "Ljava/nio/Buffer;", &["I"]);
+    let remaining = java_io_method("Ljava/nio/Buffer;", "remaining", "I", &[]);
+    let has_remaining = java_io_method("Ljava/nio/Buffer;", "hasRemaining", "Z", &[]);
+
+    assert_eq!(
+        invoke_value(&program, &get_int, vec![buffer.clone()]),
+        DexExecutionResult::Int(7)
+    );
+    assert_eq!(
+        invoke_value(&program, &position, vec![buffer.clone()]),
+        DexExecutionResult::Int(4)
+    );
+    assert_eq!(
+        invoke_value(&program, &remaining, vec![buffer.clone()]),
+        DexExecutionResult::Int(2)
+    );
+    assert_eq!(
+        thrown_class(invoke_value(&program, &get_int, vec![buffer.clone()])),
+        "Ljava/nio/BufferUnderflowException;"
+    );
+    assert_eq!(
+        invoke_value(&program, &position, vec![buffer.clone()]),
+        DexExecutionResult::Int(4)
+    );
+    assert_eq!(
+        thrown_class(invoke_value(
+            &program,
+            &get_int_at,
+            vec![buffer.clone(), DexValue::Int(3)]
+        )),
+        "Ljava/lang/IndexOutOfBoundsException;"
+    );
+    assert_eq!(
+        thrown_class(invoke_value(
+            &program,
+            &get_int_at,
+            vec![buffer.clone(), DexValue::Int(-1)]
+        )),
+        "Ljava/lang/IndexOutOfBoundsException;"
+    );
+    assert_eq!(
+        thrown_class(invoke_value(
+            &program,
+            &set_position,
+            vec![buffer.clone(), DexValue::Int(7)]
+        )),
+        "Ljava/lang/IllegalArgumentException;"
+    );
+    invoke_value(
+        &program,
+        &set_position,
+        vec![buffer.clone(), DexValue::Int(6)],
+    );
+    assert_eq!(
+        invoke_value(&program, &has_remaining, vec![buffer]),
+        DexExecutionResult::Int(0)
+    );
+}
+
+#[test]
+fn libcore_heap_byte_buffer_slice_shares_the_array_and_resets_byte_order() {
+    // cite: libcore HeapByteBuffer.java#slice
+    // cite: libcore ByteBuffer.java#array, arrayOffset
+    let program = DexProgram::new(Vec::new());
+    let buffer = allocate_byte_buffer(&program, 8);
+    int_array_bytes(&program, &buffer, &[0, 0, 0, 0, 0x01, 0x02, 0x03, 0x04]);
+    let order = java_io_method(
+        "Ljava/nio/ByteBuffer;",
+        "order",
+        "Ljava/nio/ByteBuffer;",
+        &["Ljava/nio/ByteOrder;"],
+    );
+    let get_order = java_io_method(
+        "Ljava/nio/ByteBuffer;",
+        "order",
+        "Ljava/nio/ByteOrder;",
+        &[],
+    );
+    let set_position = java_io_method("Ljava/nio/Buffer;", "position", "Ljava/nio/Buffer;", &["I"]);
+    let slice = java_io_method(
+        "Ljava/nio/ByteBuffer;",
+        "slice",
+        "Ljava/nio/ByteBuffer;",
+        &[],
+    );
+    let array = java_io_method("Ljava/nio/ByteBuffer;", "array", "[B", &[]);
+    let array_offset = java_io_method("Ljava/nio/ByteBuffer;", "arrayOffset", "I", &[]);
+    let get_int = java_io_method("Ljava/nio/ByteBuffer;", "getInt", "I", &[]);
+    let capacity = java_io_method("Ljava/nio/Buffer;", "capacity", "I", &[]);
+
+    invoke_value(&program, &order, vec![buffer.clone(), little_endian()]);
+    invoke_value(
+        &program,
+        &set_position,
+        vec![buffer.clone(), DexValue::Int(4)],
+    );
+    let DexExecutionResult::Value(sliced) = invoke_value(&program, &slice, vec![buffer.clone()])
+    else {
+        panic!("slice should return a buffer");
+    };
+
+    assert_eq!(
+        invoke_value(&program, &array_offset, vec![sliced.clone()]),
+        DexExecutionResult::Int(4)
+    );
+    assert_eq!(
+        invoke_value(&program, &capacity, vec![sliced.clone()]),
+        DexExecutionResult::Int(4)
+    );
+    assert_eq!(
+        invoke_value(&program, &array, vec![sliced.clone()]),
+        invoke_value(&program, &array, vec![buffer])
+    );
+    assert_eq!(
+        invoke_value(&program, &get_order, vec![sliced.clone()]),
+        DexExecutionResult::Value(DexValue::Reference(std::rc::Rc::from(
+            "Ljava/nio/ByteOrder;:BIG_ENDIAN"
+        )))
+    );
+    assert_eq!(
+        invoke_value(&program, &get_int, vec![sliced]),
+        DexExecutionResult::Int(0x0102_0304)
+    );
+}
+
+#[test]
+fn libcore_random_access_file_read_only_channel_reads_at_its_position_until_eof() {
+    // cite: libcore RandomAccessFile.java#RandomAccessFile, getChannel, close
+    // cite: libcore FileChannelImpl.java#size, position, read, ensureOpen
+    let fixture = GuestIoFixture::new("random_access_file");
+    let program = fixture.program();
+    let path = fixture.private.join("files/archive.bin");
+    fs::create_dir_all(path.parent().expect("parent")).expect("files directory");
+    fs::write(&path, [10u8, 11, 12, 13, 14, 15, 16, 17, 250, 251]).expect("archive bytes");
+    let guest_path = "/data/user/0/com.example/files/archive.bin";
+    let constructor = java_io_method(
+        "Ljava/io/RandomAccessFile;",
+        "<init>",
+        "V",
+        &["Ljava/lang/String;", "Ljava/lang/String;"],
+    );
+    let get_channel = java_io_method(
+        "Ljava/io/RandomAccessFile;",
+        "getChannel",
+        "Ljava/nio/channels/FileChannel;",
+        &[],
+    );
+    let close = java_io_method("Ljava/io/RandomAccessFile;", "close", "V", &[]);
+    let size = java_io_method("Ljava/nio/channels/FileChannel;", "size", "J", &[]);
+    let channel_position = java_io_method("Ljava/nio/channels/FileChannel;", "position", "J", &[]);
+    let set_channel_position = java_io_method(
+        "Ljava/nio/channels/FileChannel;",
+        "position",
+        "Ljava/nio/channels/FileChannel;",
+        &["J"],
+    );
+    let read = java_io_method(
+        "Ljava/nio/channels/FileChannel;",
+        "read",
+        "I",
+        &["Ljava/nio/ByteBuffer;"],
+    );
+    let buffer_position = java_io_method("Ljava/nio/Buffer;", "position", "I", &[]);
+    let get_int_at = java_io_method("Ljava/nio/ByteBuffer;", "getInt", "I", &["I"]);
+    let string = |value: &str| DexValue::String(std::rc::Rc::from(value));
+    let file = program.allocate_object("Ljava/io/RandomAccessFile;".to_owned());
+
+    assert_eq!(
+        invoke_value(
+            &program,
+            &constructor,
+            vec![file.clone(), string(guest_path), string("r")]
+        ),
+        DexExecutionResult::Void
+    );
+    let DexExecutionResult::Value(channel) =
+        invoke_value(&program, &get_channel, vec![file.clone()])
+    else {
+        panic!("getChannel should return a channel");
+    };
+    assert_eq!(
+        invoke_value(&program, &get_channel, vec![file.clone()]),
+        DexExecutionResult::Value(channel.clone())
+    );
+    assert_eq!(
+        invoke_value(&program, &size, vec![channel.clone()]),
+        DexExecutionResult::Value(DexValue::Long(10))
+    );
+    invoke_value(
+        &program,
+        &set_channel_position,
+        vec![channel.clone(), DexValue::Long(6), DexValue::Long(6)],
+    );
+    let destination = allocate_byte_buffer(&program, 8);
+    assert_eq!(
+        invoke_value(&program, &read, vec![channel.clone(), destination.clone()]),
+        DexExecutionResult::Int(4)
+    );
+    assert_eq!(
+        invoke_value(&program, &buffer_position, vec![destination.clone()]),
+        DexExecutionResult::Int(4)
+    );
+    assert_eq!(
+        invoke_value(
+            &program,
+            &get_int_at,
+            vec![destination.clone(), DexValue::Int(0)]
+        ),
+        DexExecutionResult::Int(0x1011_FAFB_u32 as i32)
+    );
+    assert_eq!(
+        invoke_value(&program, &channel_position, vec![channel.clone()]),
+        DexExecutionResult::Value(DexValue::Long(10))
+    );
+    assert_eq!(
+        invoke_value(&program, &read, vec![channel.clone(), destination]),
+        DexExecutionResult::Int(-1)
+    );
+    assert_eq!(
+        invoke_value(&program, &close, vec![file]),
+        DexExecutionResult::Void
+    );
+    assert_eq!(
+        thrown_class(invoke_value(&program, &size, vec![channel])),
+        "Ljava/nio/channels/ClosedChannelException;"
+    );
+}
+
+#[test]
+fn libcore_random_access_file_constructor_rejects_bad_modes_and_missing_files() {
+    // cite: libcore RandomAccessFile.java#RandomAccessFile
+    let fixture = GuestIoFixture::new("random_access_file_errors");
+    let program = fixture.program();
+    let constructor = java_io_method(
+        "Ljava/io/RandomAccessFile;",
+        "<init>",
+        "V",
+        &["Ljava/lang/String;", "Ljava/lang/String;"],
+    );
+    let string = |value: &str| DexValue::String(std::rc::Rc::from(value));
+    let missing = "/data/user/0/com.example/files/missing.bin";
+
+    assert_eq!(
+        thrown_class(invoke_value(
+            &program,
+            &constructor,
+            vec![
+                program.allocate_object("Ljava/io/RandomAccessFile;".to_owned()),
+                string(missing),
+                string("x")
+            ]
+        )),
+        "Ljava/lang/IllegalArgumentException;"
+    );
+    assert_eq!(
+        thrown_class(invoke_value(
+            &program,
+            &constructor,
+            vec![
+                program.allocate_object("Ljava/io/RandomAccessFile;".to_owned()),
+                DexValue::Null,
+                string("r")
+            ]
+        )),
+        "Ljava/lang/NullPointerException;"
+    );
+    assert_eq!(
+        thrown_class(invoke_value(
+            &program,
+            &constructor,
+            vec![
+                program.allocate_object("Ljava/io/RandomAccessFile;".to_owned()),
+                string(missing),
+                string("r")
+            ]
+        )),
+        "Ljava/io/FileNotFoundException;"
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![
+                program.allocate_object("Ljava/io/RandomAccessFile;".to_owned()),
+                string(missing),
+                string("rw")
+            ]))
+        ),
+        None
+    );
+}
+
+#[test]
+fn libcore_random_access_file_get_channel_after_close_is_a_missing_primitive() {
+    // cite: libcore RandomAccessFile.java#getChannel, close
+    let fixture = GuestIoFixture::new("random_access_file_closed_channel");
+    let program = fixture.program();
+    let path = fixture.private.join("files/archive.bin");
+    fs::create_dir_all(path.parent().expect("parent")).expect("files directory");
+    fs::write(&path, [1u8]).expect("archive bytes");
+    let string = |value: &str| DexValue::String(std::rc::Rc::from(value));
+    let constructor = java_io_method(
+        "Ljava/io/RandomAccessFile;",
+        "<init>",
+        "V",
+        &["Ljava/lang/String;", "Ljava/lang/String;"],
+    );
+    let close = java_io_method("Ljava/io/RandomAccessFile;", "close", "V", &[]);
+    let get_channel = java_io_method(
+        "Ljava/io/RandomAccessFile;",
+        "getChannel",
+        "Ljava/nio/channels/FileChannel;",
+        &[],
+    );
+    let file = program.allocate_object("Ljava/io/RandomAccessFile;".to_owned());
+
+    invoke_value(
+        &program,
+        &constructor,
+        vec![
+            file.clone(),
+            string("/data/user/0/com.example/files/archive.bin"),
+            string("r"),
+        ],
+    );
+    invoke_value(&program, &close, vec![file.clone()]);
+
+    assert_eq!(
+        program.invoke_builtin_method(&get_channel, Some(&test_invocation(vec![file]))),
+        None
+    );
+}
+
+#[test]
+fn libcore_byte_order_static_fields_are_the_two_named_constants() {
+    // cite: libcore ByteOrder.java#BIG_ENDIAN, LITTLE_ENDIAN
+    let field = |name: &str| DexFieldId {
+        class_descriptor: "Ljava/nio/ByteOrder;".to_owned(),
+        type_descriptor: "Ljava/nio/ByteOrder;".to_owned(),
+        name: name.to_owned(),
+    };
+
+    assert_eq!(
+        crate::dex_run::builtins::java_nio::byte_order_static_field(&field("LITTLE_ENDIAN")),
+        Some(little_endian())
+    );
+    assert_eq!(
+        crate::dex_run::builtins::java_nio::byte_order_static_field(&field("NATIVE_ORDER")),
+        None
+    );
+}
+
+#[test]
+fn libcore_executors_services_are_running_until_a_shutdown_builtin_exists() {
+    // cite: libcore ThreadPoolExecutor.java#isShutdown
+    let program = DexProgram::new(Vec::new());
+    let is_shutdown = java_io_method(
+        "Ljava/util/concurrent/ExecutorService;",
+        "isShutdown",
+        "Z",
+        &[],
+    );
+    let single = DexValue::Reference(std::rc::Rc::from(
+        "Ljava/util/concurrent/ScheduledExecutorService;.single",
+    ));
+
+    assert_eq!(
+        invoke_value(&program, &is_shutdown, vec![single]),
+        DexExecutionResult::Int(0)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &is_shutdown,
+            Some(&test_invocation(vec![DexValue::Reference(
+                std::rc::Rc::from("Ljava/util/concurrent/Executor;.main")
+            )]))
+        ),
+        None
+    );
+}
+
+#[test]
+fn libcore_concurrent_linked_deque_default_constructor_creates_an_empty_collection() {
+    // cite: libcore ConcurrentLinkedDeque.java#ConcurrentLinkedDeque
+    let program = DexProgram::new(Vec::new());
+    let constructor = java_io_method(
+        "Ljava/util/concurrent/ConcurrentLinkedDeque;",
+        "<init>",
+        "V",
+        &[],
+    );
+    let deque = program.allocate_object("Ljava/util/concurrent/ConcurrentLinkedDeque;".to_owned());
+
+    assert_eq!(
+        invoke_value(&program, &constructor, vec![deque.clone()]),
+        DexExecutionResult::Void
+    );
+    assert!(program.value_matches_type(&deque, "Ljava/util/Deque;"));
+    assert!(program.value_matches_type(&deque, "Ljava/util/AbstractCollection;"));
 }

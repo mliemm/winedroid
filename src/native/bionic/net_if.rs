@@ -38,7 +38,8 @@ fn guest_sockaddr(storage: &libc::sockaddr_storage) -> (usize, u32) {
     match storage.ss_family as i32 {
         libc::AF_INET => {
             let address = unsafe { libc::malloc(socket_abi::SOCKADDR_SIZE) } as usize;
-            let source = unsafe { &*(storage as *const libc::sockaddr_storage as *const libc::sockaddr_in) };
+            let source =
+                unsafe { &*(storage as *const libc::sockaddr_storage as *const libc::sockaddr_in) };
             write_value::<u16>(address, socket_abi::AF_INET as u16);
             write_value::<u16>(address + 2, source.sin_port);
             write_value::<u32>(address + 4, source.sin_addr.s_addr);
@@ -46,7 +47,9 @@ fn guest_sockaddr(storage: &libc::sockaddr_storage) -> (usize, u32) {
         }
         libc::AF_INET6 => {
             let address = unsafe { libc::malloc(socket_abi::SOCKADDR_IN6_SIZE) } as usize;
-            let source = unsafe { &*(storage as *const libc::sockaddr_storage as *const libc::sockaddr_in6) };
+            let source = unsafe {
+                &*(storage as *const libc::sockaddr_storage as *const libc::sockaddr_in6)
+            };
             write_value::<u16>(address, socket_abi::AF_INET6 as u16);
             write_value::<u16>(address + 2, source.sin6_port);
             write_value::<u32>(address + 4, source.sin6_flowinfo);
@@ -55,7 +58,8 @@ fn guest_sockaddr(storage: &libc::sockaddr_storage) -> (usize, u32) {
             (address, socket_abi::SOCKADDR_IN6_SIZE as u32)
         }
         libc::AF_LINK => {
-            let link = unsafe { &*(storage as *const libc::sockaddr_storage as *const libc::sockaddr_dl) };
+            let link =
+                unsafe { &*(storage as *const libc::sockaddr_storage as *const libc::sockaddr_dl) };
             let address = unsafe { libc::malloc(socket_abi::SOCKADDR_SIZE) } as usize;
             let kind = match link.sdl_type {
                 IFT_LOOP => 772u16,
@@ -63,7 +67,12 @@ fn guest_sockaddr(storage: &libc::sockaddr_storage) -> (usize, u32) {
                 _ => 1,
             };
             write_value::<u16>(address, kind);
-            let mac = unsafe { std::slice::from_raw_parts(link.sdl_data.as_ptr() as *const u8, link.sdl_data.len().min(14)) };
+            let mac = unsafe {
+                std::slice::from_raw_parts(
+                    link.sdl_data.as_ptr() as *const u8,
+                    link.sdl_data.len().min(14),
+                )
+            };
             write_bytes(address + 2, mac);
             (address, socket_abi::SOCKADDR_SIZE as u32)
         }
@@ -99,12 +108,20 @@ fn get_ifaddrs(result: usize) -> i64 {
         }
         write_bytes(guest, &[0u8; IFADDRS_SIZE]);
         if !node.ifa_name.is_null() {
-            write_value::<usize>(guest + 8, guest_name(unsafe { CStr::from_ptr(node.ifa_name) }));
+            write_value::<usize>(
+                guest + 8,
+                guest_name(unsafe { CStr::from_ptr(node.ifa_name) }),
+            );
         }
         write_value::<u32>(guest + 16, linux_flags(node.ifa_flags));
-        for (offset, source) in [(24usize, node.ifa_addr), (32, node.ifa_netmask), (40, node.ifa_dstaddr)] {
+        for (offset, source) in [
+            (24usize, node.ifa_addr),
+            (32, node.ifa_netmask),
+            (40, node.ifa_dstaddr),
+        ] {
             if !source.is_null() {
-                let (address, _) = guest_sockaddr(unsafe { &*(source as *const libc::sockaddr_storage) });
+                let (address, _) =
+                    guest_sockaddr(unsafe { &*(source as *const libc::sockaddr_storage) });
                 write_value::<usize>(guest + offset, address);
             }
         }
@@ -221,13 +238,22 @@ fn ifreq_host(name: &CStr) -> libc::ifreq {
     let mut request: libc::ifreq = unsafe { std::mem::zeroed() };
     let bytes = name.to_bytes();
     let length = bytes.len().min(abi::IFNAME_SIZE - 1);
-    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), request.ifr_name.as_mut_ptr() as *mut u8, length) };
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            bytes.as_ptr(),
+            request.ifr_name.as_mut_ptr() as *mut u8,
+            length,
+        )
+    };
     request
 }
 
 fn ifreq_socket_name(pointer: usize) -> Result<CString, i32> {
     let bytes = unsafe { std::slice::from_raw_parts(pointer as *const u8, abi::IFNAME_SIZE) };
-    let end = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
     CString::new(&bytes[..end]).map_err(|_| EINVAL)
 }
 
@@ -235,7 +261,9 @@ fn write_guest_sockaddr(target: usize, source: &libc::sockaddr) {
     let storage = unsafe { &*(source as *const libc::sockaddr as *const libc::sockaddr_storage) };
     let (address, _) = guest_sockaddr(storage);
     if address != 0 {
-        write_bytes(target, unsafe { std::slice::from_raw_parts(address as *const u8, socket_abi::SOCKADDR_SIZE) });
+        write_bytes(target, unsafe {
+            std::slice::from_raw_parts(address as *const u8, socket_abi::SOCKADDR_SIZE)
+        });
         unsafe { libc::free(address as *mut libc::c_void) };
     }
 }
@@ -256,13 +284,16 @@ fn link_address(name: &CStr) -> Option<(usize, u32)> {
     while !current.is_null() {
         let node = unsafe { &*current };
         current = node.ifa_next;
-        if node.ifa_addr.is_null() || unsafe { (*node.ifa_addr).sa_family } as i32 != libc::AF_LINK {
+        if node.ifa_addr.is_null() || unsafe { (*node.ifa_addr).sa_family } as i32 != libc::AF_LINK
+        {
             continue;
         }
         if unsafe { CStr::from_ptr(node.ifa_name) } != name {
             continue;
         }
-        found = Some(guest_sockaddr(unsafe { &*(node.ifa_addr as *const libc::sockaddr_storage) }));
+        found = Some(guest_sockaddr(unsafe {
+            &*(node.ifa_addr as *const libc::sockaddr_storage)
+        }));
         break;
     }
     unsafe { libc::freeifaddrs(host) };
@@ -295,7 +326,9 @@ pub fn request(fd: i32, request: u32, argument: usize) -> Option<i64> {
             if unsafe { libc::ioctl(fd, host_request, &mut host) } < 0 {
                 return Some(super::fs_result::from_host());
             }
-            write_guest_sockaddr(argument + abi::IFNAME_SIZE, unsafe { &host.ifr_ifru.ifru_addr });
+            write_guest_sockaddr(argument + abi::IFNAME_SIZE, unsafe {
+                &host.ifr_ifru.ifru_addr
+            });
             Some(0)
         }
         abi::SIOCGIFFLAGS => {
@@ -303,19 +336,26 @@ pub fn request(fd: i32, request: u32, argument: usize) -> Option<i64> {
                 return Some(super::fs_result::from_host());
             }
             let flags = unsafe { host.ifr_ifru.ifru_flags } as u16;
-            write_value::<u16>(argument + abi::IFNAME_SIZE, linux_flags(u32::from(flags)) as u16);
+            write_value::<u16>(
+                argument + abi::IFNAME_SIZE,
+                linux_flags(u32::from(flags)) as u16,
+            );
             Some(0)
         }
         abi::SIOCGIFMTU => {
             if unsafe { libc::ioctl(fd, SIOCGIFMTU_HOST, &mut host) } < 0 {
                 return Some(super::fs_result::from_host());
             }
-            write_value::<i32>(argument + abi::IFNAME_SIZE, unsafe { host.ifr_ifru.ifru_mtu });
+            write_value::<i32>(argument + abi::IFNAME_SIZE, unsafe {
+                host.ifr_ifru.ifru_mtu
+            });
             Some(0)
         }
         abi::SIOCGIFHWADDR => match link_address(&name) {
             Some((address, _)) => {
-                write_bytes(argument + abi::IFNAME_SIZE, unsafe { std::slice::from_raw_parts(address as *const u8, socket_abi::SOCKADDR_SIZE) });
+                write_bytes(argument + abi::IFNAME_SIZE, unsafe {
+                    std::slice::from_raw_parts(address as *const u8, socket_abi::SOCKADDR_SIZE)
+                });
                 unsafe { libc::free(address as *mut libc::c_void) };
                 Some(0)
             }
@@ -342,7 +382,10 @@ pub fn request(fd: i32, request: u32, argument: usize) -> Option<i64> {
             }
         }
         other => {
-            missing("ioctl", &format!("network request {other:#x} has no translation"));
+            missing(
+                "ioctl",
+                &format!("network request {other:#x} has no translation"),
+            );
             None
         }
     }
@@ -364,7 +407,8 @@ fn interface_list(argument: usize) -> Result<i32, i32> {
     while !current.is_null() {
         let node = unsafe { &*current };
         current = node.ifa_next;
-        if node.ifa_addr.is_null() || unsafe { (*node.ifa_addr).sa_family } as i32 != libc::AF_INET {
+        if node.ifa_addr.is_null() || unsafe { (*node.ifa_addr).sa_family } as i32 != libc::AF_INET
+        {
             continue;
         }
         if written + abi::IFREQ_SIZE as i32 > capacity {
@@ -384,10 +428,16 @@ fn interface_list(argument: usize) -> Result<i32, i32> {
 }
 
 pub fn register() {
-    in_libc("getifaddrs", |context| finish_int(context, get_ifaddrs(context.arg_ptr(0))));
+    in_libc("getifaddrs", |context| {
+        finish_int(context, get_ifaddrs(context.arg_ptr(0)))
+    });
     in_libc("freeifaddrs", |context| free_ifaddrs(context.arg_ptr(0)));
-    in_libc("if_nametoindex", |context| finish_int(context, name_index(context.arg_ptr(0))));
-    in_libc("if_indextoname", |context| finish_int(context, index_name(context.arg_u32(0), context.arg_ptr(1))));
+    in_libc("if_nametoindex", |context| {
+        finish_int(context, name_index(context.arg_ptr(0)))
+    });
+    in_libc("if_indextoname", |context| {
+        finish_int(context, index_name(context.arg_u32(0), context.arg_ptr(1)))
+    });
     in_libc("if_nameindex", |context| {
         let result = name_index_list();
         if result < 0 {
@@ -396,5 +446,7 @@ pub fn register() {
             context.ret_ptr(result as usize);
         }
     });
-    in_libc("if_freenameindex", |context| free_name_index_list(context.arg_ptr(0)));
+    in_libc("if_freenameindex", |context| {
+        free_name_index_list(context.arg_ptr(0))
+    });
 }

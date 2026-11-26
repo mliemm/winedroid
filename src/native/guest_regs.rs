@@ -20,7 +20,14 @@ const _: () = assert!(std::mem::offset_of!(Regs, q) == 96);
 
 impl Regs {
     pub fn zeroed() -> Self {
-        Self { x: [0; 8], x8: 0, lr: 0, sp: 0, fp: 0, q: [[0; 2]; 8] }
+        Self {
+            x: [0; 8],
+            x8: 0,
+            lr: 0,
+            sp: 0,
+            fp: 0,
+            q: [[0; 2]; 8],
+        }
     }
 
     pub fn arg_u64(&self, index: usize) -> u64 {

@@ -78,7 +78,8 @@ impl RandomState {
         // cite: bionic random.c#random_unlocked
         unsafe {
             if self.kind == TYPE_0 {
-                let value = (*self.state).wrapping_mul(1103515245).wrapping_add(12345) & 0x7fff_ffff;
+                let value =
+                    (*self.state).wrapping_mul(1103515245).wrapping_add(12345) & 0x7fff_ffff;
                 *self.state = value;
                 return value;
             }
@@ -108,7 +109,9 @@ impl RandomState {
             for index in 1..self.degree as usize {
                 let previous = *self.state.add(index - 1);
                 let (high, low) = (previous / 127773, previous % 127773);
-                let mut next = 16807i32.wrapping_mul(low).wrapping_sub(2836i32.wrapping_mul(high));
+                let mut next = 16807i32
+                    .wrapping_mul(low)
+                    .wrapping_sub(2836i32.wrapping_mul(high));
                 if next <= 0 {
                     next = next.wrapping_add(0x7fff_ffff);
                 }
@@ -124,7 +127,11 @@ impl RandomState {
 
     fn save_header(&mut self) {
         unsafe {
-            let marker = if self.kind == TYPE_0 { self.kind } else { MAX_TYPES * self.rear.offset_from(self.state) as i32 + self.kind };
+            let marker = if self.kind == TYPE_0 {
+                self.kind
+            } else {
+                MAX_TYPES * self.rear.offset_from(self.state) as i32 + self.kind
+            };
             *self.state.sub(1) = marker;
         }
     }
@@ -151,7 +158,10 @@ fn initstate(seed: u32, buffer: usize, length: usize) -> usize {
         if length < MINIMUM_STATE_BYTES {
             return 0;
         }
-        let kind = BREAKS.iter().position(|limit| length < *limit).map_or(4, |index| index) as i32;
+        let kind = BREAKS
+            .iter()
+            .position(|limit| length < *limit)
+            .map_or(4, |index| index) as i32;
         state.kind = kind;
         state.degree = DEGREES[kind as usize];
         state.separation = SEPS[kind as usize];
@@ -161,7 +171,11 @@ fn initstate(seed: u32, buffer: usize, length: usize) -> usize {
             state.end = state.state.add(state.degree as usize);
         }
         state.seed(seed);
-        let marker = if state.kind == TYPE_0 { state.kind } else { MAX_TYPES * unsafe { state.rear.offset_from(state.state) } as i32 + state.kind };
+        let marker = if state.kind == TYPE_0 {
+            state.kind
+        } else {
+            MAX_TYPES * unsafe { state.rear.offset_from(state.state) } as i32 + state.kind
+        };
         write_value::<i32>(buffer, marker);
         previous
     })
@@ -184,7 +198,9 @@ fn setstate(buffer: usize) -> usize {
             state.state = (buffer as *mut i32).add(1);
             if kind != TYPE_0 {
                 state.rear = state.state.offset(rear as isize);
-                state.front = state.state.offset(((rear + state.separation) % state.degree) as isize);
+                state.front = state
+                    .state
+                    .offset(((rear + state.separation) % state.degree) as isize);
             }
             state.end = state.state.add(state.degree as usize);
         }
@@ -198,7 +214,11 @@ struct Rand48 {
     addend: u16,
 }
 
-const RAND48_INITIAL: Rand48 = Rand48 { seed: [0x330e, 0xabcd, 0x1234], multiplier: [0xe66d, 0xdeec, 0x0005], addend: 0xb };
+const RAND48_INITIAL: Rand48 = Rand48 {
+    seed: [0x330e, 0xabcd, 0x1234],
+    multiplier: [0xe66d, 0xdeec, 0x0005],
+    addend: 0xb,
+};
 
 static RAND48: Mutex<Rand48> = Mutex::new(RAND48_INITIAL);
 static SEED48_RESULT: Mutex<[u16; 3]> = Mutex::new([0; 3]);
@@ -208,10 +228,13 @@ fn step48(seed: &mut [u16; 3], multiplier: [u16; 3], addend: u16) {
     let mut accumulator = u64::from(multiplier[0]) * u64::from(seed[0]) + u64::from(addend);
     let low = accumulator as u16;
     accumulator >>= 16;
-    accumulator += u64::from(multiplier[0]) * u64::from(seed[1]) + u64::from(multiplier[1]) * u64::from(seed[0]);
+    accumulator += u64::from(multiplier[0]) * u64::from(seed[1])
+        + u64::from(multiplier[1]) * u64::from(seed[0]);
     let middle = accumulator as u16;
     accumulator >>= 16;
-    accumulator += u64::from(multiplier[0]) * u64::from(seed[2]) + u64::from(multiplier[1]) * u64::from(seed[1]) + u64::from(multiplier[2]) * u64::from(seed[0]);
+    accumulator += u64::from(multiplier[0]) * u64::from(seed[2])
+        + u64::from(multiplier[1]) * u64::from(seed[1])
+        + u64::from(multiplier[2]) * u64::from(seed[0]);
     *seed = [low, middle, accumulator as u16];
 }
 
@@ -224,7 +247,11 @@ fn step_global() -> [u16; 3] {
 
 fn step_caller(address: usize) -> [u16; 3] {
     let generator = RAND48.lock().expect("rand48");
-    let mut seed = [read_value::<u16>(address), read_value::<u16>(address + 2), read_value::<u16>(address + 4)];
+    let mut seed = [
+        read_value::<u16>(address),
+        read_value::<u16>(address + 2),
+        read_value::<u16>(address + 4),
+    ];
     step48(&mut seed, generator.multiplier, generator.addend);
     for (index, word) in seed.iter().enumerate() {
         write_value::<u16>(address + index * 2, *word);
@@ -244,7 +271,9 @@ fn as_signed_long(seed: [u16; 3]) -> i64 {
 
 fn as_double(seed: [u16; 3]) -> f64 {
     // cite: bionic erand48.c#erand48
-    libm_ldexp(f64::from(seed[0]), -48) + libm_ldexp(f64::from(seed[1]), -32) + libm_ldexp(f64::from(seed[2]), -16)
+    libm_ldexp(f64::from(seed[0]), -48)
+        + libm_ldexp(f64::from(seed[1]), -32)
+        + libm_ldexp(f64::from(seed[2]), -16)
 }
 
 fn libm_ldexp(value: f64, exponent: i32) -> f64 {
@@ -253,7 +282,10 @@ fn libm_ldexp(value: f64, exponent: i32) -> f64 {
 
 fn seed_global(seed: i64) {
     // cite: bionic srand48.c#srand48
-    *RAND48.lock().expect("rand48") = Rand48 { seed: [0x330e, seed as u16, ((seed as u64) >> 16) as u16], ..RAND48_INITIAL };
+    *RAND48.lock().expect("rand48") = Rand48 {
+        seed: [0x330e, seed as u16, ((seed as u64) >> 16) as u16],
+        ..RAND48_INITIAL
+    };
 }
 
 pub fn register() {
@@ -261,35 +293,66 @@ pub fn register() {
     in_libc("random", |context| context.ret_i64(i64::from(random())));
     in_libc("srand", |context| seed_random(context.arg_u32(0)));
     in_libc("srandom", |context| seed_random(context.arg_u32(0)));
-    in_libc("initstate", |context| context.ret_ptr(initstate(context.arg_u32(0), context.arg_ptr(1), context.arg_u64(2) as usize)));
-    in_libc("setstate", |context| context.ret_ptr(setstate(context.arg_ptr(0))));
+    in_libc("initstate", |context| {
+        context.ret_ptr(initstate(
+            context.arg_u32(0),
+            context.arg_ptr(1),
+            context.arg_u64(2) as usize,
+        ))
+    });
+    in_libc("setstate", |context| {
+        context.ret_ptr(setstate(context.arg_ptr(0)))
+    });
     in_libc("rand_r", |context| {
         // cite: bionic rand_r.c#rand_r
         let address = context.arg_ptr(0);
-        let next = read_value::<u32>(address).wrapping_mul(1103515245).wrapping_add(12345);
+        let next = read_value::<u32>(address)
+            .wrapping_mul(1103515245)
+            .wrapping_add(12345);
         write_value::<u32>(address, next);
         context.ret_i32((next & 0x7fff_ffff) as i32);
     });
     in_libc("srand48", |context| seed_global(context.arg_u64(0) as i64));
     in_libc("lrand48", |context| context.ret_i64(as_long(step_global())));
-    in_libc("mrand48", |context| context.ret_i64(as_signed_long(step_global())));
-    in_libc("drand48", |context| context.ret_f64(as_double(step_global())));
-    in_libc("nrand48", |context| context.ret_i64(as_long(step_caller(context.arg_ptr(0)))));
-    in_libc("jrand48", |context| context.ret_i64(as_signed_long(step_caller(context.arg_ptr(0)))));
-    in_libc("erand48", |context| context.ret_f64(as_double(step_caller(context.arg_ptr(0)))));
+    in_libc("mrand48", |context| {
+        context.ret_i64(as_signed_long(step_global()))
+    });
+    in_libc("drand48", |context| {
+        context.ret_f64(as_double(step_global()))
+    });
+    in_libc("nrand48", |context| {
+        context.ret_i64(as_long(step_caller(context.arg_ptr(0))))
+    });
+    in_libc("jrand48", |context| {
+        context.ret_i64(as_signed_long(step_caller(context.arg_ptr(0))))
+    });
+    in_libc("erand48", |context| {
+        context.ret_f64(as_double(step_caller(context.arg_ptr(0))))
+    });
     in_libc("seed48", |context| {
         // cite: bionic seed48.c#seed48
         let address = context.arg_ptr(0);
         let mut generator = RAND48.lock().expect("rand48");
         let mut previous = SEED48_RESULT.lock().expect("seed48 result");
         *previous = generator.seed;
-        *generator = Rand48 { seed: [read_value(address), read_value(address + 2), read_value(address + 4)], ..RAND48_INITIAL };
+        *generator = Rand48 {
+            seed: [
+                read_value(address),
+                read_value(address + 2),
+                read_value(address + 4),
+            ],
+            ..RAND48_INITIAL
+        };
         context.ret_ptr(previous.as_ptr() as usize);
     });
     in_libc("lcong48", |context| {
         // cite: bionic lcong48.c#lcong48
         let address = context.arg_ptr(0);
         let word = |index: usize| read_value::<u16>(address + index * 2);
-        *RAND48.lock().expect("rand48") = Rand48 { seed: [word(0), word(1), word(2)], multiplier: [word(3), word(4), word(5)], addend: word(6) };
+        *RAND48.lock().expect("rand48") = Rand48 {
+            seed: [word(0), word(1), word(2)],
+            multiplier: [word(3), word(4), word(5)],
+            addend: word(6),
+        };
     });
 }

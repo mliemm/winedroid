@@ -65,7 +65,12 @@ fn try_write(lock: usize) -> i32 {
     // cite: bionic pthread_rwlock.cpp#__pthread_rwlock_trywrlock
     let mut old = state(lock).load(Ordering::Relaxed);
     while can_acquire_write(old) {
-        match state(lock).compare_exchange_weak(old, old | WRITER_FLAG, Ordering::Acquire, Ordering::Relaxed) {
+        match state(lock).compare_exchange_weak(
+            old,
+            old | WRITER_FLAG,
+            Ordering::Acquire,
+            Ordering::Relaxed,
+        ) {
             Ok(_) => {
                 i32_at(lock + WRITER_TID).store(tid(), Ordering::Relaxed);
                 return 0;
@@ -82,10 +87,24 @@ struct Side {
     flag: i32,
 }
 
-const READERS: Side = Side { count: PENDING_READERS, serial: READER_SERIAL, flag: PENDING_READERS_FLAG };
-const WRITERS: Side = Side { count: PENDING_WRITERS, serial: WRITER_SERIAL, flag: PENDING_WRITERS_FLAG };
+const READERS: Side = Side {
+    count: PENDING_READERS,
+    serial: READER_SERIAL,
+    flag: PENDING_READERS_FLAG,
+};
+const WRITERS: Side = Side {
+    count: PENDING_WRITERS,
+    serial: WRITER_SERIAL,
+    flag: PENDING_WRITERS_FLAG,
+};
 
-fn block_on(lock: usize, side: &Side, realtime: bool, timeout: usize, can_acquire: impl Fn(i32) -> bool) -> i32 {
+fn block_on(
+    lock: usize,
+    side: &Side,
+    realtime: bool,
+    timeout: usize,
+    can_acquire: impl Fn(i32) -> bool,
+) -> i32 {
     let pending = lock + PENDING_LOCK;
     bionic_lock::lock(pending);
     u32_at(lock + side.count).fetch_add(1, Ordering::Relaxed);
@@ -94,7 +113,14 @@ fn block_on(lock: usize, side: &Side, realtime: bool, timeout: usize, can_acquir
     bionic_lock::unlock(pending);
     let mut outcome = 0;
     if !can_acquire(old) {
-        let deadline = deadline_at(timeout, if realtime { CLOCK_REALTIME } else { CLOCK_MONOTONIC });
+        let deadline = deadline_at(
+            timeout,
+            if realtime {
+                CLOCK_REALTIME
+            } else {
+                CLOCK_MONOTONIC
+            },
+        );
         outcome = futex::wait(lock + side.serial, serial, MATCH_ANY, deadline);
     }
     bionic_lock::lock(pending);
@@ -127,7 +153,10 @@ fn timed_read(lock: usize, realtime: bool, timeout: usize) -> i32 {
             continue;
         }
         let preferred = writer_preferred(lock);
-        if block_on(lock, &READERS, realtime, timeout, |old| can_acquire_read(old, preferred)) == ETIMEDOUT {
+        if block_on(lock, &READERS, realtime, timeout, |old| {
+            can_acquire_read(old, preferred)
+        }) == ETIMEDOUT
+        {
             return ETIMEDOUT;
         }
     }
@@ -234,7 +263,10 @@ fn register_attributes() {
         context.ret_i32(0);
     });
     in_libc("pthread_rwlockattr_getpshared", |context| {
-        write_value::<i32>(context.arg_ptr(1), (read_value::<i64>(context.arg_ptr(0)) & 1) as i32);
+        write_value::<i32>(
+            context.arg_ptr(1),
+            (read_value::<i64>(context.arg_ptr(0)) & 1) as i32,
+        );
         context.ret_i32(0);
     });
     in_libc("pthread_rwlockattr_setpshared", |context| {
@@ -247,7 +279,10 @@ fn register_attributes() {
         context.ret_i32(0);
     });
     in_libc("pthread_rwlockattr_getkind_np", |context| {
-        write_value::<i32>(context.arg_ptr(1), ((read_value::<i64>(context.arg_ptr(0)) & KIND_MASK) >> 1) as i32);
+        write_value::<i32>(
+            context.arg_ptr(1),
+            ((read_value::<i64>(context.arg_ptr(0)) & KIND_MASK) >> 1) as i32,
+        );
         context.ret_i32(0);
     });
     in_libc("pthread_rwlockattr_setkind_np", |context| {
@@ -256,34 +291,75 @@ fn register_attributes() {
             return context.ret_i32(EINVAL);
         }
         let address = context.arg_ptr(0);
-        write_value::<i64>(address, (read_value::<i64>(address) & !KIND_MASK) | (kind << 1));
+        write_value::<i64>(
+            address,
+            (read_value::<i64>(address) & !KIND_MASK) | (kind << 1),
+        );
         context.ret_i32(0);
     });
 }
 
 pub fn register() {
     register_attributes();
-    in_libc("pthread_rwlock_init", |context| context.ret_i32(init(context.arg_ptr(0), context.arg_ptr(1))));
+    in_libc("pthread_rwlock_init", |context| {
+        context.ret_i32(init(context.arg_ptr(0), context.arg_ptr(1)))
+    });
     in_libc("pthread_rwlock_destroy", |context| {
         // cite: bionic pthread_rwlock.cpp#pthread_rwlock_destroy
         let busy = state(context.arg_ptr(0)).load(Ordering::Relaxed) != 0;
         context.ret_i32(if busy { EBUSY } else { 0 });
     });
-    in_libc("pthread_rwlock_tryrdlock", |context| context.ret_i32(try_read(context.arg_ptr(0))));
-    in_libc("pthread_rwlock_trywrlock", |context| context.ret_i32(try_write(context.arg_ptr(0))));
+    in_libc("pthread_rwlock_tryrdlock", |context| {
+        context.ret_i32(try_read(context.arg_ptr(0)))
+    });
+    in_libc("pthread_rwlock_trywrlock", |context| {
+        context.ret_i32(try_write(context.arg_ptr(0)))
+    });
     in_libc("pthread_rwlock_rdlock", |context| {
         let lock = context.arg_ptr(0);
-        context.ret_i32(if try_read(lock) == 0 { 0 } else { timed_read(lock, false, 0) });
+        context.ret_i32(if try_read(lock) == 0 {
+            0
+        } else {
+            timed_read(lock, false, 0)
+        });
     });
     in_libc("pthread_rwlock_wrlock", |context| {
         let lock = context.arg_ptr(0);
-        context.ret_i32(if try_write(lock) == 0 { 0 } else { timed_write(lock, false, 0) });
+        context.ret_i32(if try_write(lock) == 0 {
+            0
+        } else {
+            timed_write(lock, false, 0)
+        });
     });
-    in_libc("pthread_rwlock_timedrdlock", |context| context.ret_i32(timed_read(context.arg_ptr(0), true, context.arg_ptr(1))));
-    in_libc("pthread_rwlock_timedrdlock_monotonic_np", |context| context.ret_i32(timed_read(context.arg_ptr(0), false, context.arg_ptr(1))));
-    in_libc("pthread_rwlock_timedwrlock", |context| context.ret_i32(timed_write(context.arg_ptr(0), true, context.arg_ptr(1))));
-    in_libc("pthread_rwlock_timedwrlock_monotonic_np", |context| context.ret_i32(timed_write(context.arg_ptr(0), false, context.arg_ptr(1))));
-    in_libc("pthread_rwlock_clockrdlock", |context| context.ret_i32(clocked(context.arg_i32(1), true, context.arg_ptr(0), context.arg_ptr(2))));
-    in_libc("pthread_rwlock_clockwrlock", |context| context.ret_i32(clocked(context.arg_i32(1), false, context.arg_ptr(0), context.arg_ptr(2))));
-    in_libc("pthread_rwlock_unlock", |context| context.ret_i32(unlock(context.arg_ptr(0))));
+    in_libc("pthread_rwlock_timedrdlock", |context| {
+        context.ret_i32(timed_read(context.arg_ptr(0), true, context.arg_ptr(1)))
+    });
+    in_libc("pthread_rwlock_timedrdlock_monotonic_np", |context| {
+        context.ret_i32(timed_read(context.arg_ptr(0), false, context.arg_ptr(1)))
+    });
+    in_libc("pthread_rwlock_timedwrlock", |context| {
+        context.ret_i32(timed_write(context.arg_ptr(0), true, context.arg_ptr(1)))
+    });
+    in_libc("pthread_rwlock_timedwrlock_monotonic_np", |context| {
+        context.ret_i32(timed_write(context.arg_ptr(0), false, context.arg_ptr(1)))
+    });
+    in_libc("pthread_rwlock_clockrdlock", |context| {
+        context.ret_i32(clocked(
+            context.arg_i32(1),
+            true,
+            context.arg_ptr(0),
+            context.arg_ptr(2),
+        ))
+    });
+    in_libc("pthread_rwlock_clockwrlock", |context| {
+        context.ret_i32(clocked(
+            context.arg_i32(1),
+            false,
+            context.arg_ptr(0),
+            context.arg_ptr(2),
+        ))
+    });
+    in_libc("pthread_rwlock_unlock", |context| {
+        context.ret_i32(unlock(context.arg_ptr(0)))
+    });
 }
