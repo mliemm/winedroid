@@ -1801,6 +1801,67 @@ fn libcore_file_input_stream_string_constructor_opens_and_rejects_like_file_inpu
     assert!(program.value_matches_type(&null_name, "Ljava/lang/NullPointerException;"));
 }
 
+// cite: libcore FileReader.java#FileReader
+// cite: frameworks-base android_util_Process.cpp#android_os_Process_getPidsForCommands
+#[test]
+fn file_reader_path_reads_guest_files_and_own_proc_command_line() {
+    let fixture = GuestIoFixture::new("file-reader-path");
+    fs::create_dir_all(fixture.private.join("files")).unwrap();
+    fs::write(fixture.private.join("files/reader.txt"), "aé").unwrap();
+    let program = fixture.program();
+    let constructor = java_io_method(
+        "Ljava/io/FileReader;",
+        "<init>",
+        "V",
+        &["Ljava/lang/String;"],
+    );
+    let reader = object_value(520, "Ljava/io/FileReader;");
+    let string = |text: &str| DexValue::String(std::rc::Rc::from(text));
+    let open = |path| {
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![reader.clone(), path])),
+        )
+    };
+    assert_eq!(
+        open(string("/data/user/0/com.example/files/reader.txt")),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        buffered_reader_read_all(&program, &reader, 3),
+        vec![97, 233, -1]
+    );
+
+    let process_id_path = format!("/proc/{BOOTSTRAP_PROCESS_ID}/cmdline");
+    for path in ["/proc/self/cmdline", process_id_path.as_str()] {
+        assert_eq!(open(string(path)), Some(DexExecutionResult::Void));
+        let mut expected: Vec<i32> = program
+            .bootstrap_process_name()
+            .encode_utf16()
+            .map(i32::from)
+            .collect();
+        expected.extend([0, -1]);
+        assert_eq!(
+            buffered_reader_read_all(&program, &reader, expected.len()),
+            expected
+        );
+    }
+
+    for (path, class) in [
+        (DexValue::Null, "Ljava/lang/NullPointerException;"),
+        (string("/proc/1/cmdline"), "Ljava/io/FileNotFoundException;"),
+        (
+            string("/data/user/0/com.other/files/reader.txt"),
+            "Ljava/io/FileNotFoundException;",
+        ),
+    ] {
+        let Some(DexExecutionResult::Throw(error)) = open(path) else {
+            panic!("expected a guest exception");
+        };
+        assert!(program.value_matches_type(&error, class));
+    }
+}
+
 fn buffered_reader_read_all(program: &DexProgram, reader: &DexValue, count: usize) -> Vec<i32> {
     let read = java_io_method("Ljava/io/BufferedReader;", "read", "I", &[]);
     (0..count)

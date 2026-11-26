@@ -312,14 +312,13 @@ impl DexProgram {
         }
 
         // cite: libcore FileReader.java#FileReader
-        if method.class_descriptor == "Ljava/io/FileReader;"
-            && method.name == "<init>"
-            && method.proto.descriptor_is("(Ljava/io/File;)V")
-        {
-            let invocation = invocation?;
-            let result = self.initialize_file_reader_from_file(invocation)?;
-
-            return Some(result);
+        if method.class_descriptor == "Ljava/io/FileReader;" && method.name == "<init>" {
+            let from_file = match method.proto.descriptor().as_str() {
+                "(Ljava/io/File;)V" => true,
+                "(Ljava/lang/String;)V" => false,
+                _ => return None,
+            };
+            return self.initialize_file_reader(invocation?, from_file);
         }
 
         if method.class_descriptor == "Ljava/io/InputStreamReader;"
@@ -1690,28 +1689,43 @@ impl DexProgram {
 
     // cite: libcore FileReader.java#FileReader
     // cite: libcore FileInputStream.java#FileInputStream
-    fn initialize_file_reader_from_file(
+    fn initialize_file_reader(
         &self,
         invocation: &DexInvocation,
+        from_file: bool,
     ) -> Option<DexExecutionResult> {
         if invocation.arguments.len() != 2 || !dex_value_is_object_like(&invocation.arguments[0]) {
             return None;
         }
 
-        let guest_path = file_path_from_value(self, &invocation.arguments[1])?;
-        let path = match self.resolved_guest_path_result(&guest_path, ExternalStorageAccess::Read) {
-            Ok(path) => path,
-            Err(detail) => {
-                let exception = self.file_not_found_exception_for_path(&guest_path, &detail);
-                return Some(DexExecutionResult::Throw(exception));
-            }
+        let guest_path = match &invocation.arguments[1] {
+            DexValue::Null | DexValue::Int(0) => return Some(self.null_pointer_exception_result()),
+            value if from_file => file_path_from_value(self, value)?,
+            DexValue::String(path) => resolve_file_parent_and_child(None, path),
+            _ => return None,
         };
-        let bytes = match path.read() {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                let exception =
-                    self.file_not_found_exception_for_path(&guest_path, &error.to_string());
-                return Some(DexExecutionResult::Throw(exception));
+        // cite: frameworks-base android_util_Process.cpp#android_os_Process_getPidsForCommands
+        let bytes = if guest_path == "/proc/self/cmdline"
+            || guest_path == format!("/proc/{BOOTSTRAP_PROCESS_ID}/cmdline")
+        {
+            crate::native::bionic::proc_process::cmdline_for_name(&self.bootstrap_process_name())
+        } else {
+            let path =
+                match self.resolved_guest_path_result(&guest_path, ExternalStorageAccess::Read) {
+                    Ok(path) => path,
+                    Err(detail) => {
+                        return Some(DexExecutionResult::Throw(
+                            self.file_not_found_exception_for_path(&guest_path, &detail),
+                        ));
+                    }
+                };
+            match path.read() {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    return Some(DexExecutionResult::Throw(
+                        self.file_not_found_exception_for_path(&guest_path, &error.to_string()),
+                    ));
+                }
             }
         };
 

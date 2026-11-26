@@ -50,7 +50,11 @@ pub fn cmdline() -> Vec<u8> {
     let package = guest_context::current()
         .map(|context| context.package.clone())
         .unwrap_or_default();
-    let mut bytes = package.into_bytes();
+    cmdline_for_name(&package)
+}
+
+pub fn cmdline_for_name(name: &str) -> Vec<u8> {
+    let mut bytes = name.as_bytes().to_vec();
     bytes.push(0);
     bytes
 }
