@@ -1,6 +1,23 @@
 use super::super::*;
 use super::helpers::*;
 
+// cite: libcore Math.java#random, RandomNumberGeneratorHolder
+// cite: libcore Random.java#nextDouble
+#[test]
+fn math_random_reuses_its_generator_across_calls() {
+    let program = DexProgram::new(Vec::new());
+    program.runtime.borrow_mut().boot_wall_clock_millis = 0;
+    let method = builtin_method("Ljava/lang/Math;", "random", "D", &[]);
+    for expected in [0.730967787376657_f64, 0.24053641567148587] {
+        assert_eq!(
+            program.invoke_builtin_method(&method, None),
+            Some(DexExecutionResult::Value(DexValue::Long(
+                expected.to_bits() as i64
+            ))),
+        );
+    }
+}
+
 #[test]
 fn builtin_uuid_random_uuid_returns_version_four_variant_ietf() {
     let program = DexProgram::new(Vec::new());

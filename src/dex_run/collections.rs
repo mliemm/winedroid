@@ -5820,6 +5820,20 @@ impl DexProgram {
         Ok(Some(java_random_next_bits(seed, 32)))
     }
 
+    // cite: libcore Math.java#random, RandomNumberGeneratorHolder
+    // cite: libcore Random.java#nextDouble
+    pub(super) fn math_random(&self) -> f64 {
+        let mut runtime = self.runtime.borrow_mut();
+        let initial_seed = runtime.boot_wall_clock_millis;
+        let seed = runtime
+            .random_seeds
+            .entry("Ljava/lang/Math$RandomNumberGeneratorHolder;".to_owned())
+            .or_insert_with(|| java_random_initial_scramble(initial_seed));
+        let high = i64::from(java_random_next_bits(seed, 26));
+        let low = i64::from(java_random_next_bits(seed, 27));
+        ((high << 27) + low) as f64 / (1u64 << 53) as f64
+    }
+
     pub(super) fn random_next_float<A: MethodIntrinsicArguments + ?Sized>(
         &self,
         invocation: &A,

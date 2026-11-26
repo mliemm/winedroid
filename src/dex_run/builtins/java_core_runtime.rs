@@ -1462,6 +1462,16 @@ impl DexProgram {
             return Some(DexExecutionResult::Int(value));
         }
 
+        // cite: libcore Math.java#random
+        if method.class_descriptor == "Ljava/lang/Math;"
+            && method.name == "random"
+            && method.proto.descriptor_is("()D")
+        {
+            return Some(DexExecutionResult::Value(DexValue::Long(
+                self.math_random().to_bits() as i64,
+            )));
+        }
+
         // cite: libcore Math.java#abs
         if method.class_descriptor == "Ljava/lang/Math;"
             && method.name == "abs"
