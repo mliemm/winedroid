@@ -2617,3 +2617,29 @@ fn frameworks_application_info_primary_cpu_abi_follows_installed_native_abi_dire
     );
     std::fs::remove_dir_all(app_dir).ok();
 }
+
+#[test]
+fn libcore_class_as_subclass_returns_self_or_throws_class_cast() {
+    // cite: libcore Class.java#asSubclass
+    let program = DexProgram::new(Vec::new());
+    let as_subclass = builtin_method(
+        "Ljava/lang/Class;",
+        "asSubclass",
+        "Ljava/lang/Class;",
+        &["Ljava/lang/Class;"],
+    );
+    let integer = DexValue::Reference(std::rc::Rc::from("Ljava/lang/Class;:Ljava/lang/Integer;"));
+    let string = DexValue::Reference(std::rc::Rc::from("Ljava/lang/Class;:Ljava/lang/String;"));
+    let number = DexValue::Reference(std::rc::Rc::from("Ljava/lang/Class;:Ljava/lang/Number;"));
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &as_subclass,
+            Some(&test_invocation(vec![integer.clone(), number.clone()]))
+        ),
+        Some(DexExecutionResult::Value(integer))
+    );
+    let result =
+        program.invoke_builtin_method(&as_subclass, Some(&test_invocation(vec![string, number])));
+    assert!(program.value_matches_type(&thrown_exception(result), "Ljava/lang/ClassCastException;"));
+}

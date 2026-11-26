@@ -3176,3 +3176,54 @@ fn libcore_copy_on_write_array_list_inserts_at_an_index() {
         Some(&vec![DexValue::Int(1), DexValue::Int(2), DexValue::Int(3)])
     );
 }
+
+#[test]
+fn libcore_collection_to_array_fills_a_new_or_existing_array() {
+    // cite: libcore Collection.java#toArray
+    let program = DexProgram::new(Vec::new());
+    let to_array = builtin_method("Ljava/util/Set;", "toArray", "[Ljava/lang/Object;", &[]);
+    let to_existing = builtin_method(
+        "Ljava/util/Collection;",
+        "toArray",
+        "[Ljava/lang/Object;",
+        &["[Ljava/lang/Object;"],
+    );
+    let set = program.allocate_object("Ljava/util/HashSet;".to_owned());
+    program.runtime.borrow_mut().list_entries.insert(
+        map_identity_key(&set),
+        vec![DexValue::Int(1), DexValue::Int(2)],
+    );
+    let Some(DexExecutionResult::Value(array)) =
+        program.invoke_builtin_method(&to_array, Some(&test_invocation(vec![set.clone()])))
+    else {
+        panic!("toArray should return an array");
+    };
+    assert_eq!(
+        program
+            .runtime
+            .borrow()
+            .array_entries
+            .get(&map_identity_key(&array)),
+        Some(&vec![DexValue::Int(1), DexValue::Int(2)])
+    );
+
+    let target = program.allocate_filled_array(
+        "[Ljava/lang/Object;".to_owned(),
+        vec![DexValue::Null, DexValue::Null, DexValue::Int(9)],
+    );
+    let Some(DexExecutionResult::Value(filled)) = program.invoke_builtin_method(
+        &to_existing,
+        Some(&test_invocation(vec![set, target.clone()])),
+    ) else {
+        panic!("toArray(array) should return an array");
+    };
+    assert_eq!(filled, target);
+    assert_eq!(
+        program
+            .runtime
+            .borrow()
+            .array_entries
+            .get(&map_identity_key(&target)),
+        Some(&vec![DexValue::Int(1), DexValue::Int(2), DexValue::Null])
+    );
+}

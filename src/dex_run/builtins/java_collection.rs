@@ -261,6 +261,42 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(value));
         }
 
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/util/Collection;"
+                | "Ljava/util/AbstractCollection;"
+                | "Ljava/util/List;"
+                | "Ljava/util/Set;"
+                | "Ljava/util/Queue;"
+        ) && method.name == "toArray"
+            && method.proto.descriptor_is("()[Ljava/lang/Object;")
+        {
+            // cite: libcore Collection.java#toArray
+            let invocation = invocation?;
+            let value = self.collection_to_object_array(invocation)?;
+
+            return Some(DexExecutionResult::Value(value));
+        }
+
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/util/Collection;"
+                | "Ljava/util/AbstractCollection;"
+                | "Ljava/util/List;"
+                | "Ljava/util/Set;"
+                | "Ljava/util/Queue;"
+        ) && method.name == "toArray"
+            && method
+                .proto
+                .descriptor_is("([Ljava/lang/Object;)[Ljava/lang/Object;")
+        {
+            // cite: libcore Collection.java#toArray
+            let invocation = invocation?;
+            let value = self.collection_to_existing_array(invocation)?;
+
+            return Some(DexExecutionResult::Value(value));
+        }
+
         if method.class_descriptor == "Ljava/util/Collections;"
             && method.name == "addAll"
             && method

@@ -55,6 +55,26 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Ljava/lang/Class;"
+            && method.name == "asSubclass"
+            && method
+                .proto
+                .descriptor_is("(Ljava/lang/Class;)Ljava/lang/Class;")
+        {
+            // cite: libcore Class.java#asSubclass
+            let invocation = invocation?;
+            let class = class_reference_descriptor_from_value(&invocation.arguments[0])?;
+            let superclass = class_reference_descriptor_from_value(&invocation.arguments[1])?;
+            let class_value = DexValue::Reference(std::rc::Rc::from(class));
+            if !self.value_matches_type(&class_value, superclass) {
+                return Some(DexExecutionResult::Throw(
+                    self.allocate_object("Ljava/lang/ClassCastException;".to_owned()),
+                ));
+            }
+
+            return Some(DexExecutionResult::Value(invocation.arguments[0].clone()));
+        }
+
+        if method.class_descriptor == "Ljava/lang/Class;"
             && method.name == "getClassLoader"
             && method.proto.descriptor_is("()Ljava/lang/ClassLoader;")
         {

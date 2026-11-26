@@ -1815,6 +1815,71 @@ impl DexProgram {
         }
     }
 
+    // cite: libcore Collection.java#toArray
+    pub(super) fn collection_to_object_array(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexValue> {
+        if invocation.arguments.len() != 1 {
+            return None;
+        }
+        let key = map_identity_key(&invocation.arguments[0]);
+        let values = self
+            .runtime
+            .borrow()
+            .list_entries
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
+
+        Some(self.allocate_filled_array("[Ljava/lang/Object;".to_owned(), values))
+    }
+
+    // cite: libcore Collection.java#toArray
+    pub(super) fn collection_to_existing_array(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexValue> {
+        let [collection, array] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        if !dex_value_is_object_like(array) {
+            return None;
+        }
+        let collection_key = map_identity_key(collection);
+        let values = self
+            .runtime
+            .borrow()
+            .list_entries
+            .get(&collection_key)
+            .cloned()
+            .unwrap_or_default();
+        let array_key = map_identity_key(array);
+        let descriptor = value_class_descriptor(array)?.to_owned();
+        let mut entries = self
+            .runtime
+            .borrow()
+            .array_entries
+            .get(&array_key)
+            .cloned()
+            .unwrap_or_default();
+        if entries.len() < values.len() {
+            return Some(self.allocate_filled_array(descriptor, values));
+        }
+        for (index, value) in values.iter().enumerate() {
+            entries[index] = value.clone();
+        }
+        if entries.len() > values.len() {
+            entries[values.len()] = DexValue::Null;
+        }
+        self.runtime
+            .borrow_mut()
+            .array_entries
+            .insert(array_key, entries);
+
+        Some(array.clone())
+    }
+
     // cite: libcore List.java#add
     pub(super) fn insert_list_value(&self, invocation: &DexInvocation) -> Option<()> {
         let [list, DexValue::Int(index), value] = invocation.arguments.as_slice() else {
