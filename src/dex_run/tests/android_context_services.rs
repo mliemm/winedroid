@@ -267,6 +267,61 @@ fn frameworks_system_service_registry_returns_typed_activity_manager() {
     assert!(program.value_matches_type(&expected, "Landroid/app/ActivityManager;"));
 }
 
+// cite: frameworks-base ActivityManager.java#MemoryInfo
+#[test]
+fn frameworks_memory_info_constructor_leaves_default_fields() {
+    let program = DexProgram::new(Vec::new());
+    let method = builtin_method(
+        "Landroid/app/ActivityManager$MemoryInfo;",
+        "<init>",
+        "V",
+        &[],
+    );
+    let receiver = program.allocate_object("Landroid/app/ActivityManager$MemoryInfo;".to_owned());
+    let invocation = test_invocation(vec![receiver.clone()]);
+    assert_eq!(
+        program.invoke_builtin_method(&method, Some(&invocation)),
+        Some(DexExecutionResult::Void)
+    );
+    let field = DexFieldId {
+        class_descriptor: "Landroid/app/ActivityManager$MemoryInfo;".to_owned(),
+        type_descriptor: "J".to_owned(),
+        name: "totalMem".to_owned(),
+    };
+    assert_eq!(program.read_stored_instance_field(&receiver, &field), None);
+}
+
+// cite: cts FeatureTest.java#setUp
+#[test]
+fn frameworks_memory_info_service_updates_the_supplied_object() {
+    let program = DexProgram::new(Vec::new());
+    let method = builtin_method(
+        "Landroid/app/ActivityManager;",
+        "getMemoryInfo",
+        "V",
+        &["Landroid/app/ActivityManager$MemoryInfo;"],
+    );
+    let receiver = DexValue::Reference(std::rc::Rc::from("Landroid/app/ActivityManager;:activity"));
+    let info = program.allocate_object("Landroid/app/ActivityManager$MemoryInfo;".to_owned());
+    let invoke = |out| {
+        program.invoke_builtin_method(&method, Some(&test_invocation(vec![receiver.clone(), out])))
+    };
+    assert_eq!(invoke(info.clone()), Some(DexExecutionResult::Void));
+    let total = program.read_stored_instance_field(
+        &info,
+        &DexFieldId {
+            class_descriptor: "Landroid/app/ActivityManager$MemoryInfo;".to_owned(),
+            type_descriptor: "J".to_owned(),
+            name: "totalMem".to_owned(),
+        },
+    );
+    assert!(matches!(total, Some(DexValue::Long(value)) if value > 0));
+    let Some(DexExecutionResult::Throw(error)) = invoke(DexValue::Null) else {
+        panic!("expected a null output argument to throw");
+    };
+    assert!(program.value_matches_type(&error, "Ljava/lang/NullPointerException;"));
+}
+
 // cite: frameworks-base ActivityManager.java#isLowRamDevice, isLowRamDeviceStatic
 #[test]
 fn frameworks_activity_manager_reports_device_memory_class() {

@@ -63,6 +63,7 @@ pub fn task() -> TaskStats {
 
 #[derive(Default, Clone, Copy)]
 pub struct MemoryStats {
+    pub vm_stats_available: bool,
     pub total: u64,
     pub free: u64,
     pub available: u64,
@@ -98,6 +99,7 @@ pub fn memory() -> MemoryStats {
         )
     };
     if status == 0 {
+        stats.vm_stats_available = true;
         stats.free = u64::from(vm.free_count.saturating_sub(vm.speculative_count)) * page;
         let used = u64::from(vm.internal_page_count.saturating_sub(vm.purgeable_count))
             + u64::from(vm.wire_count)

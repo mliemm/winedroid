@@ -1276,6 +1276,24 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(DexValue::Long(value)));
         }
 
+        // cite: frameworks-base ActivityManager.java#MemoryInfo
+        if method.class_descriptor == "Landroid/app/ActivityManager$MemoryInfo;"
+            && method.name == "<init>"
+            && method.proto.descriptor_is("()V")
+        {
+            return Some(DexExecutionResult::Void);
+        }
+
+        // cite: frameworks-base ActivityManager.java#getMemoryInfo
+        if method.class_descriptor == "Landroid/app/ActivityManager;"
+            && method.name == "getMemoryInfo"
+            && method
+                .proto
+                .descriptor_is("(Landroid/app/ActivityManager$MemoryInfo;)V")
+        {
+            return self.activity_manager_memory_info(invocation?);
+        }
+
         if method.class_descriptor == "Landroid/app/ActivityManager;"
             && (method.name == "isLowRamDevice" || method.name == "isLowRamDeviceStatic")
             && method.proto.descriptor_is("()Z")
