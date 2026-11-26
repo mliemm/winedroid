@@ -3545,6 +3545,7 @@ fn builtin_handler_constructors_store_looper_and_post_delayed_queues_runnable() 
         vec![
             HandlerPost {
                 handler_key: "reference:handler".to_owned(),
+                handler: Some(DexValue::Reference(std::rc::Rc::from("handler"))),
                 runnable: DexValue::Reference(std::rc::Rc::from("front-runnable")),
                 delay_millis: 0,
                 due_time_millis: 0,
@@ -3553,6 +3554,7 @@ fn builtin_handler_constructors_store_looper_and_post_delayed_queues_runnable() 
             },
             HandlerPost {
                 handler_key: "reference:handler".to_owned(),
+                handler: Some(DexValue::Reference(std::rc::Rc::from("handler"))),
                 runnable: DexValue::Reference(std::rc::Rc::from("runnable")),
                 delay_millis: 250,
                 due_time_millis: 250,
@@ -3561,6 +3563,7 @@ fn builtin_handler_constructors_store_looper_and_post_delayed_queues_runnable() 
             },
             HandlerPost {
                 handler_key: "reference:handler".to_owned(),
+                handler: Some(DexValue::Reference(std::rc::Rc::from("handler"))),
                 runnable: DexValue::Reference(std::rc::Rc::from("other-runnable")),
                 delay_millis: 500,
                 due_time_millis: 500,
@@ -3569,6 +3572,7 @@ fn builtin_handler_constructors_store_looper_and_post_delayed_queues_runnable() 
             },
             HandlerPost {
                 handler_key: "reference:handler".to_owned(),
+                handler: Some(DexValue::Reference(std::rc::Rc::from("handler"))),
                 runnable: DexValue::Reference(std::rc::Rc::from("immediate-runnable")),
                 delay_millis: 0,
                 due_time_millis: 0,
@@ -3586,6 +3590,7 @@ fn builtin_handler_constructors_store_looper_and_post_delayed_queues_runnable() 
         vec![
             HandlerPost {
                 handler_key: "reference:handler".to_owned(),
+                handler: Some(DexValue::Reference(std::rc::Rc::from("handler"))),
                 runnable: DexValue::Reference(std::rc::Rc::from("front-runnable")),
                 delay_millis: 0,
                 due_time_millis: 0,
@@ -3594,6 +3599,7 @@ fn builtin_handler_constructors_store_looper_and_post_delayed_queues_runnable() 
             },
             HandlerPost {
                 handler_key: "reference:handler".to_owned(),
+                handler: Some(DexValue::Reference(std::rc::Rc::from("handler"))),
                 runnable: DexValue::Reference(std::rc::Rc::from("other-runnable")),
                 delay_millis: 500,
                 due_time_millis: 500,
@@ -3602,6 +3608,7 @@ fn builtin_handler_constructors_store_looper_and_post_delayed_queues_runnable() 
             },
             HandlerPost {
                 handler_key: "reference:handler".to_owned(),
+                handler: Some(DexValue::Reference(std::rc::Rc::from("handler"))),
                 runnable: DexValue::Reference(std::rc::Rc::from("immediate-runnable")),
                 delay_millis: 0,
                 due_time_millis: 0,
@@ -3659,6 +3666,7 @@ fn aosp_messagequeue_androidx_androiduidispatcher_remove_callbacks_uses_runnable
         program.runtime.borrow().handler_posts,
         vec![HandlerPost {
             handler_key,
+            handler: None,
             runnable: other_runnable,
             delay_millis: 0,
             due_time_millis: 0,

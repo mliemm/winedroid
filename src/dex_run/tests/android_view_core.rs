@@ -3255,6 +3255,7 @@ fn builtin_view_listener_registration_returns_void() {
         vec![
             HandlerPost {
                 handler_key: view_handler_key.clone(),
+                handler: Some(view_handler.clone()),
                 runnable: post_runnable.clone(),
                 delay_millis: 0,
                 due_time_millis: 0,
@@ -3263,6 +3264,7 @@ fn builtin_view_listener_registration_returns_void() {
             },
             HandlerPost {
                 handler_key: view_handler_key.clone(),
+                handler: Some(view_handler.clone()),
                 runnable: plain_post_runnable.clone(),
                 delay_millis: 0,
                 due_time_millis: 0,
@@ -3271,6 +3273,7 @@ fn builtin_view_listener_registration_returns_void() {
             },
             HandlerPost {
                 handler_key: view_handler_key.clone(),
+                handler: Some(view_handler.clone()),
                 runnable: delayed_runnable.clone(),
                 delay_millis: 16,
                 due_time_millis: 16,
@@ -3288,6 +3291,7 @@ fn builtin_view_listener_registration_returns_void() {
         vec![
             HandlerPost {
                 handler_key: view_handler_key.clone(),
+                handler: Some(view_handler.clone()),
                 runnable: plain_post_runnable,
                 delay_millis: 0,
                 due_time_millis: 0,
@@ -3296,6 +3300,7 @@ fn builtin_view_listener_registration_returns_void() {
             },
             HandlerPost {
                 handler_key: view_handler_key,
+                handler: Some(view_handler.clone()),
                 runnable: delayed_runnable,
                 delay_millis: 16,
                 due_time_millis: 16,

@@ -2,6 +2,7 @@ use super::*;
 
 const HANDLER: &str = "Landroid/os/Handler;";
 const MESSAGE: &str = "Landroid/os/Message;";
+const LOOPER: &str = "Landroid/os/Looper;";
 const FLAG_IN_USE: i32 = 1;
 
 fn message_flags_field() -> DexFieldId {
@@ -39,7 +40,156 @@ fn handler_callback_field() -> DexFieldId {
     }
 }
 
+fn looper_logging_field() -> DexFieldId {
+    DexFieldId {
+        class_descriptor: LOOPER.to_owned(),
+        type_descriptor: "Landroid/util/Printer;".to_owned(),
+        name: "mLogging".to_owned(),
+    }
+}
+
 impl DexProgram {
+    // cite: frameworks-base Looper.java#setMessageLogging, mLogging
+    pub(in crate::dex_run) fn looper_set_message_logging(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<()> {
+        let [looper, printer] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        let printer = if is_android_null_value(printer) {
+            DexValue::Null
+        } else if dex_value_is_object_like(printer) {
+            printer.clone()
+        } else {
+            return None;
+        };
+        self.write_stored_instance_field(looper, &looper_logging_field(), printer)
+            .then_some(())
+    }
+
+    pub(in crate::dex_run) fn dispatch_handler_post(
+        &self,
+        post: &HandlerPost,
+        depth: usize,
+    ) -> Result<()> {
+        let dispatch = || self.dispatch_runnable(&post.runnable, "Handler.post", depth);
+        match &post.handler {
+            Some(handler) => {
+                self.with_looper_logging(handler, Some(&post.runnable), 0, depth, dispatch)
+            }
+            None => dispatch(),
+        }
+    }
+
+    // cite: frameworks-base Looper.java#loopOnce, mLogging
+    fn with_looper_logging(
+        &self,
+        handler: &DexValue,
+        callback: Option<&DexValue>,
+        what: i32,
+        depth: usize,
+        dispatch: impl FnOnce() -> Result<()>,
+    ) -> Result<()> {
+        let key = map_identity_key(handler);
+        let looper = self.runtime.borrow().handler_loopers.get(&key).cloned();
+        let printer = looper
+            .and_then(|looper| self.read_stored_instance_field(&looper, &looper_logging_field()));
+        let Some(printer @ (DexValue::Object(_) | DexValue::Reference(_))) = printer else {
+            return dispatch();
+        };
+
+        let target = self.looper_dispatch_value_text(handler, true, depth)?;
+        let callback_start = match callback {
+            Some(callback) => self.looper_dispatch_value_text(callback, false, depth)?,
+            None => "null".to_owned(),
+        };
+        self.looper_print(
+            &printer,
+            format!(">>>>> Dispatching to {target} {callback_start}: {what}"),
+            depth,
+        )?;
+        dispatch()?;
+        let target = self.looper_dispatch_value_text(handler, true, depth)?;
+        let callback_end = match callback {
+            Some(callback) => self.looper_dispatch_value_text(callback, false, depth)?,
+            None => "null".to_owned(),
+        };
+        self.looper_print(
+            &printer,
+            format!("<<<<< Finished to {target} {callback_end}"),
+            depth,
+        )
+    }
+
+    // cite: frameworks-base Handler.java#toString
+    fn looper_dispatch_value_text(
+        &self,
+        value: &DexValue,
+        handler: bool,
+        depth: usize,
+    ) -> Result<String> {
+        let Some(descriptor) = value_class_descriptor(value) else {
+            return Err(WinedroidError::new(
+                "Looper logging requires an object-backed dispatch target",
+            ));
+        };
+        let method = DexMethodId {
+            class_descriptor: descriptor.to_owned(),
+            name: "toString".to_owned(),
+            proto: dex::DexProto {
+                shorty: "L".to_owned(),
+                return_type: "Ljava/lang/String;".to_owned(),
+                parameters: Vec::new(),
+            },
+        };
+        if self
+            .resolve_exact_method_in_class_hierarchy(descriptor, &method)?
+            .is_some()
+        {
+            let value = self.dispatch_object_value_method(
+                value,
+                &method.name,
+                method.proto,
+                Vec::new(),
+                "Looper logging",
+                depth,
+            )?;
+            if is_android_null_value(&value) {
+                return Ok("null".to_owned());
+            }
+            return self.char_sequence_text(&value).ok_or_else(|| {
+                WinedroidError::new("Looper logging toString did not return a string")
+            });
+        }
+        if handler {
+            let class =
+                descriptor_to_java_name(descriptor).unwrap_or_else(|| descriptor.to_owned());
+            return Ok(format!(
+                "Handler ({class}) {{{:x}}}",
+                stable_hash_i32(&map_identity_key(value)) as u32
+            ));
+        }
+        self.object_value_to_string(value)
+            .ok_or_else(|| WinedroidError::new("Looper logging could not format a callback"))
+    }
+
+    // cite: frameworks-base Printer.java#println
+    fn looper_print(&self, printer: &DexValue, text: String, depth: usize) -> Result<()> {
+        self.dispatch_object_void_method(
+            printer,
+            "println",
+            dex::DexProto {
+                shorty: "VL".to_owned(),
+                return_type: "V".to_owned(),
+                parameters: vec!["Ljava/lang/String;".to_owned()],
+            },
+            vec![DexValue::String(text.into())],
+            "Looper message logging",
+            depth,
+        )
+    }
+
     // cite: frameworks-base Handler.java#sendMessage, sendMessageDelayed
     pub(in crate::dex_run) fn handler_send_message(
         &self,
@@ -239,12 +389,21 @@ impl DexProgram {
             )));
         };
 
-        let message_callback = self.read_stored_instance_field(message, &message_callback_field());
-        if let Some(callback @ (DexValue::Object(_) | DexValue::Reference(_))) = message_callback {
-            self.dispatch_runnable(&callback, "Message.callback", depth)?;
-        } else if !self.dispatch_handler_callback(&handler, message, depth)? {
-            self.dispatch_handler_handle_message(&handler, message, depth)?;
-        }
+        let message_callback = self
+            .read_stored_instance_field(message, &message_callback_field())
+            .filter(dex_value_is_object_like);
+        let what = match self.read_stored_instance_field(message, &message_int_field("what")) {
+            Some(DexValue::Int(what)) => what,
+            _ => 0,
+        };
+        self.with_looper_logging(&handler, message_callback.as_ref(), what, depth, || {
+            if let Some(callback) = &message_callback {
+                self.dispatch_runnable(callback, "Message.callback", depth)?;
+            } else if !self.dispatch_handler_callback(&handler, message, depth)? {
+                self.dispatch_handler_handle_message(&handler, message, depth)?;
+            }
+            Ok(())
+        })?;
 
         self.recycle_message(message);
 

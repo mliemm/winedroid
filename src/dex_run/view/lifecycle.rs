@@ -1072,12 +1072,9 @@ impl DexProgram {
             return Some(0);
         }
 
-        self.runtime.borrow_mut().post_handler_runnable(
-            map_identity_key(&handler),
-            runnable,
-            delay_millis,
-            false,
-        );
+        self.runtime
+            .borrow_mut()
+            .post_handler_callback(handler, runnable, delay_millis, false);
 
         Some(1)
     }

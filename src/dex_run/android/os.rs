@@ -1288,7 +1288,6 @@ impl DexProgram {
             return None;
         }
 
-        let handler_key = map_identity_key(&invocation.arguments[0]);
         let runnable = match &invocation.arguments[1] {
             DexValue::Object(_) | DexValue::Reference(_) => invocation.arguments[1].clone(),
             DexValue::Uninitialized
@@ -1299,9 +1298,14 @@ impl DexProgram {
             | DexValue::String(_) => return None,
         };
 
-        self.runtime
-            .borrow_mut()
-            .post_handler_runnable(handler_key, runnable, 0, false);
+        let handler = &invocation.arguments[0];
+        let key = map_identity_key(handler);
+        let mut runtime = self.runtime.borrow_mut();
+        if runtime.handler_loopers.contains_key(&key) {
+            runtime.post_handler_callback(handler.clone(), runnable, 0, false);
+        } else {
+            runtime.post_handler_runnable(key, runnable, 0, false);
+        }
 
         Some(())
     }
@@ -1847,7 +1851,6 @@ impl DexProgram {
             return None;
         }
 
-        let handler_key = map_identity_key(&invocation.arguments[0]);
         let runnable = match &invocation.arguments[1] {
             DexValue::Object(_) | DexValue::Reference(_) => invocation.arguments[1].clone(),
             DexValue::Uninitialized
@@ -1858,9 +1861,12 @@ impl DexProgram {
             | DexValue::String(_) => return None,
         };
 
-        self.runtime
-            .borrow_mut()
-            .post_handler_runnable(handler_key, runnable, 0, true);
+        self.runtime.borrow_mut().post_handler_callback(
+            invocation.arguments[0].clone(),
+            runnable,
+            0,
+            true,
+        );
 
         Some(())
     }
@@ -1873,7 +1879,6 @@ impl DexProgram {
             return None;
         }
 
-        let handler_key = map_identity_key(&invocation.arguments[0]);
         let runnable = match &invocation.arguments[1] {
             DexValue::Object(_) | DexValue::Reference(_) => invocation.arguments[1].clone(),
             DexValue::Uninitialized
@@ -1894,9 +1899,12 @@ impl DexProgram {
             return None;
         }
 
-        self.runtime
-            .borrow_mut()
-            .post_handler_runnable(handler_key, runnable, delay_millis, false);
+        self.runtime.borrow_mut().post_handler_callback(
+            invocation.arguments[0].clone(),
+            runnable,
+            delay_millis,
+            false,
+        );
 
         Some(())
     }

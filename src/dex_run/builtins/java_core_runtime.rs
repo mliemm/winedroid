@@ -2175,6 +2175,15 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        // cite: frameworks-base Looper.java#setMessageLogging
+        if method.class_descriptor == "Landroid/os/Looper;"
+            && method.name == "setMessageLogging"
+            && method.proto.descriptor_is("(Landroid/util/Printer;)V")
+        {
+            self.looper_set_message_logging(invocation?)?;
+            return Some(DexExecutionResult::Void);
+        }
+
         if method.class_descriptor == "Landroid/os/Looper;"
             && method.name == "loop"
             && method.proto.descriptor_is("()V")

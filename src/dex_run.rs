@@ -2584,11 +2584,9 @@ impl DexProgram {
                     let _span = trace::span("runtime", "dispatch Handler.post callback");
                     match self.handler_looper_thread(&post.handler_key) {
                         Some(thread) => self.with_current_guest_thread(thread, || {
-                            self.dispatch_runnable(&post.runnable, "Handler.post", depth + 1)
+                            self.dispatch_handler_post(&post, depth + 1)
                         })?,
-                        None => {
-                            self.dispatch_runnable(&post.runnable, "Handler.post", depth + 1)?
-                        }
+                        None => self.dispatch_handler_post(&post, depth + 1)?,
                     }
                 }
                 if let Some(delay_millis) =

@@ -548,7 +548,104 @@ fn callback_of(program: &DexProgram, handler: &DexValue) -> DexValue {
         .expect("callback should be stored")
 }
 
+// cite: frameworks-base Looper.java#setMessageLogging, loopOnce
+#[test]
+fn looper_dispatch_calls_the_registered_printer_and_can_clear_it() {
+    let printer_class = "Lcom/example/RecordingPrinter;";
+    let dex = dex::parse_dex_file(
+        "classes.dex",
+        callback_method_dex(
+            printer_class,
+            "Ljava/lang/Object;",
+            [
+                "Ljava/lang/String;",
+                "V",
+                "Ljava/lang/String;",
+                "VL",
+                "println",
+            ],
+            &[0x125b, 0x0000, 0x000e],
+        ),
+    )
+    .unwrap();
+    let program = DexProgram::new(vec![dex]);
+    let handler = new_handler(&program, "Landroid/os/Handler;");
+    let looper = program.runtime.borrow().handler_loopers[&map_identity_key(&handler)].clone();
+    let printer = program.allocate_object(printer_class.to_owned());
+    let setter = builtin_method(
+        "Landroid/os/Looper;",
+        "setMessageLogging",
+        "V",
+        &["Landroid/util/Printer;"],
+    );
+    let seen = DexFieldId {
+        class_descriptor: printer_class.to_owned(),
+        type_descriptor: "Ljava/lang/String;".to_owned(),
+        name: "seen".to_owned(),
+    };
+    let set_printer = |value| {
+        assert_eq!(
+            program.invoke_builtin_method(
+                &setter,
+                Some(&test_invocation(vec![looper.clone(), value]))
+            ),
+            Some(DexExecutionResult::Void)
+        );
+    };
+    set_printer(printer.clone());
+    program
+        .dispatch_handler_message(&obtain_message(&program, &handler, 7), 0)
+        .unwrap();
+    let expected = format!(
+        "<<<<< Finished to Handler (android.os.Handler) {{{:x}}} null",
+        stable_hash_i32(&map_identity_key(&handler)) as u32,
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&printer, &seen),
+        Some(DexValue::String(expected.into()))
+    );
+    set_printer(DexValue::Null);
+    program.write_stored_instance_field(&printer, &seen, DexValue::Null);
+    program
+        .dispatch_handler_message(&obtain_message(&program, &handler, 9), 0)
+        .unwrap();
+    assert_eq!(
+        program.read_stored_instance_field(&printer, &seen),
+        Some(DexValue::Null)
+    );
+}
+
 fn handle_message_dex(class: &str, superclass: &str, boolean: bool, value: u8) -> Vec<u8> {
+    let (return_type, shorty, return_opcode) = if boolean {
+        ("Z", "ZL", 0x000f)
+    } else {
+        ("V", "VL", 0x000e)
+    };
+    callback_method_dex(
+        class,
+        superclass,
+        [
+            "I",
+            return_type,
+            "Landroid/os/Message;",
+            shorty,
+            "handleMessage",
+        ],
+        &[
+            0x0012 | (u16::from(value) << 12),
+            0x1059,
+            0x0000,
+            return_opcode,
+        ],
+    )
+}
+
+fn callback_method_dex(
+    class: &str,
+    superclass: &str,
+    [field_type, return_type, parameter, shorty, method_name]: [&str; 5],
+    insns: &[u16],
+) -> Vec<u8> {
     const DEX_HEADER_SIZE: usize = 0x70;
     const DEX_ENDIAN_CONSTANT: u32 = 0x1234_5678;
     const STRING_ID_SIZE: usize = 4;
@@ -558,16 +655,14 @@ fn handle_message_dex(class: &str, superclass: &str, boolean: bool, value: u8) -
     const METHOD_ID_SIZE: usize = 8;
     const CLASS_DEF_SIZE: usize = 32;
 
-    let return_type = if boolean { "Z" } else { "V" };
-    let shorty = if boolean { "ZL" } else { "VL" };
     let strings = [
         class,
         superclass,
-        "I",
+        field_type,
         return_type,
-        "Landroid/os/Message;",
+        parameter,
         shorty,
-        "handleMessage",
+        method_name,
         "seen",
     ];
     let string_ids_off = DEX_HEADER_SIZE;
@@ -614,11 +709,6 @@ fn handle_message_dex(class: &str, superclass: &str, boolean: bool, value: u8) -
     data[code_off_index] = ((code_off & 0x7f) as u8) | 0x80;
     data[code_off_index + 1] = (code_off >> 7) as u8;
 
-    let insns: Vec<u16> = if boolean {
-        vec![0x0012 | (u16::from(value) << 12), 0x1059, 0x0000, 0x000f]
-    } else {
-        vec![0x0012 | (u16::from(value) << 12), 0x1059, 0x0000, 0x000e]
-    };
     data.extend_from_slice(&3u16.to_le_bytes());
     data.extend_from_slice(&2u16.to_le_bytes());
     data.extend_from_slice(&0u16.to_le_bytes());

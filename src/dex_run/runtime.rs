@@ -889,11 +889,39 @@ impl DexRuntimeState {
         delay_millis: i64,
         at_front: bool,
     ) {
+        self.enqueue_handler_runnable(handler_key, None, runnable, delay_millis, at_front);
+    }
+
+    pub(super) fn post_handler_callback(
+        &mut self,
+        handler: DexValue,
+        runnable: DexValue,
+        delay_millis: i64,
+        at_front: bool,
+    ) {
+        self.enqueue_handler_runnable(
+            map_identity_key(&handler),
+            Some(handler),
+            runnable,
+            delay_millis,
+            at_front,
+        );
+    }
+
+    fn enqueue_handler_runnable(
+        &mut self,
+        handler_key: String,
+        handler: Option<DexValue>,
+        runnable: DexValue,
+        delay_millis: i64,
+        at_front: bool,
+    ) {
         let sequence = self.next_main_thread_sequence;
         self.next_main_thread_sequence += 1;
         let due_time_millis = self.main_thread_uptime_millis + delay_millis.max(0);
         let post = HandlerPost {
             handler_key,
+            handler,
             runnable,
             delay_millis,
             due_time_millis,
@@ -1947,6 +1975,7 @@ fn choreographer_runnable_callback_dispatch_order(
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct HandlerPost {
     pub(super) handler_key: String,
+    pub(super) handler: Option<DexValue>,
     pub(super) runnable: DexValue,
     pub(super) delay_millis: i64,
     pub(super) due_time_millis: i64,
