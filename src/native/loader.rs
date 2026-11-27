@@ -269,6 +269,7 @@ impl Loader {
             )));
         }
         let path = opened.path.to_string_lossy().into_owned();
+        let hold = crate::fs_notify::Hold::for_host_path(&opened.path);
         let data = fs::read(&opened.path)?;
         let guest = Self::load_image(&path, &data)?;
         let mut state = guard.borrow_mut();
@@ -282,6 +283,7 @@ impl Loader {
             Some(Arc::new(guest)),
         );
         state.set_dt_flags_1(id, flags_1);
+        state.module_mut(id).hold = hold;
         created.push(id);
         Ok(Some((id, true)))
     }

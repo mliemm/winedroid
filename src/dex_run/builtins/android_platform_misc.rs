@@ -4346,10 +4346,11 @@ impl DexProgram {
             }
             Err(_) => return Some(None),
         };
-        match resolved.metadata() {
-            Ok(metadata) if metadata.kind == crate::capability_fs::MetadataKind::Directory => {
-                Some(resolved.directory_key().ok())
-            }
+        match resolved.metadata().map(|metadata| metadata.kind) {
+            Ok(
+                crate::capability_fs::MetadataKind::Directory
+                | crate::capability_fs::MetadataKind::File,
+            ) => Some(resolved.inode_key().ok()),
             Ok(_) => None,
             Err(_) => Some(None),
         }

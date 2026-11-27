@@ -426,12 +426,19 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(value));
         }
 
+        // cite: libcore BufferedReader.java#close
+        // cite: libcore InputStreamReader.java#close
         if matches!(
             method.class_descriptor.as_str(),
             "Ljava/io/BufferedReader;" | "Ljava/io/InputStreamReader;" | "Ljava/io/FileReader;"
         ) && method.name == "close"
             && method.proto.descriptor_is("()V")
         {
+            let mut current = invocation?.arguments.first().cloned();
+            while let Some(reader) = current.filter(dex_value_is_object_like) {
+                self.release_file(&reader);
+                current = self.read_stored_instance_field(&reader, &reader_delegate_field());
+            }
             return Some(DexExecutionResult::Void);
         }
 
@@ -731,21 +738,11 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(value));
         }
 
-        if method.class_descriptor == "Ljava/nio/channels/FileChannel;"
-            && method.name == "lock"
-            && method.proto.descriptor_is("()Ljava/nio/channels/FileLock;")
-        {
-            let invocation = invocation?;
-            let value = file_channel_lock(invocation)?;
-
-            return Some(DexExecutionResult::Value(value));
-        }
-
         if method.class_descriptor == "Ljava/nio/channels/spi/AbstractInterruptibleChannel;"
             && method.name == "close"
             && method.proto.descriptor_is("()V")
         {
-            return Some(DexExecutionResult::Void);
+            return self.abstract_interruptible_channel_close(invocation?);
         }
 
         if method.class_descriptor == "Ljava/io/ByteArrayOutputStream;"
@@ -1421,7 +1418,13 @@ impl DexProgram {
     pub(in crate::dex_run) fn open_guest_file_for_read(
         &self,
         guest_path: &str,
-    ) -> std::result::Result<crate::guest_filesystem::ResolvedGuestPath, DexValue> {
+    ) -> std::result::Result<
+        (
+            crate::guest_filesystem::ResolvedGuestPath,
+            crate::fs_notify::NotifiedFile,
+        ),
+        DexValue,
+    > {
         // cite: libcore File.java#isInvalid
         if guest_path.contains('\0') {
             let exception = self.allocate_object("Ljava/io/FileNotFoundException;".to_owned());
@@ -1448,7 +1451,29 @@ impl DexProgram {
             return Err(self.file_not_found_exception_for_path(guest_path, "Is a directory"));
         }
 
-        Ok(path)
+        Ok((path, file))
+    }
+
+    pub(in crate::dex_run) fn hold_file(
+        &self,
+        holder: &DexValue,
+        file: crate::fs_notify::NotifiedFile,
+    ) {
+        if let Some(hold) = file.into_hold() {
+            self.runtime
+                .borrow_mut()
+                .file_holds
+                .insert(map_identity_key(holder), hold);
+        }
+    }
+
+    pub(in crate::dex_run) fn release_file(&self, holder: &DexValue) {
+        let hold = self
+            .runtime
+            .borrow_mut()
+            .file_holds
+            .remove(&map_identity_key(holder));
+        drop(hold);
     }
 
     fn open_file_input_stream(
@@ -1457,8 +1482,9 @@ impl DexProgram {
         guest_path: String,
     ) -> Option<DexExecutionResult> {
         // cite: libcore FileInputStream.java#FileInputStream
-        if let Err(exception) = self.open_guest_file_for_read(&guest_path) {
-            return Some(DexExecutionResult::Throw(exception));
+        match self.open_guest_file_for_read(&guest_path) {
+            Ok((_, file)) => self.hold_file(stream, file),
+            Err(exception) => return Some(DexExecutionResult::Throw(exception)),
         }
 
         self.write_stored_instance_field(
@@ -1528,8 +1554,11 @@ impl DexProgram {
                     return Some(DexExecutionResult::Throw(exception));
                 }
             }
-        } else if let Err(exception) = self.open_guest_file_for_read(&name) {
-            return Some(DexExecutionResult::Throw(exception));
+        } else {
+            match self.open_guest_file_for_read(&name) {
+                Ok((_, file)) => self.hold_file(&invocation.arguments[0], file),
+                Err(exception) => return Some(DexExecutionResult::Throw(exception)),
+            }
         }
 
         self.write_stored_instance_field(
@@ -1561,7 +1590,7 @@ impl DexProgram {
         else {
             return None;
         };
-        let channel = self.new_file_channel(path.to_string());
+        let channel = self.new_file_channel(path.to_string(), stream, true);
         self.share_file_channel_position(&channel, stream);
         let closed = DexFieldId {
             class_descriptor: "Ljava/io/FileInputStream;".to_owned(),
@@ -1596,7 +1625,7 @@ impl DexProgram {
         if self.random_access_file_is_closed(file) {
             return None;
         }
-        let channel = self.new_file_channel(path.to_string());
+        let channel = self.new_file_channel(path.to_string(), file, true);
         if self.read_stored_instance_field(file, &random_access_file_field("Z", "rw"))
             == Some(DexValue::Int(1))
         {
@@ -1629,6 +1658,7 @@ impl DexProgram {
             .borrow_mut()
             .output_streams
             .remove(&map_identity_key(file));
+        self.release_file(file);
 
         self.write_stored_instance_field(
             file,
@@ -1738,11 +1768,18 @@ impl DexProgram {
         None
     }
 
-    // cite: libcore FileOutputStream.java#close, closed
+    // cite: libcore FileOutputStream.java#close, closed, channel
     pub(in crate::dex_run) fn file_output_stream_close(
         &self,
         stream: &DexValue,
     ) -> Option<DexExecutionResult> {
+        if let Some(channel @ DexValue::Object(_)) =
+            self.read_stored_instance_field(stream, &file_output_stream_channel_field())
+        {
+            if self.file_channel_is_open(&channel) == Some(true) {
+                self.close_file_channel(&channel);
+            }
+        }
         self.runtime
             .borrow_mut()
             .output_streams
@@ -1755,22 +1792,35 @@ impl DexProgram {
         .then_some(DexExecutionResult::Void)
     }
 
+    // cite: libcore FileOutputStream.java#getChannel, channel
     fn file_output_stream_channel(&self, invocation: &DexInvocation) -> Option<DexValue> {
-        if invocation.arguments.len() != 1 || !dex_value_is_object_like(&invocation.arguments[0]) {
+        let [stream] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        if !dex_value_is_object_like(stream) {
             return None;
         }
-
-        let DexValue::String(path) = self.read_stored_instance_field(
-            &invocation.arguments[0],
-            &file_output_stream_path_field(),
-        )?
+        let channel_field = file_output_stream_channel_field();
+        if let Some(channel @ DexValue::Object(_)) =
+            self.read_stored_instance_field(stream, &channel_field)
+        {
+            return Some(channel);
+        }
+        let DexValue::String(path) =
+            self.read_stored_instance_field(stream, &file_output_stream_path_field())?
         else {
             return None;
         };
+        let channel = self.new_file_channel(path.to_string(), stream, false);
+        self.mark_file_channel_writable(&channel);
+        if self.read_stored_instance_field(stream, &file_output_stream_closed_field())
+            == Some(DexValue::Int(1))
+        {
+            self.close_file_channel(&channel);
+        }
+        self.write_stored_instance_field(stream, &channel_field, channel.clone());
 
-        Some(DexValue::Reference(std::rc::Rc::from(format!(
-            "Ljava/nio/channels/FileChannel;:{path}"
-        ))))
+        Some(channel)
     }
 
     // cite: libcore File.java#listFiles
@@ -2076,14 +2126,20 @@ impl DexProgram {
                         ));
                     }
                 };
-            match path.read() {
-                Ok(bytes) => bytes,
+            // cite: libcore FileReader.java#FileReader
+            let mut bytes = Vec::new();
+            match path.open_read().and_then(|mut file| {
+                std::io::Read::read_to_end(&mut *file, &mut bytes)?;
+                Ok(file)
+            }) {
+                Ok(file) => self.hold_file(&invocation.arguments[0], file),
                 Err(error) => {
                     return Some(DexExecutionResult::Throw(
                         self.file_not_found_exception_for_path(&guest_path, &error.to_string()),
                     ));
                 }
             }
+            bytes
         };
 
         self.runtime.borrow_mut().input_stream_values.insert(
@@ -2446,25 +2502,6 @@ fn file_reference_path(reference: &str) -> Option<&str> {
     reference.strip_prefix("Ljava/io/File;:")
 }
 
-fn file_channel_path(value: &DexValue) -> Option<&str> {
-    let DexValue::Reference(reference) = value else {
-        return None;
-    };
-
-    reference.strip_prefix("Ljava/nio/channels/FileChannel;:")
-}
-
-fn file_channel_lock(invocation: &DexInvocation) -> Option<DexValue> {
-    if invocation.arguments.len() != 1 {
-        return None;
-    }
-
-    let path = file_channel_path(&invocation.arguments[0])?;
-    Some(DexValue::Reference(std::rc::Rc::from(format!(
-        "Ljava/nio/channels/FileLock;:{path}"
-    ))))
-}
-
 fn stat_fs_field(name: &str) -> DexFieldId {
     DexFieldId {
         class_descriptor: "Landroid/os/StatFs;".to_owned(),
@@ -2494,6 +2531,14 @@ fn file_output_stream_closed_field() -> DexFieldId {
         class_descriptor: "Ljava/io/FileOutputStream;".to_owned(),
         type_descriptor: "Z".to_owned(),
         name: "closed".to_owned(),
+    }
+}
+
+fn file_output_stream_channel_field() -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Ljava/io/FileOutputStream;".to_owned(),
+        type_descriptor: "Ljava/nio/channels/FileChannel;".to_owned(),
+        name: "channel".to_owned(),
     }
 }
 

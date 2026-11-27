@@ -708,22 +708,42 @@ fn libcore_file_output_stream_opens_a_guest_file_and_stores_its_guest_path() {
         program.read_stored_instance_field(&stream, &path_field),
         Some(DexValue::String(std::rc::Rc::from(guest_path)))
     );
-    let channel = DexValue::Reference(std::rc::Rc::from(format!(
-        "Ljava/nio/channels/FileChannel;:{guest_path}"
-    )));
+    let Some(DexExecutionResult::Value(channel)) =
+        program.invoke_builtin_method(&get_channel, Some(&test_invocation(vec![stream.clone()])))
+    else {
+        panic!("getChannel should return a channel");
+    };
     assert_eq!(
-        program.invoke_builtin_method(&get_channel, Some(&test_invocation(vec![stream]))),
-        Some(DexExecutionResult::Value(channel.clone()))
+        program.invoke_builtin_method(&get_channel, Some(&test_invocation(vec![stream.clone()]))),
+        Some(DexExecutionResult::Value(channel.clone())),
+        "FileOutputStream.java getChannel returns the channel it created first"
     );
-    assert_eq!(
-        program.invoke_builtin_method(&lock, Some(&test_invocation(vec![channel.clone()]))),
-        Some(DexExecutionResult::Value(DexValue::Reference(
-            std::rc::Rc::from(format!("Ljava/nio/channels/FileLock;:{guest_path}"))
-        )))
-    );
+    let Some(DexExecutionResult::Value(lock)) =
+        program.invoke_builtin_method(&lock, Some(&test_invocation(vec![channel.clone()])))
+    else {
+        panic!("a writable channel should be locked");
+    };
+    let is_valid = java_io_method("Ljava/nio/channels/FileLock;", "isValid", "Z", &[]);
     assert_eq!(
         program.invoke_builtin_method(&close_channel, Some(&test_invocation(vec![channel]))),
         Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        invoke_value(&program, &is_valid, vec![lock]),
+        DexExecutionResult::Int(0),
+        "FileChannelImpl.java implCloseChannel invalidates the locks of the channel"
+    );
+    assert_eq!(
+        program.read_stored_instance_field(
+            &stream,
+            &DexFieldId {
+                class_descriptor: "Ljava/io/FileOutputStream;".to_owned(),
+                type_descriptor: "Z".to_owned(),
+                name: "closed".to_owned(),
+            }
+        ),
+        Some(DexValue::Int(1)),
+        "FileChannelImpl.java implCloseChannel closes the parent stream"
     );
 }
 
@@ -1616,6 +1636,115 @@ fn libcore_closeable_close_dispatches_to_the_receiver_class_and_releases_the_wri
         ),
         None,
         "a receiver class with no close implementation stays a visible missing method"
+    );
+}
+
+#[test]
+fn libcore_file_channel_impl_close_closes_the_parent_stream_and_releases_its_descriptor() {
+    // cite: libcore AbstractInterruptibleChannel.java#close
+    // cite: libcore FileChannelImpl.java#implCloseChannel, parent
+    // cite: libcore FileOutputStream.java#getChannel, close
+    // cite: libcore FileInputStream.java#getChannel, close
+    // cite: libcore RandomAccessFile.java#getChannel, close
+    use crate::fs_notify::{IN_CLOSE_WRITE, IN_DELETE_SELF, IN_IGNORED};
+    let fixture = GuestIoFixture::new("channel_close_parent");
+    let program = fixture.program();
+    let directory = fixture.private.join("files");
+    fs::create_dir_all(&directory).expect("files directory should exist");
+    let instance = crate::fs_notify::Instance::new();
+    let close_channel = builtin_method(
+        "Ljava/nio/channels/spi/AbstractInterruptibleChannel;",
+        "close",
+        "V",
+        &[],
+    );
+    let delete = java_io_method("Ljava/io/File;", "delete", "Z", &[]);
+    let event = |wd: i32, mask: u32| crate::fs_notify::Event {
+        wd,
+        mask,
+        name: None,
+    };
+    let channel_of = |class: &str, name: &str, mode: Option<&str>| {
+        let guest = format!("/data/user/0/com.example/files/{name}");
+        let receiver = program.allocate_object(class.to_owned());
+        let mut arguments = vec![receiver.clone(), file_value(&guest)];
+        let mut parameters = vec!["Ljava/io/File;"];
+        if let Some(mode) = mode {
+            arguments.push(DexValue::String(std::rc::Rc::from(mode)));
+            parameters.push("Ljava/lang/String;");
+        }
+        let constructor = builtin_method(class, "<init>", "V", &parameters);
+        assert_eq!(
+            program.invoke_builtin_method(&constructor, Some(&test_invocation(arguments))),
+            Some(DexExecutionResult::Void),
+            "{class}"
+        );
+        let get_channel =
+            builtin_method(class, "getChannel", "Ljava/nio/channels/FileChannel;", &[]);
+        let DexExecutionResult::Value(channel) =
+            invoke_value(&program, &get_channel, vec![receiver.clone()])
+        else {
+            panic!("{class}.getChannel should return a channel");
+        };
+        (guest, channel)
+    };
+    let watch = |name: &str, mask: u32| {
+        let host = fs::File::open(directory.join(name)).expect("watched file");
+        instance
+            .add_watch(crate::fs_notify::InodeKey::of(&host).unwrap(), mask)
+            .unwrap()
+    };
+
+    for (class, name, mode) in [
+        ("Ljava/io/FileInputStream;", "in.bin", None),
+        ("Ljava/io/RandomAccessFile;", "read.bin", Some("r")),
+    ] {
+        fs::write(directory.join(name), b"x").expect("readable file");
+        let (guest, channel) = channel_of(class, name, mode);
+        let wd = watch(name, IN_DELETE_SELF);
+        assert_eq!(
+            invoke_value(&program, &close_channel, vec![channel.clone()]),
+            DexExecutionResult::Void
+        );
+        assert_eq!(
+            invoke_value(&program, &close_channel, vec![channel]),
+            DexExecutionResult::Void,
+            "AbstractInterruptibleChannel.java close returns at once on a closed channel"
+        );
+        assert_eq!(
+            invoke_value(&program, &delete, vec![file_value(&guest)]),
+            DexExecutionResult::Int(1)
+        );
+        assert_eq!(
+            instance.take_events(),
+            vec![event(wd, IN_DELETE_SELF), event(wd, IN_IGNORED)],
+            "FileChannelImpl.java implCloseChannel closes the {class} parent, so its descriptor no longer holds the deleted file"
+        );
+    }
+
+    fs::write(directory.join("out.bin"), b"").expect("writable file");
+    let wd = watch("out.bin", IN_CLOSE_WRITE);
+    let (_, channel) = channel_of("Ljava/io/FileOutputStream;", "out.bin", None);
+    let read = java_io_method(
+        "Ljava/nio/channels/FileChannel;",
+        "read",
+        "I",
+        &["Ljava/nio/ByteBuffer;"],
+    );
+    let buffer = allocate_byte_buffer(&program, 1);
+    assert_eq!(
+        thrown_class(invoke_value(&program, &read, vec![channel.clone(), buffer])),
+        "Ljava/nio/channels/NonReadableChannelException;",
+        "FileOutputStream.java getChannel opens the channel with readable false"
+    );
+    assert_eq!(
+        invoke_value(&program, &close_channel, vec![channel]),
+        DexExecutionResult::Void
+    );
+    assert_eq!(
+        instance.take_events(),
+        vec![event(wd, IN_CLOSE_WRITE)],
+        "FileChannelImpl.java implCloseChannel closes the FileOutputStream parent, which releases the writable descriptor"
     );
 }
 
@@ -3923,7 +4052,7 @@ fn file_observer_missing_path_fails_the_descriptor_and_unwired_watches_are_missi
 
     for (path, mask) in [
         ("/data/user/0/com.example/files/present", 0x102),
-        ("/data/user/0/com.example/files/plain", 0x108),
+        ("/data/user/0/com.example/files/plain", 0x800),
         ("/proc/self", 0x108),
     ] {
         let observer = observer_with_mask(path, mask);

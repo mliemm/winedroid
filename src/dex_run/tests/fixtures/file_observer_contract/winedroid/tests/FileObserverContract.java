@@ -1,9 +1,12 @@
 package winedroid.tests;
 
 import android.os.FileObserver;
+import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.RandomAccessFile;
@@ -79,6 +82,42 @@ public final class FileObserverContract extends FileObserver {
         FileOutputStream stream = new FileOutputStream(new File(path));
         stream.write(1);
         stream.close();
+    }
+
+    public static FileObserverContract createAndWatch(String path, int mask)
+            throws IOException {
+        if (!new File(path).createNewFile()) {
+            throw new IOException("createNewFile " + path);
+        }
+        return watch(path, mask, 0);
+    }
+
+    public static boolean delete(String path) {
+        return new File(path).delete();
+    }
+
+    public static boolean renameOver(String from, String to) {
+        return new File(from).renameTo(new File(to));
+    }
+
+    public static FileInputStream openInput(String path) throws IOException {
+        return new FileInputStream(new File(path));
+    }
+
+    public static void closeInput(FileInputStream stream) throws IOException {
+        stream.close();
+    }
+
+    public static BufferedReader openReader(String path) throws IOException {
+        return new BufferedReader(new FileReader(new File(path)));
+    }
+
+    public static void closeReader(BufferedReader reader) throws IOException {
+        reader.close();
+    }
+
+    public static RandomAccessFile openRandomAccessRead(String path) throws IOException {
+        return new RandomAccessFile(new File(path), "r");
     }
 
     public static FileWriter openWriter(String path) throws IOException {

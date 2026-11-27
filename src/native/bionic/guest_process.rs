@@ -1,5 +1,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
+
+use crate::fs_notify::Hold;
 
 use super::device_profile::{APP_GID, APP_UID};
 
@@ -7,20 +9,24 @@ use super::device_profile::{APP_GID, APP_UID};
 const INITIAL_UMASK: u32 = 0o077;
 const UMASK_BITS: u32 = 0o777;
 
-static CWD: RwLock<String> = RwLock::new(String::new());
+static CWD: RwLock<(String, Option<Arc<Hold>>)> = RwLock::new((String::new(), None));
 static UMASK: AtomicU32 = AtomicU32::new(INITIAL_UMASK);
 
 pub fn cwd() -> String {
     let guard = CWD.read().expect("guest cwd");
-    if guard.is_empty() {
+    if guard.0.is_empty() {
         "/".to_string()
     } else {
-        guard.clone()
+        guard.0.clone()
     }
 }
 
-pub fn set_cwd(path: &str) {
-    *CWD.write().expect("guest cwd") = path.to_string();
+pub fn set_cwd(path: &str, hold: Option<Arc<Hold>>) {
+    let previous = std::mem::replace(
+        &mut *CWD.write().expect("guest cwd"),
+        (path.to_string(), hold),
+    );
+    drop(previous);
 }
 
 pub fn umask() -> u32 {

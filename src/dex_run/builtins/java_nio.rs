@@ -23,7 +23,7 @@ struct ByteBufferState {
 
 struct FileChannelState {
     path: String,
-    position: i64,
+    position: Option<i64>,
     open: bool,
 }
 
@@ -108,24 +108,68 @@ impl DexProgram {
         }
     }
 
-    pub(in crate::dex_run) fn new_file_channel(&self, path: String) -> DexValue {
+    // cite: libcore FileChannelImpl.java#open, FileChannelImpl, parent, readable
+    pub(in crate::dex_run) fn new_file_channel(
+        &self,
+        path: String,
+        parent: &DexValue,
+        readable: bool,
+    ) -> DexValue {
         let channel = self.allocate_object(FILE_CHANNEL_IMPL.to_owned());
         self.write_stored_instance_field(
             &channel,
             &nio_field(FILE_CHANNEL_IMPL, "Ljava/lang/String;", "path"),
             DexValue::String(std::rc::Rc::from(path)),
         );
-        self.write_stored_instance_field(
-            &channel,
-            &nio_field(FILE_CHANNEL_IMPL, "J", "position"),
-            DexValue::Long(0),
-        );
+        self.write_stored_instance_field(&channel, &file_channel_parent_field(), parent.clone());
+        if readable {
+            self.write_stored_instance_field(
+                &channel,
+                &nio_field(FILE_CHANNEL_IMPL, "J", "position"),
+                DexValue::Long(0),
+            );
+            self.write_stored_instance_field(
+                &channel,
+                &nio_field(FILE_CHANNEL_IMPL, "Z", "readable"),
+                DexValue::Int(1),
+            );
+        }
         self.write_stored_instance_field(
             &channel,
             &nio_field(FILE_CHANNEL_IMPL, "Z", "open"),
             DexValue::Int(1),
         );
         channel
+    }
+
+    // cite: libcore AbstractInterruptibleChannel.java#close, closed
+    // cite: libcore FileChannelImpl.java#implCloseChannel, parent
+    pub(in crate::dex_run) fn abstract_interruptible_channel_close(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        let [channel] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        if !self.file_channel_is_open(channel)? {
+            return Some(DexExecutionResult::Void);
+        }
+        let parent = self.read_stored_instance_field(channel, &file_channel_parent_field())?;
+        let close = DexMethodId {
+            class_descriptor: "Ljava/io/Closeable;".to_owned(),
+            name: "close".to_owned(),
+            proto: crate::dex::DexProto {
+                shorty: "V".to_owned(),
+                return_type: "V".to_owned(),
+                parameters: Vec::new(),
+            },
+        };
+        let parent_invocation = DexInvocation {
+            arguments: smallvec::smallvec![parent],
+            ..invocation.clone()
+        };
+        self.close_file_channel(channel);
+        self.invoke_builtin_method(&close, Some(&parent_invocation))
     }
 
     // cite: libcore FileInputStream.java#getChannel
@@ -598,8 +642,9 @@ impl DexProgram {
         };
         let (owner, position_field) = self.file_channel_position_owner(channel);
         let position = match self.read_stored_instance_field(&owner, &position_field) {
-            Some(DexValue::Long(position)) => position,
-            None if owner != *channel => 0,
+            Some(DexValue::Long(position)) => Some(position),
+            None if owner != *channel => Some(0),
+            None => None,
             _ => return None,
         };
         let DexValue::Int(open) =
@@ -651,15 +696,16 @@ impl DexProgram {
             Err(exception) => return Some(exception),
         };
 
-        Some(DexExecutionResult::Value(DexValue::Long(state.position)))
+        Some(DexExecutionResult::Value(DexValue::Long(state.position?)))
     }
 
     // cite: libcore FileChannelImpl.java#position
     fn file_channel_set_position(&self, invocation: &DexInvocation) -> Option<DexExecutionResult> {
         let channel = invocation.arguments.first()?;
-        if let Err(exception) = self.open_file_channel_state(channel)? {
-            return Some(exception);
-        }
+        match self.open_file_channel_state(channel)? {
+            Ok(state) => state.position?,
+            Err(exception) => return Some(exception),
+        };
         let DexValue::Long(new_position) = *invocation.arguments.get(1)? else {
             return None;
         };
@@ -706,7 +752,13 @@ impl DexProgram {
             Ok(state) => state,
             Err(exception) => return Some(exception),
         };
-        let start = absolute_position.unwrap_or(state.position);
+        let readable = self
+            .read_stored_instance_field(channel, &nio_field(FILE_CHANNEL_IMPL, "Z", "readable"));
+        if readable != Some(DexValue::Int(1)) {
+            return Some(self.nio_throw("Ljava/nio/channels/NonReadableChannelException;", None));
+        }
+        let position = state.position?;
+        let start = absolute_position.unwrap_or(position);
         let buffer = self.byte_buffer_state(destination)?;
         if buffer.read_only {
             return Some(self.nio_throw(
@@ -748,7 +800,7 @@ impl DexProgram {
         let read = i32::try_from(read).ok()?;
         self.set_buffer_int(destination, "position", buffer.position + read);
         if absolute_position.is_none() {
-            self.set_file_channel_position(channel, state.position + i64::from(read));
+            self.set_file_channel_position(channel, position + i64::from(read));
         }
 
         Some(DexExecutionResult::Int(read))
@@ -768,6 +820,10 @@ impl DexProgram {
             )
             .map_err(|error| error.to_string())
     }
+}
+
+pub(in crate::dex_run) fn file_channel_parent_field() -> DexFieldId {
+    nio_field(FILE_CHANNEL_IMPL, "Ljava/lang/Object;", "parent")
 }
 
 fn nio_field(class_descriptor: &str, type_descriptor: &str, name: &str) -> DexFieldId {

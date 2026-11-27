@@ -165,7 +165,7 @@ fn watch_host_directory(
     let wd = instance
         .add_watch(
             crate::fs_notify::InodeKey::of(directory.as_fd()).unwrap(),
-            crate::fs_notify::WIRED_EVENTS,
+            crate::fs_notify::IN_CREATE | crate::fs_notify::IN_CLOSE_WRITE,
         )
         .unwrap();
     (instance, wd)
@@ -296,5 +296,173 @@ bounded_test! {
             ],
             "rename(2): when both names are the same file, rename does nothing and succeeds"
         );
+    }
+}
+
+fn watch_host_inode(
+    instance: &crate::fs_notify::Instance,
+    path: &std::path::Path,
+    mask: u32,
+) -> i32 {
+    let parent = crate::capability_fs::Directory::open_ambient(path.parent().unwrap()).unwrap();
+    let leaf = std::ffi::CString::new(path.file_name().unwrap().as_encoded_bytes()).unwrap();
+    let key = crate::fs_notify::InodeKey::at(parent.as_fd(), &leaf).unwrap();
+    instance.add_watch(key, mask).unwrap()
+}
+
+bounded_test! {
+    fn bionic_delete_self_of_a_file_waits_for_read_only_descriptors_and_mappings() {
+        // cite: bionic inotify.h#IN_CLOSE_WRITE, IN_DELETE_SELF, IN_IGNORED
+        let guest = IoGuest::new("notify-delete-self");
+        let fd = open(&guest.guest("state"), o::RDWR | o::CREAT, 0o600);
+        assert!(fd >= 3, "errno {}", guest_errno());
+        assert_eq!(call("ftruncate").i32(fd).int(16384).invoke().unwrap().i32(), 0);
+        let instance = crate::fs_notify::Instance::new();
+        let mask = crate::fs_notify::IN_CLOSE_WRITE | crate::fs_notify::IN_DELETE_SELF;
+        let wd = watch_host_inode(&instance, &guest.host("state"), mask);
+        let address = call("mmap").ptr(0).int(16384).i32(3).i32(1).i32(fd).int(0).invoke().unwrap().u64() as usize;
+        assert!(address != usize::MAX && address != 0, "errno {}", guest_errno());
+        assert_eq!(close(fd), 0);
+        let reader = open(&guest.guest("state"), o::RDONLY, 0);
+        assert!(reader >= 3, "errno {}", guest_errno());
+        let path = Text::new(&guest.guest("state"));
+        assert_eq!(call("unlink").ptr(path.ptr()).invoke().unwrap().i32(), 0);
+        assert!(instance.take_events().is_empty(), "unlink(2): the inode lives while a mapping references it");
+        assert_eq!(call("munmap").ptr(address).int(16384).invoke().unwrap().i32(), 0, "errno {}", guest_errno());
+        assert_eq!(
+            instance.take_events(),
+            vec![notify_event(wd, crate::fs_notify::IN_CLOSE_WRITE, None)],
+            "inotify(7): munmap releases the last reference to the writable description while a read only one remains"
+        );
+        assert_eq!(close(reader), 0);
+        assert_eq!(
+            instance.take_events(),
+            vec![
+                notify_event(wd, crate::fs_notify::IN_DELETE_SELF, None),
+                notify_event(wd, crate::fs_notify::IN_IGNORED, None),
+            ],
+            "inotify.h IN_DELETE_SELF then IN_IGNORED when the read only descriptor releases the deleted inode"
+        );
+    }
+}
+
+bounded_test! {
+    fn bionic_rmdir_of_a_watched_directory_waits_for_its_last_descriptor() {
+        // cite: bionic inotify.h#IN_DELETE_SELF, IN_ISDIR, IN_IGNORED
+        let guest = IoGuest::new("notify-rmdir-held");
+        let dir = Text::new(&guest.guest("held"));
+        assert_eq!(call("mkdir").ptr(dir.ptr()).u32(0o777).invoke().unwrap().i32(), 0);
+        let instance = crate::fs_notify::Instance::new();
+        let wd = watch_host_inode(&instance, &guest.host("held"), crate::fs_notify::IN_DELETE_SELF);
+        let directory = open(&guest.guest("held"), o::RDONLY | o::DIRECTORY, 0);
+        assert!(directory >= 3, "errno {}", guest_errno());
+        let copy = call("dup").i32(directory).invoke().unwrap().i32();
+        assert!(copy >= 3);
+        assert_eq!(call("rmdir").ptr(dir.ptr()).invoke().unwrap().i32(), 0, "errno {}", guest_errno());
+        assert_eq!(close(directory), 0);
+        assert!(instance.take_events().is_empty(), "rmdir(2): the directory lives while a descriptor references it");
+        assert_eq!(close(copy), 0);
+        assert_eq!(
+            instance.take_events(),
+            vec![
+                notify_event(wd, crate::fs_notify::IN_DELETE_SELF | crate::fs_notify::IN_ISDIR, None),
+                notify_event(wd, crate::fs_notify::IN_IGNORED, None),
+            ],
+            "inotify.h IN_DELETE_SELF|IN_ISDIR then IN_IGNORED once the last reference to the removed directory goes"
+        );
+    }
+}
+
+bounded_test! {
+    fn bionic_rename_over_a_watched_file_reports_delete_self_and_unlinking_one_hard_link_does_not() {
+        // cite: bionic stdio.h#rename
+        let guest = IoGuest::new("notify-rename-over");
+        std::fs::write(guest.host("target"), b"old").unwrap();
+        std::fs::write(guest.host("source"), b"new").unwrap();
+        std::fs::hard_link(guest.host("source"), guest.host("source-link")).unwrap();
+        let instance = crate::fs_notify::Instance::new();
+        let mask = crate::fs_notify::IN_CLOSE_WRITE | crate::fs_notify::IN_DELETE_SELF;
+        let target_wd = watch_host_inode(&instance, &guest.host("target"), mask);
+        let source_wd = watch_host_inode(&instance, &guest.host("source"), mask);
+        let from = Text::new(&guest.guest("source"));
+        let to = Text::new(&guest.guest("target"));
+        assert_eq!(call("rename").ptr(from.ptr()).ptr(to.ptr()).invoke().unwrap().i32(), 0);
+        assert_eq!(
+            instance.take_events(),
+            vec![
+                notify_event(target_wd, crate::fs_notify::IN_DELETE_SELF, None),
+                notify_event(target_wd, crate::fs_notify::IN_IGNORED, None),
+            ],
+            "rename(2) replaces and deletes the old target"
+        );
+        let link = Text::new(&guest.guest("source-link"));
+        assert_eq!(call("unlink").ptr(link.ptr()).invoke().unwrap().i32(), 0);
+        assert!(instance.take_events().is_empty(), "unlink(2) of one of two links deletes nothing");
+        assert_eq!(call("unlink").ptr(to.ptr()).invoke().unwrap().i32(), 0);
+        assert_eq!(
+            instance.take_events(),
+            vec![
+                notify_event(source_wd, crate::fs_notify::IN_DELETE_SELF, None),
+                notify_event(source_wd, crate::fs_notify::IN_IGNORED, None),
+            ]
+        );
+    }
+}
+
+fn rights_message(iov: &[u64; 2], control: &mut [u8], control_length: usize) -> [u64; 7] {
+    [
+        0,
+        0,
+        iov.as_ptr() as u64,
+        1,
+        control.as_mut_ptr() as u64,
+        control_length as u64,
+        0,
+    ]
+}
+
+bounded_test! {
+    fn bionic_scm_rights_hands_the_open_file_description_to_the_receiver() {
+        // cite: bionic socket.h#SCM_RIGHTS, sendmsg, recvmsg
+        // cite: bionic inotify.h#IN_CLOSE_WRITE, IN_DELETE_SELF, IN_IGNORED
+        let guest = IoGuest::new("notify-scm-rights");
+        let fd = open(&guest.guest("state"), o::RDWR | o::CREAT, 0o600);
+        assert!(fd >= 3, "errno {}", guest_errno());
+        let instance = crate::fs_notify::Instance::new();
+        let mask = crate::fs_notify::IN_CLOSE_WRITE | crate::fs_notify::IN_DELETE_SELF;
+        let wd = watch_host_inode(&instance, &guest.host("state"), mask);
+        let mut pair = [0i32; 2];
+        assert_eq!(call("socketpair").i32(1).i32(1).i32(0).ptr(pair.as_mut_ptr() as usize).invoke().unwrap().i32(), 0);
+        let mut byte = [b'x'];
+        let iov = [byte.as_mut_ptr() as u64, 1];
+        let mut control = [0u8; 24];
+        control[..8].copy_from_slice(&20u64.to_le_bytes());
+        control[8..12].copy_from_slice(&1i32.to_le_bytes());
+        control[12..16].copy_from_slice(&1i32.to_le_bytes());
+        control[16..20].copy_from_slice(&fd.to_le_bytes());
+        let sent = rights_message(&iov, &mut control, 24);
+        assert_eq!(call("sendmsg").i32(pair[0]).ptr(sent.as_ptr() as usize).i32(0).invoke().unwrap().i32(), 1, "errno {}", guest_errno());
+        assert_eq!(close(fd), 0);
+        let path = Text::new(&guest.guest("state"));
+        assert_eq!(call("unlink").ptr(path.ptr()).invoke().unwrap().i32(), 0);
+        assert!(instance.take_events().is_empty(), "unix(7): a descriptor in flight keeps its open file description");
+        let mut control = [0u8; 32];
+        let mut received = rights_message(&iov, &mut control, 32);
+        assert_eq!(call("recvmsg").i32(pair[1]).ptr(received.as_mut_ptr() as usize).i32(0).invoke().unwrap().i32(), 1, "errno {}", guest_errno());
+        let passed = i32::from_le_bytes(control[16..20].try_into().unwrap());
+        assert!(passed >= 3);
+        assert!(instance.take_events().is_empty());
+        assert_eq!(close(passed), 0);
+        assert_eq!(
+            instance.take_events(),
+            vec![
+                notify_event(wd, crate::fs_notify::IN_CLOSE_WRITE, None),
+                notify_event(wd, crate::fs_notify::IN_DELETE_SELF, None),
+                notify_event(wd, crate::fs_notify::IN_IGNORED, None),
+            ],
+            "inotify(7): the received descriptor is the last reference to the writable description"
+        );
+        assert_eq!(close(pair[0]), 0);
+        assert_eq!(close(pair[1]), 0);
     }
 }

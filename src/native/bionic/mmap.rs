@@ -86,7 +86,7 @@ fn backing_of(fd: i32) -> Result<(i32, FileBacking, bool), i32> {
             offset: 0,
             device,
             inode: stat.st_ino,
-            close_note: entry.close_note.clone(),
+            hold: entry.hold.clone(),
         },
         writable,
     ))

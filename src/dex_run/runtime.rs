@@ -41,6 +41,7 @@ pub(super) struct DexRuntimeState {
     pub(super) erroneous_classes: HashMap<String, DexValue>,
     pub(super) file_locks: HashMap<String, Vec<DexValue>>,
     pub(super) output_streams: HashMap<String, crate::fs_notify::NotifiedFile>,
+    pub(super) file_holds: HashMap<String, crate::fs_notify::Hold>,
     // cite: frameworks-base FileObserver.java#ObserverThread, m_fd, mRealObservers
     pub(super) file_observer_instance: Option<std::sync::Arc<crate::fs_notify::Instance>>,
     pub(super) file_observer_thread: Option<DexValue>,
@@ -408,6 +409,7 @@ impl DexRuntimeState {
             erroneous_classes: HashMap::new(),
             file_locks: HashMap::new(),
             output_streams: HashMap::new(),
+            file_holds: HashMap::new(),
             file_observer_instance: None,
             file_observer_thread: None,
             file_observers: HashMap::new(),

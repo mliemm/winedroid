@@ -44,7 +44,7 @@ impl IoGuest {
         let context = GuestContext::open(&prefix, PACKAGE, policy).unwrap();
         use_on_this_thread(Arc::new(context));
         super::bridge_test_support::register_all();
-        super::bionic::guest_process::set_cwd("/");
+        super::bionic::guest_process::set_cwd("/", None);
         Self { prefix }
     }
 

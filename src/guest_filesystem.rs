@@ -1,6 +1,5 @@
 use std::ffi::CString;
 use std::fs;
-use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -100,7 +99,7 @@ impl ResolvedGuestPath {
         self.root.can_access(&self.components, write)
     }
 
-    pub fn open_read(&self) -> io::Result<File> {
+    pub fn open_read(&self) -> io::Result<crate::fs_notify::NotifiedFile> {
         self.root.open_read(&self.components)
     }
 
@@ -123,8 +122,8 @@ impl ResolvedGuestPath {
         self.root.create_new(&self.components)
     }
 
-    pub fn directory_key(&self) -> io::Result<crate::fs_notify::InodeKey> {
-        self.root.directory_key(&self.components)
+    pub fn inode_key(&self) -> io::Result<crate::fs_notify::InodeKey> {
+        self.root.inode_key(&self.components)
     }
 
     pub fn mkdir(&self) -> io::Result<()> {

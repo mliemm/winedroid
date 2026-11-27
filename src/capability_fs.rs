@@ -166,8 +166,9 @@ impl Directory {
         }
     }
 
-    pub fn open_read(&self, components: &[CString]) -> io::Result<File> {
+    pub fn open_read(&self, components: &[CString]) -> io::Result<NotifiedFile> {
         let parent = self.parent(components)?;
+        let opening = fs_notify::Opening::begin(parent.directory.as_fd(), &parent.leaf);
         let fd = fs::openat(
             &parent.directory,
             &parent.leaf,
@@ -175,7 +176,8 @@ impl Directory {
             Mode::empty(),
         )
         .map_err(io::Error::from)?;
-        Ok(File::from(fd))
+        let hold = fs_notify::Hold::open(opening, fd.as_fd(), false);
+        Ok(NotifiedFile::new(File::from(fd), hold))
     }
 
     pub fn read(&self, components: &[CString]) -> io::Result<Vec<u8>> {
@@ -268,10 +270,10 @@ impl Directory {
         } else {
             AtFlags::empty()
         };
-        let watched = fs_notify::directory_key(parent.directory.as_fd(), &parent.leaf);
+        let removal = fs_notify::Removal::prepare(parent.directory.as_fd(), &parent.leaf);
         fs::unlinkat(&parent.directory, &parent.leaf, flags).map_err(io::Error::from)?;
-        if let Some(key) = watched {
-            fs_notify::removed_directory(key);
+        if let Some(removal) = removal {
+            removal.finish();
         }
         Ok(())
     }
@@ -357,7 +359,11 @@ impl Directory {
 
     pub fn atomic_replace(&self, components: &[CString], bytes: &[u8]) -> io::Result<()> {
         let parent = self.parent(components)?;
-        if let Some(error) = fs_notify::unsynthesized(parent.directory.as_fd(), "atomic_replace") {
+        let target = fs_notify::InodeKey::at(parent.directory.as_fd(), &parent.leaf)
+            .map(|key| (key, fs_notify::ANY_WATCH));
+        if let Some(error) =
+            fs_notify::unsynthesized(Some(parent.directory.as_fd()), target, "atomic_replace")
+        {
             return Err(error);
         }
         let temporary = create_temporary(&parent.directory, &parent.leaf)?;
@@ -417,6 +423,11 @@ impl Directory {
 
     pub fn unlink_leaf(&self, name: &CStr) -> io::Result<()> {
         validate_leaf_component(name)?;
+        let target =
+            fs_notify::InodeKey::at(self.fd.as_fd(), name).map(|key| (key, fs_notify::ANY_WATCH));
+        if let Some(error) = fs_notify::unsynthesized(None, target, "unlink_leaf") {
+            return Err(error);
+        }
         fs::unlinkat(self.fd.as_ref(), name, AtFlags::empty()).map_err(io::Error::from)
     }
 
@@ -444,6 +455,7 @@ impl Directory {
 
     fn open_write(&self, components: &[CString], flags: OFlags) -> io::Result<NotifiedFile> {
         let parent = self.parent(components)?;
+        let opening = fs_notify::Opening::begin(parent.directory.as_fd(), &parent.leaf);
         let (fd, created) = open_reporting_creation(
             &parent.directory,
             &parent.leaf,
@@ -453,12 +465,16 @@ impl Directory {
         if created {
             fs_notify::created(parent.directory.as_fd(), &parent.leaf, false);
         }
-        let close = fs_notify::close_note(parent.directory.as_fd(), &parent.leaf, fd.as_fd());
-        Ok(NotifiedFile::new(File::from(fd), close))
+        let hold = fs_notify::Hold::open(opening, fd.as_fd(), true);
+        Ok(NotifiedFile::new(File::from(fd), hold))
     }
 
-    pub fn directory_key(&self, components: &[CString]) -> io::Result<fs_notify::InodeKey> {
-        fs_notify::InodeKey::of(self.open_directory_path(components)?)
+    pub fn inode_key(&self, components: &[CString]) -> io::Result<fs_notify::InodeKey> {
+        match self.target(components)? {
+            Target::Directory(fd) => fs_notify::InodeKey::of(fd),
+            Target::Leaf(parent) => fs_notify::InodeKey::at(parent.directory.as_fd(), &parent.leaf)
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound)),
+        }
     }
 
     fn open_directory_path(&self, components: &[CString]) -> io::Result<OwnedFd> {

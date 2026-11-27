@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::CStr;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -27,6 +27,49 @@ pub struct SocketState {
     pub domain: i32,
     pub kind: i32,
     pub bound: Mutex<Option<String>>,
+    rights: Option<(Arc<RightsLink>, usize)>,
+}
+
+type HostKey = Option<(u64, u64)>;
+
+#[derive(Default)]
+struct RightsLink {
+    sending: [Mutex<()>; 2],
+    in_flight: [Mutex<VecDeque<Vec<(HostKey, Option<Arc<FdEntry>>)>>>; 2],
+}
+
+fn host_key(fd: i32) -> HostKey {
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(fd, &mut stat) } != 0 {
+        return None;
+    }
+    Some((stat.st_dev as u64, stat.st_ino as u64))
+}
+
+fn passed_entries(
+    link: &RightsLink,
+    side: usize,
+    received: &[i32],
+    peek: bool,
+) -> Option<Vec<Option<Arc<FdEntry>>>> {
+    let keys = received.iter().map(|fd| host_key(*fd)).collect::<Vec<_>>();
+    let mut queue = link.in_flight[side]
+        .lock()
+        .expect("socket rights in flight");
+    let index = queue.iter().position(|group| {
+        group.len() >= keys.len()
+            && group
+                .iter()
+                .zip(&keys)
+                .all(|((sent, _), received)| sent.is_some() && sent == received)
+    })?;
+    let group = if peek {
+        queue[index].clone()
+    } else {
+        queue.drain(..index);
+        queue.pop_front()?
+    };
+    Some(group.into_iter().map(|(_, entry)| entry).collect())
 }
 
 fn error(code: i32) -> i64 {
@@ -54,12 +97,19 @@ fn suppress_sigpipe(fd: i32) {
     };
 }
 
-fn adopt_socket(fd: i32, domain: i32, kind: i32, flags: i32) -> Arc<FdEntry> {
+fn adopt_socket(
+    fd: i32,
+    domain: i32,
+    kind: i32,
+    flags: i32,
+    rights: Option<(Arc<RightsLink>, usize)>,
+) -> Arc<FdEntry> {
     suppress_sigpipe(fd);
     let record = Arc::new(SocketState {
         domain,
         kind,
         bound: Mutex::new(None),
+        rights,
     });
     let entry = FdEntry::new(FdKind::Socket, "", open::RDWR | (flags & open::NONBLOCK))
         .with_synthetic(super::fd_table::SyntheticStat {
@@ -292,7 +342,7 @@ pub fn create(domain: i32, kind: i32, protocol: i32) -> i64 {
     if flags & abi::SOCK_NONBLOCK != 0 {
         unsafe { libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK) };
     }
-    adopt_socket(fd, domain, host_kind, flags);
+    adopt_socket(fd, domain, host_kind, flags, None);
     i64::from(fd)
 }
 
@@ -393,7 +443,7 @@ fn accept_common(fd: i32, pointer: usize, length_pointer: usize, flags: i32) -> 
         .and_then(|entry| entry.payload_as::<SocketState>())
         .map(|state| (state.domain, state.kind))
         .unwrap_or((abi::AF_UNSPEC, abi::SOCK_STREAM));
-    adopt_socket(accepted, domain, kind, flags);
+    adopt_socket(accepted, domain, kind, flags, None);
     if pointer != 0 {
         let capacity = read_value::<u32>(length_pointer) as usize;
         match address_to_guest(&storage, host_length, pointer, capacity) {
@@ -536,9 +586,10 @@ fn cmsg_align_host(length: usize) -> usize {
     (length + 3) & !3
 }
 
-fn control_to_host(guest: usize, length: usize) -> Result<(Vec<u8>, bool), i32> {
+fn control_to_host(guest: usize, length: usize) -> Result<(Vec<u8>, bool, Vec<i32>), i32> {
     let mut output = Vec::with_capacity(length);
     let mut truncated = false;
+    let mut passed = Vec::new();
     let mut offset = 0usize;
     while offset + 16 <= length {
         let header = guest + offset;
@@ -556,11 +607,13 @@ fn control_to_host(guest: usize, length: usize) -> Result<(Vec<u8>, bool), i32> 
             let host_len = 12 + data_length;
             output[host_offset..host_offset + 4].copy_from_slice(&(host_len as u32).to_le_bytes());
             output[host_offset + 4..host_offset + 8]
+                .copy_from_slice(&SOL_SOCKET_HOST.to_le_bytes());
+            output[host_offset + 8..host_offset + 12]
                 .copy_from_slice(&SCM_RIGHTS_HOST.to_le_bytes());
-            output[host_offset + 8..host_offset + 12].copy_from_slice(&kind.to_le_bytes());
             let count = data_length / 4;
             for index in 0..count {
                 let fd = read_value::<i32>(data + index * 4);
+                passed.push(fd);
                 output[host_offset + 12 + index * 4..host_offset + 16 + index * 4]
                     .copy_from_slice(&fd.to_le_bytes());
             }
@@ -573,7 +626,7 @@ fn control_to_host(guest: usize, length: usize) -> Result<(Vec<u8>, bool), i32> 
         }
         offset += cmsg_align(claimed);
     }
-    Ok((output, truncated))
+    Ok((output, truncated, passed))
 }
 
 const SCM_RIGHTS: i32 = 1;
@@ -586,6 +639,7 @@ fn control_to_guest(
     guest: usize,
     capacity: usize,
     cloexec: bool,
+    passed: Option<(&RightsLink, usize, bool)>,
 ) -> (usize, bool, i32) {
     let mut output = Vec::new();
     let mut truncated = false;
@@ -608,23 +662,35 @@ fn control_to_guest(
             output[start..start + 8].copy_from_slice(&((16 + count * 4) as u64).to_le_bytes());
             output[start + 8..start + 12].copy_from_slice(&abi::SOL_SOCKET.to_le_bytes());
             output[start + 12..start + 16].copy_from_slice(&SCM_RIGHTS.to_le_bytes());
-            for index in 0..count {
-                let fd = read_value::<i32>(header + 12 + index * 4);
+            let received = (0..count)
+                .map(|index| read_value::<i32>(header + 12 + index * 4))
+                .collect::<Vec<_>>();
+            let entries = passed
+                .and_then(|(link, side, peek)| passed_entries(link, side, &received, peek))
+                .unwrap_or_default();
+            for (index, fd) in received.iter().copied().enumerate() {
                 if fd >= 0 {
                     if cloexec {
                         unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
                     }
-                    fd_table::adopt(
-                        fd,
-                        FdEntry::new(FdKind::Host, "", open::RDWR).with_synthetic(
-                            super::fd_table::SyntheticStat {
-                                mode: S_IFSOCK | 0o777,
-                                dev: (0, 0xe),
-                                rdev: (0, 0),
-                                zero_size: false,
-                            },
-                        ),
-                    );
+                    match entries.get(index) {
+                        Some(Some(entry)) => {
+                            fd_table::adopt_duplicate(entry, fd, cloexec);
+                        }
+                        _ => {
+                            fd_table::adopt(
+                                fd,
+                                FdEntry::new(FdKind::Host, "", open::RDWR).with_synthetic(
+                                    super::fd_table::SyntheticStat {
+                                        mode: S_IFSOCK | 0o777,
+                                        dev: (0, 0xe),
+                                        rdev: (0, 0),
+                                        zero_size: false,
+                                    },
+                                ),
+                            );
+                        }
+                    }
                     received_fds += 1;
                 }
                 output[start + 16 + index * 4..start + 20 + index * 4]
@@ -646,9 +712,9 @@ fn control_to_guest(
 
 fn send_message(fd: i32, header_pointer: usize, flags: i32) -> i64 {
     // cite: bionic socket.h#sendmsg
-    if state_of(fd).is_err() {
+    let Ok(state) = state_of(fd) else {
         return error(ENOTSOCK);
-    }
+    };
     if header_pointer == 0 {
         return error(EFAULT);
     }
@@ -671,8 +737,8 @@ fn send_message(fd: i32, header_pointer: usize, flags: i32) -> i64 {
             iov_len: read_value::<usize>(iov_pointer + index * 16 + 8),
         });
     }
-    let (mut control_bytes, truncated) = match control_length {
-        0 => (Vec::new(), false),
+    let (mut control_bytes, truncated, passed) = match control_length {
+        0 => (Vec::new(), false, Vec::new()),
         _ => match control_to_host(control, control_length) {
             Ok(parts) => parts,
             Err(errno) => return error(errno),
@@ -710,18 +776,40 @@ fn send_message(fd: i32, header_pointer: usize, flags: i32) -> i64 {
         },
         msg_flags: 0,
     };
+    let link = state
+        .rights
+        .as_ref()
+        .filter(|_| !truncated && !passed.is_empty());
+    let _sending = link.map(|(link, side)| link.sending[*side].lock().expect("socket sending"));
+    if let Some((link, side)) = link {
+        let group = passed
+            .iter()
+            .map(|passed| (host_key(*passed), fd_table::get(*passed)))
+            .collect();
+        link.in_flight[1 - side]
+            .lock()
+            .expect("socket rights in flight")
+            .push_back(group);
+    }
     let sent = unsafe { libc::sendmsg(fd, &header, host_flags) };
     if sent < 0 {
-        return effective_errno();
+        let failure = effective_errno();
+        if let Some((link, side)) = link {
+            link.in_flight[1 - side]
+                .lock()
+                .expect("socket rights in flight")
+                .pop_back();
+        }
+        return failure;
     }
     sent as i64
 }
 
 fn receive_message(fd: i32, header_pointer: usize, flags: i32) -> i64 {
     // cite: bionic recvmsg.cpp#recvmsg
-    if state_of(fd).is_err() {
+    let Ok(state) = state_of(fd) else {
         return error(ENOTSOCK);
-    }
+    };
     if header_pointer == 0 {
         return error(EFAULT);
     }
@@ -780,6 +868,10 @@ fn receive_message(fd: i32, header_pointer: usize, flags: i32) -> i64 {
             control,
             control_capacity,
             flags & abi::MSG_CMSG_CLOEXEC != 0,
+            state
+                .rights
+                .as_ref()
+                .map(|(link, side)| (link.as_ref(), *side, flags & abi::MSG_PEEK != 0)),
         );
         write_value::<u64>(header_pointer + 40, written as u64);
         if truncated {
@@ -1089,14 +1181,15 @@ fn socket_pair(domain: i32, kind: i32, protocol: i32, pointer: usize) -> i64 {
     if unsafe { libc::socketpair(host_domain, host_kind, protocol, pair.as_mut_ptr()) } < 0 {
         return from_host();
     }
-    for fd in pair {
+    let link = Arc::new(RightsLink::default());
+    for (side, fd) in pair.into_iter().enumerate() {
         if flags & abi::SOCK_CLOEXEC != 0 {
             unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
         }
         if flags & abi::SOCK_NONBLOCK != 0 {
             unsafe { libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK) };
         }
-        adopt_socket(fd, domain, host_kind, flags);
+        adopt_socket(fd, domain, host_kind, flags, Some((link.clone(), side)));
     }
     write_value::<i32>(pointer, pair[0]);
     write_value::<i32>(pointer + 4, pair[1]);

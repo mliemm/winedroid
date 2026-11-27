@@ -442,3 +442,233 @@ fn file_observer_receives_a_native_open_write_close_in_the_watched_directory() {
         "inotify(7) events come from the inode whichever layer wrote it"
     );
 }
+
+fn boolean_call(fixture: &ObserverFixture, name: &str, paths: &[&str]) -> DexExecutionResult {
+    let parameters = vec!["Ljava/lang/String;"; paths.len()];
+    fixture.call(
+        name,
+        "Z",
+        &parameters,
+        paths.iter().map(|path| string(path)).collect(),
+    )
+}
+
+#[test]
+fn file_observer_on_a_file_gets_close_write_and_delete_self_with_a_null_path() {
+    let fixture = ObserverFixture::new("file_watch");
+    let state = format!("{WATCHED}/networkStatef");
+    let observer = match fixture.call(
+        "createAndWatch",
+        CONTRACT,
+        &["Ljava/lang/String;", "I"],
+        vec![string(&state), DexValue::Int(0x408)],
+    ) {
+        DexExecutionResult::Value(observer) => observer,
+        other => panic!("createAndWatch should return the observer: {other:?}"),
+    };
+    fixture.write_stream(&state);
+    fixture.pump();
+    assert_eq!(
+        fixture.events(&observer),
+        "8,null,FileObserver;",
+        "android_util_FileObserver.cpp passes a null path when inotify event len is 0, as for an event on the watched file itself"
+    );
+
+    let input = match fixture.call(
+        "openInput",
+        "Ljava/io/FileInputStream;",
+        &["Ljava/lang/String;"],
+        vec![string(&state)],
+    ) {
+        DexExecutionResult::Value(input) => input,
+        other => panic!("openInput should return the stream: {other:?}"),
+    };
+    assert_eq!(
+        boolean_call(&fixture, "delete", &[&state]),
+        DexExecutionResult::Int(1)
+    );
+    fixture.pump();
+    assert_eq!(
+        fixture.events(&observer),
+        "8,null,FileObserver;",
+        "unlink(2): an open FileInputStream keeps the deleted inode alive"
+    );
+    assert_eq!(
+        fixture.call(
+            "closeInput",
+            "V",
+            &["Ljava/io/FileInputStream;"],
+            vec![input]
+        ),
+        DexExecutionResult::Void
+    );
+    fixture.pump();
+    assert_eq!(
+        fixture.events(&observer),
+        "8,null,FileObserver;1024,null,FileObserver;32768,null,FileObserver;",
+        "inotify.h IN_DELETE_SELF then IN_IGNORED once FileInputStream.close releases the last reference"
+    );
+}
+
+#[test]
+fn file_observer_on_a_file_replaced_by_file_rename_to_gets_delete_self_then_ignored() {
+    let fixture = ObserverFixture::new("file_rename_over");
+    let state = format!("{WATCHED}/networkStatef");
+    let observer = match fixture.call(
+        "createAndWatch",
+        CONTRACT,
+        &["Ljava/lang/String;", "I"],
+        vec![string(&state), DexValue::Int(0x408)],
+    ) {
+        DexExecutionResult::Value(observer) => observer,
+        other => panic!("createAndWatch should return the observer: {other:?}"),
+    };
+    fs::write(fixture.host("replacement"), b"r").unwrap();
+    assert_eq!(
+        boolean_call(
+            &fixture,
+            "renameOver",
+            &[&format!("{WATCHED}/replacement"), &state]
+        ),
+        DexExecutionResult::Int(1)
+    );
+    fixture.pump();
+    assert_eq!(
+        fixture.events(&observer),
+        "1024,null,FileObserver;32768,null,FileObserver;",
+        "File.java renameTo is rename(2), which deletes the replaced inode"
+    );
+    assert_eq!(fs::read(fixture.host("networkStatef")).unwrap(), b"r");
+}
+
+#[test]
+fn file_observer_directory_watch_with_delete_self_gets_it_before_ignored() {
+    let fixture = ObserverFixture::new("dir_delete_self");
+    let observer = fixture.watch(WATCHED, 0x500, 0);
+    assert_eq!(
+        boolean_call(&fixture, "delete", &[WATCHED]),
+        DexExecutionResult::Int(1)
+    );
+    fixture.pump();
+    assert_eq!(
+        fixture.events(&observer),
+        "1073742848,null,FileObserver;32768,null,FileObserver;",
+        "inotify.h IN_DELETE_SELF|IN_ISDIR, then IN_IGNORED, for the deleted watched directory"
+    );
+}
+
+#[test]
+fn file_observer_delete_self_waits_for_buffered_reader_and_random_access_file_close() {
+    let fixture = ObserverFixture::new("reader_holds");
+    let state = format!("{WATCHED}/held");
+    let observer = match fixture.call(
+        "createAndWatch",
+        CONTRACT,
+        &["Ljava/lang/String;", "I"],
+        vec![string(&state), DexValue::Int(0x408)],
+    ) {
+        DexExecutionResult::Value(observer) => observer,
+        other => panic!("createAndWatch should return the observer: {other:?}"),
+    };
+    let reader = match fixture.call(
+        "openReader",
+        "Ljava/io/BufferedReader;",
+        &["Ljava/lang/String;"],
+        vec![string(&state)],
+    ) {
+        DexExecutionResult::Value(reader) => reader,
+        other => panic!("openReader should return the reader: {other:?}"),
+    };
+    let file = match fixture.call(
+        "openRandomAccessRead",
+        "Ljava/io/RandomAccessFile;",
+        &["Ljava/lang/String;"],
+        vec![string(&state)],
+    ) {
+        DexExecutionResult::Value(file) => file,
+        other => panic!("openRandomAccessRead should return the file: {other:?}"),
+    };
+    assert_eq!(
+        boolean_call(&fixture, "delete", &[&state]),
+        DexExecutionResult::Int(1)
+    );
+    assert_eq!(
+        fixture.call(
+            "closeReader",
+            "V",
+            &["Ljava/io/BufferedReader;"],
+            vec![reader]
+        ),
+        DexExecutionResult::Void
+    );
+    fixture.pump();
+    assert_eq!(
+        fixture.events(&observer),
+        "",
+        "RandomAccessFile.java keeps its descriptor open until close, so the deleted inode lives on"
+    );
+    assert_eq!(
+        fixture.call(
+            "closeRandomAccess",
+            "V",
+            &["Ljava/io/RandomAccessFile;"],
+            vec![file]
+        ),
+        DexExecutionResult::Void
+    );
+    fixture.pump();
+    assert_eq!(
+        fixture.events(&observer),
+        "1024,null,FileObserver;32768,null,FileObserver;",
+        "BufferedReader.java close closes the FileReader, and RandomAccessFile.java close releases the last descriptor"
+    );
+}
+
+#[test]
+fn file_observer_delete_self_waits_for_a_buffered_reader_over_a_file_reader() {
+    let fixture = ObserverFixture::new("reader_chain");
+    let state = format!("{WATCHED}/read");
+    let observer = match fixture.call(
+        "createAndWatch",
+        CONTRACT,
+        &["Ljava/lang/String;", "I"],
+        vec![string(&state), DexValue::Int(0x408)],
+    ) {
+        DexExecutionResult::Value(observer) => observer,
+        other => panic!("createAndWatch should return the observer: {other:?}"),
+    };
+    let reader = match fixture.call(
+        "openReader",
+        "Ljava/io/BufferedReader;",
+        &["Ljava/lang/String;"],
+        vec![string(&state)],
+    ) {
+        DexExecutionResult::Value(reader) => reader,
+        other => panic!("openReader should return the reader: {other:?}"),
+    };
+    assert_eq!(
+        boolean_call(&fixture, "delete", &[&state]),
+        DexExecutionResult::Int(1)
+    );
+    fixture.pump();
+    assert_eq!(
+        fixture.events(&observer),
+        "",
+        "FileReader.java opens a FileInputStream that stays open until close"
+    );
+    assert_eq!(
+        fixture.call(
+            "closeReader",
+            "V",
+            &["Ljava/io/BufferedReader;"],
+            vec![reader]
+        ),
+        DexExecutionResult::Void
+    );
+    fixture.pump();
+    assert_eq!(
+        fixture.events(&observer),
+        "1024,null,FileObserver;32768,null,FileObserver;",
+        "BufferedReader.java close reaches the FileReader and releases the deleted inode"
+    );
+}

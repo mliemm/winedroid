@@ -302,6 +302,10 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         "Ljava/nio/channels/OverlappingFileLockException;" => {
             Some("Ljava/lang/IllegalStateException;")
         }
+        // cite: libcore NonReadableChannelException.java#NonReadableChannelException
+        "Ljava/nio/channels/NonReadableChannelException;" => {
+            Some("Ljava/lang/IllegalStateException;")
+        }
         // cite: libcore NonWritableChannelException.java#NonWritableChannelException
         "Ljava/nio/channels/NonWritableChannelException;" => {
             Some("Ljava/lang/IllegalStateException;")

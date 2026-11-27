@@ -27,6 +27,7 @@ pub(in crate::dex_run) struct ZipFileState {
     index: HashMap<Vec<u8>, usize>,
     streams: Vec<DexValue>,
     remove_on_close: Option<String>,
+    hold: Option<crate::fs_notify::Hold>,
 }
 
 #[derive(Clone)]
@@ -251,6 +252,7 @@ fn read_zip_directory(
         index,
         streams: Vec::new(),
         remove_on_close: None,
+        hold: None,
     })
 }
 
@@ -657,16 +659,16 @@ impl DexProgram {
     // cite: frameworks-base ActivityThread.java#initZipPathValidatorCallback
     // cite: frameworks-base SafeZipPathValidatorCallback.java#VALIDATE_ZIP_PATH_FOR_PATH_TRAVERSAL
     fn zip_file_open(&self, zip: &DexValue, path: &str, mode: i32) -> Option<DexExecutionResult> {
-        let resolved = match self.open_guest_file_for_read(path) {
-            Ok(resolved) => resolved,
+        let (file, hold) = match self.open_guest_file_for_read(path) {
+            Ok((_, file)) => file.into_parts(),
             Err(exception) => return Some(DexExecutionResult::Throw(exception)),
         };
-        let file = resolved.open_read().ok()?;
         let validate_paths = self.target_sdk_version >= 34;
         let mut state = match read_zip_directory(file, validate_paths) {
             Ok(state) => state,
             Err(message) => return Some(self.zip_throw(ZIP_EXCEPTION, Some(message))),
         };
+        state.hold = hold;
         state.remove_on_close = (mode & OPEN_DELETE != 0).then(|| path.to_owned());
 
         let stored = self.write_stored_instance_field(
@@ -920,6 +922,8 @@ impl DexProgram {
             for stream in &state.streams {
                 self.close_entry_stream(stream);
             }
+            drop(state.file);
+            drop(state.hold);
             if let (Some(path), Some(filesystem)) =
                 (state.remove_on_close, self.guest_filesystem.as_ref())
             {
@@ -1262,14 +1266,10 @@ impl DexProgram {
             let read = self
                 .open_guest_file_for_read(path)
                 .map_err(DexExecutionResult::Throw)
-                .and_then(|resolved| {
+                .and_then(|(_, mut file)| {
                     let mut bytes = Vec::new();
-                    resolved
-                        .open_read()
-                        .and_then(|mut file| {
-                            file.seek(SeekFrom::Start(position as u64))?;
-                            file.take(count as u64).read_to_end(&mut bytes)
-                        })
+                    file.seek(SeekFrom::Start(position as u64))
+                        .and_then(|_| (&*file).take(count as u64).read_to_end(&mut bytes))
                         .map_err(|error| self.zip_throw(IO_EXCEPTION, Some(&error.to_string())))?;
                     Ok(bytes)
                 });
@@ -1510,7 +1510,7 @@ impl DexProgram {
                     return Ok(Some(self.zip_throw(IO_EXCEPTION, Some("Stream Closed"))));
                 }
                 let length = match self.open_guest_file_for_read(path) {
-                    Ok(resolved) => resolved.metadata().ok(),
+                    Ok((resolved, _)) => resolved.metadata().ok(),
                     Err(exception) => return Ok(Some(DexExecutionResult::Throw(exception))),
                 };
                 let position = self
@@ -1556,6 +1556,7 @@ impl DexProgram {
                     &zip_field(FILE_STREAM, "Z", "closed"),
                     DexValue::Int(1),
                 );
+                self.release_file(stream);
                 if let Some(channel @ DexValue::Object(_)) = self.read_stored_instance_field(
                     stream,
                     &super::java_io::file_input_stream_channel_field(),

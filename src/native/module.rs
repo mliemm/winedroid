@@ -41,6 +41,7 @@ pub struct Module {
     pub handle: u64,
     pub guest: Option<Arc<GuestImage>>,
     pub descriptors: Vec<Box<TlsDescArg>>,
+    pub hold: Option<crate::fs_notify::Hold>,
 }
 
 impl Module {
@@ -128,6 +129,7 @@ impl State {
                 handle,
                 guest,
                 descriptors: Vec::new(),
+                hold: None,
             },
         );
         id

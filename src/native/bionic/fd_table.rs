@@ -44,7 +44,7 @@ pub struct FdEntry {
     pub synthetic: Option<SyntheticStat>,
     pub dir: Mutex<DirState>,
     pub payload: Option<Arc<dyn Any + Send + Sync>>,
-    pub close_note: Option<Arc<crate::fs_notify::CloseNote>>,
+    pub hold: Option<Arc<crate::fs_notify::Hold>>,
 }
 
 pub const SEALING_ALLOWED: u32 = 1 << 31;
@@ -60,7 +60,7 @@ impl FdEntry {
             synthetic: None,
             dir: Mutex::new(DirState::default()),
             payload: None,
-            close_note: None,
+            hold: None,
         }
     }
 
@@ -87,7 +87,7 @@ impl FdEntry {
         copy.seals = AtomicU32::new(self.seals.load(Ordering::SeqCst));
         copy.synthetic = self.synthetic;
         copy.payload = self.payload.clone();
-        copy.close_note = self.close_note.clone();
+        copy.hold = self.hold.clone();
         copy
     }
 }

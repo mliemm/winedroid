@@ -1,6 +1,6 @@
 use std::ffi::{CStr, CString};
 use std::mem;
-use std::os::fd::{IntoRawFd, RawFd};
+use std::os::fd::{AsFd, IntoRawFd, RawFd};
 use std::os::raw::{c_char, c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{fence, AtomicU64, Ordering};
@@ -62,6 +62,8 @@ struct CapabilityFile {
     shm_fd: RawFd,
     shm_name: Option<CString>,
     shm_maps: Vec<Option<ShmMap>>,
+    _hold: Option<crate::fs_notify::Hold>,
+    shm_hold: Option<crate::fs_notify::Hold>,
 }
 
 struct ShmMap {
@@ -228,8 +230,15 @@ unsafe extern "C" fn vfs_open(
     if flags & ffi::SQLITE_OPEN_EXCLUSIVE != 0 || temporary {
         open_flags |= OFlags::EXCL;
     }
+    let target = crate::fs_notify::InodeKey::at(state.directory.as_fd(), &leaf)
+        .map(|key| (key, crate::fs_notify::ANY_WATCH));
     if open_flags.intersects(OFlags::RDWR | OFlags::CREATE)
-        && crate::fs_notify::unsynthesized(state.directory.as_fd(), "SQLite VFS xOpen").is_some()
+        && crate::fs_notify::unsynthesized(
+            Some(state.directory.as_fd()),
+            target,
+            "SQLite VFS xOpen",
+        )
+        .is_some()
     {
         return ffi::SQLITE_CANTOPEN;
     }
@@ -237,6 +246,7 @@ unsafe extern "C" fn vfs_open(
         && flags & ffi::SQLITE_OPEN_CREATE != 0
         && flags & ffi::SQLITE_OPEN_EXCLUSIVE == 0
         && !temporary;
+    let opening = crate::fs_notify::Opening::begin(state.directory.as_fd(), &leaf);
     let opened = if track_creation {
         state
             .directory
@@ -264,6 +274,7 @@ unsafe extern "C" fn vfs_open(
         }
         Err(_) => return ffi::SQLITE_CANTOPEN,
     };
+    let hold = crate::fs_notify::Hold::open(opening, fd.as_fd(), false);
     let fd = fd.into_raw_fd();
     let delete_on_close = flags & ffi::SQLITE_OPEN_DELETEONCLOSE != 0 || temporary;
     if delete_on_close && state.directory.unlink_leaf(&leaf).is_err() {
@@ -296,6 +307,8 @@ unsafe extern "C" fn vfs_open(
             shm_fd: -1,
             shm_name: None,
             shm_maps: Vec::new(),
+            _hold: hold,
+            shm_hold: None,
         },
     );
     ffi::SQLITE_OK
@@ -410,9 +423,14 @@ unsafe extern "C" fn file_close(file: *mut ffi::sqlite3_file) -> c_int {
         libc::close(file.shm_fd);
     }
     let closed = libc::close(file.fd) == 0;
+    let target = crate::fs_notify::InodeKey::from_raw(file.device, file.inode);
     let unreported = file.writable
-        && crate::fs_notify::unsynthesized((*file.state).directory.as_fd(), "SQLite VFS xClose")
-            .is_some();
+        && crate::fs_notify::unsynthesized(
+            Some((*file.state).directory.as_fd()),
+            Some((target, crate::fs_notify::IN_CLOSE_WRITE)),
+            "SQLite VFS xClose",
+        )
+        .is_some();
     if closed && !unreported {
         ffi::SQLITE_OK
     } else {
@@ -801,6 +819,7 @@ unsafe extern "C" fn file_shm_unmap(file: *mut ffi::sqlite3_file, delete: c_int)
             result = ffi::SQLITE_IOERR_CLOSE;
         }
         file.shm_fd = -1;
+        file.shm_hold = None;
     }
     file.shm_name = None;
     result
@@ -855,14 +874,17 @@ fn ensure_shm_open(file: &mut CapabilityFile) -> Result<(), ShmOpenError> {
     let name = CString::new(format!("{}-shm", file.name.to_string_lossy()))
         .map_err(|_| ShmOpenError::Io)?;
     let flags = OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+    let opening = crate::fs_notify::Opening::begin(state.directory.as_fd(), &name);
     let fd = state
         .directory
         .open_leaf(&name, flags, FILE_MODE)
         .map_err(|_| ShmOpenError::Io)?;
+    file.shm_hold = crate::fs_notify::Hold::open(opening, fd.as_fd(), false);
     file.shm_fd = fd.into_raw_fd();
     if let Err(error) = initialize_shm_lock(file.shm_fd) {
         unsafe { libc::close(file.shm_fd) };
         file.shm_fd = -1;
+        file.shm_hold = None;
         return Err(error);
     }
     file.shm_name = Some(name);
@@ -1194,6 +1216,70 @@ mod tests {
             "inotify(7) IN_CLOSE_WRITE follows the close of the writable database descriptor, so a silent close is a missed event"
         );
         assert!(instance.take_events().is_empty());
+    }
+
+    #[test]
+    fn capability_vfs_open_of_a_watched_database_file_is_a_missing_primitive() {
+        let fixture = Fixture::new("watched_file");
+        fs::write(fixture.database_directory.join("main.db"), b"").unwrap();
+        let directory = Directory::open_ambient(&fixture.database_directory).unwrap();
+        let instance = crate::fs_notify::Instance::new();
+        instance
+            .add_watch(
+                crate::fs_notify::InodeKey::at(directory.as_fd(), c"main.db").unwrap(),
+                crate::fs_notify::IN_DELETE_SELF,
+            )
+            .unwrap();
+
+        assert!(
+            CapabilityConnection::open(directory, CString::new("main.db").unwrap()).is_err(),
+            "the winedroid VFS deletes and replaces files real sqlite would not, so a watched database file is unsupported"
+        );
+        assert!(instance.take_events().is_empty());
+    }
+
+    #[test]
+    fn capability_vfs_descriptor_keeps_a_deleted_watched_database_until_the_connection_closes() {
+        let fixture = Fixture::new("watched_delete");
+        let directory = Directory::open_ambient(&fixture.database_directory).unwrap();
+        let connection =
+            CapabilityConnection::open(directory.clone(), CString::new("main.db").unwrap())
+                .unwrap();
+        connection
+            .connection()
+            .execute_batch("CREATE TABLE values_table(value INTEGER);")
+            .unwrap();
+        let instance = crate::fs_notify::Instance::new();
+        let wd = instance
+            .add_watch(
+                crate::fs_notify::InodeKey::at(directory.as_fd(), c"main.db").unwrap(),
+                crate::fs_notify::IN_DELETE_SELF,
+            )
+            .unwrap();
+        directory
+            .remove(&[CString::new("main.db").unwrap()])
+            .unwrap();
+        assert!(
+            instance.take_events().is_empty(),
+            "unlink(2): the file lives while SQLite holds its descriptor"
+        );
+        drop(connection);
+        assert_eq!(
+            instance.take_events(),
+            vec![
+                crate::fs_notify::Event {
+                    wd,
+                    mask: crate::fs_notify::IN_DELETE_SELF,
+                    name: None
+                },
+                crate::fs_notify::Event {
+                    wd,
+                    mask: crate::fs_notify::IN_IGNORED,
+                    name: None
+                },
+            ],
+            "inotify.h IN_DELETE_SELF then IN_IGNORED at the last close"
+        );
     }
 
     #[test]
@@ -1624,6 +1710,8 @@ mod tests {
             shm_fd: -1,
             shm_name: None,
             shm_maps: Vec::new(),
+            _hold: None,
+            shm_hold: None,
         }
     }
 

@@ -79,6 +79,10 @@ fn open_host_file(reference: &HostRef, flags: i32, mode: u32) -> i64 {
             libc::O_RDONLY | libc::O_NOFOLLOW | (open_flags_to_host(flags) & libc::O_CLOEXEC);
     }
     let mode = guest_process::apply_umask(mode);
+    let opening = reference
+        .leaf
+        .as_ref()
+        .and_then(|leaf| crate::fs_notify::Opening::begin(reference.dir.as_fd(), leaf));
     let (fd, created) = match (&reference.leaf, path_only) {
         (Some(leaf), false) => match reference.dir.open_leaf_reporting_creation(
             leaf,
@@ -107,15 +111,14 @@ fn open_host_file(reference: &HostRef, flags: i32, mode: u32) -> i64 {
         FdKind::Host
     };
     let mut entry = FdEntry::new(kind, &reference.guest_path, recorded_flags(flags));
-    if let (FdKind::Host, Some(leaf)) = (kind, &reference.leaf) {
+    if let Some(leaf) = &reference.leaf {
         let parent = reference.dir.as_fd();
         if created {
             crate::fs_notify::created(parent, leaf, false);
         }
-        if flags & open::ACCMODE != open::RDONLY {
-            let file = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd as i32) };
-            entry.close_note = crate::fs_notify::close_note(parent, leaf, file).map(Arc::new);
-        }
+        let close_write = kind == FdKind::Host && flags & open::ACCMODE != open::RDONLY;
+        let file = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd as i32) };
+        entry.hold = crate::fs_notify::Hold::open(opening, file, close_write).map(Arc::new);
     }
     fd_table::adopt(fd as i32, entry);
     fd

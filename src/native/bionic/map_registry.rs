@@ -7,7 +7,7 @@ pub struct FileBacking {
     pub offset: u64,
     pub device: (u32, u32),
     pub inode: u64,
-    pub close_note: Option<std::sync::Arc<crate::fs_notify::CloseNote>>,
+    pub hold: Option<std::sync::Arc<crate::fs_notify::Hold>>,
 }
 
 #[derive(Clone)]

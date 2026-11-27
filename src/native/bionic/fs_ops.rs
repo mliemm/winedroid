@@ -1,4 +1,5 @@
 use std::ffi::CString;
+use std::sync::Arc;
 
 use super::super::bridge::CallContext;
 use super::abi_types::{EBADF, EINVAL, ERANGE};
@@ -71,13 +72,9 @@ fn report_created(reference: &HostRef, is_directory: bool) -> i64 {
     0
 }
 
-fn watched_directory(reference: &HostRef) -> Option<crate::fs_notify::InodeKey> {
-    crate::fs_notify::directory_key(reference.dir.as_fd(), reference.name())
-}
-
-fn report_removed(watched: Option<crate::fs_notify::InodeKey>) -> i64 {
-    if let Some(key) = watched {
-        crate::fs_notify::removed_directory(key);
+fn report_removed(removal: Option<crate::fs_notify::Removal>) -> i64 {
+    if let Some(removal) = removal {
+        removal.finish();
     }
     0
 }
@@ -110,11 +107,11 @@ pub fn unlink_at(dirfd: i32, path: &[u8], flags: i32) -> i64 {
     } else {
         0
     };
-    let watched = watched_directory(&reference);
+    let removal = crate::fs_notify::Removal::prepare(reference.dir.as_fd(), reference.name());
     if unsafe { libc::unlinkat(reference.dir_fd(), reference.name().as_ptr(), host_flags) } < 0 {
         from_host()
     } else {
-        report_removed(watched)
+        report_removed(removal)
     }
 }
 
@@ -463,18 +460,21 @@ fn change_directory(path: &[u8]) -> i64 {
     match guest_paths::resolve_follow(at::FDCWD, path, Access::Read) {
         Ok(Resolved::Host(reference)) => match reference.stat() {
             Ok(stat) if u32::from(stat.st_mode) & S_IFMT == S_IFDIR => {
-                guest_process::set_cwd(&reference.guest_path);
+                let hold = reference.leaf.as_ref().and_then(|leaf| {
+                    crate::fs_notify::Hold::at(reference.dir.as_fd(), leaf).map(Arc::new)
+                });
+                guest_process::set_cwd(&reference.guest_path, hold);
                 0
             }
             Ok(_) => error(ENOTDIR),
             Err(errno) => error(errno),
         },
         Ok(Resolved::Virtual(directory)) => {
-            guest_process::set_cwd(&directory.guest_path);
+            guest_process::set_cwd(&directory.guest_path, None);
             0
         }
         Ok(Resolved::Synthetic(super::synthetic_node::Synthetic::Dir { .. }, path)) => {
-            guest_process::set_cwd(&path);
+            guest_process::set_cwd(&path, None);
             0
         }
         Ok(_) => error(ENOTDIR),
@@ -854,7 +854,7 @@ pub fn register() {
     in_libc("fchdir", |context| {
         let result = match fd_table::get(context.arg_i32(0)) {
             Some(entry) if entry.kind == FdKind::Dir || entry.kind == FdKind::PathOnly => {
-                guest_process::set_cwd(&entry.guest_path);
+                guest_process::set_cwd(&entry.guest_path, entry.hold.clone());
                 0
             }
             Some(_) => error(ENOTDIR),
