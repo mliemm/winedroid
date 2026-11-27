@@ -1612,6 +1612,90 @@ fn builtin_char_sequence_sub_sequence_uses_utf16_code_unit_indices() {
     );
 }
 
+// cite: libcore AbstractStringBuilder.java#setLength
+#[test]
+fn builtin_string_builder_set_length_truncates_and_fills() {
+    let program = DexProgram::new(Vec::new());
+    let constructor = DexMethodId {
+        class_descriptor: "Ljava/lang/StringBuilder;".to_owned(),
+        name: "<init>".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VL".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec!["Ljava/lang/String;".to_owned()],
+        },
+    };
+    let set_length = DexMethodId {
+        class_descriptor: "Ljava/lang/StringBuilder;".to_owned(),
+        name: "setLength".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VI".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec!["I".to_owned()],
+        },
+    };
+    let length = DexMethodId {
+        class_descriptor: "Ljava/lang/StringBuilder;".to_owned(),
+        name: "length".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "I".to_owned(),
+            return_type: "I".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let to_string = DexMethodId {
+        class_descriptor: "Ljava/lang/StringBuilder;".to_owned(),
+        name: "toString".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "L".to_owned(),
+            return_type: "Ljava/lang/String;".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let builder = program.allocate_object("Ljava/lang/StringBuilder;".to_owned());
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![
+                builder.clone(),
+                DexValue::String(std::rc::Rc::from("abcdef"))
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &set_length,
+            Some(&test_invocation(vec![builder.clone(), DexValue::Int(3)]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&to_string, Some(&test_invocation(vec![builder.clone()]))),
+        Some(DexExecutionResult::Value(DexValue::String(
+            std::rc::Rc::from("abc")
+        )))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &set_length,
+            Some(&test_invocation(vec![builder.clone(), DexValue::Int(5)]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&length, Some(&test_invocation(vec![builder.clone()]))),
+        Some(DexExecutionResult::Int(5))
+    );
+    assert!(matches!(
+        program.invoke_builtin_method(
+            &set_length,
+            Some(&test_invocation(vec![builder, DexValue::Int(-1)]))
+        ),
+        Some(DexExecutionResult::Throw(_))
+    ));
+}
+
 #[test]
 fn builtin_string_builder_append_code_point_appends_valid_unicode_scalar() {
     let program = DexProgram::new(Vec::new());

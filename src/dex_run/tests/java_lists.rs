@@ -839,6 +839,109 @@ fn builtin_collections_singleton_list_stores_one_value() {
     );
 }
 
+// cite: libcore CopyOnWriteArrayList.java#CopyOnWriteArrayList
+#[test]
+fn builtin_copy_on_write_array_list_copies_collection_contents() {
+    let program = DexProgram::new(Vec::new());
+    let singleton = DexMethodId {
+        class_descriptor: "Ljava/util/Collections;".to_owned(),
+        name: "singletonList".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "LL".to_owned(),
+            return_type: "Ljava/util/List;".to_owned(),
+            parameters: vec!["Ljava/lang/Object;".to_owned()],
+        },
+    };
+    let constructor = DexMethodId {
+        class_descriptor: "Ljava/util/concurrent/CopyOnWriteArrayList;".to_owned(),
+        name: "<init>".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VL".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec!["Ljava/util/Collection;".to_owned()],
+        },
+    };
+    let size = DexMethodId {
+        class_descriptor: "Ljava/util/concurrent/CopyOnWriteArrayList;".to_owned(),
+        name: "size".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "I".to_owned(),
+            return_type: "I".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let value = DexValue::String(std::rc::Rc::from("partner"));
+    let Some(DexExecutionResult::Value(source)) =
+        program.invoke_builtin_method(&singleton, Some(&test_invocation(vec![value])))
+    else {
+        panic!("singletonList did not return a list reference");
+    };
+    let list = program.allocate_object("Ljava/util/concurrent/CopyOnWriteArrayList;".to_owned());
+    let result = program.invoke_builtin_method(
+        &constructor,
+        Some(&test_invocation(vec![list.clone(), source])),
+    );
+
+    assert_eq!(result, Some(DexExecutionResult::Void));
+    assert_eq!(
+        program.invoke_builtin_method(&size, Some(&test_invocation(vec![list]))),
+        Some(DexExecutionResult::Int(1))
+    );
+}
+
+// cite: libcore Collections.java#nCopies
+#[test]
+fn builtin_collections_n_copies_stores_repeated_value() {
+    let program = DexProgram::new(Vec::new());
+    let n_copies = DexMethodId {
+        class_descriptor: "Ljava/util/Collections;".to_owned(),
+        name: "nCopies".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "LIL".to_owned(),
+            return_type: "Ljava/util/List;".to_owned(),
+            parameters: vec!["I".to_owned(), "Ljava/lang/Object;".to_owned()],
+        },
+    };
+    let list_size = DexMethodId {
+        class_descriptor: "Ljava/util/List;".to_owned(),
+        name: "size".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "I".to_owned(),
+            return_type: "I".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let list_get = DexMethodId {
+        class_descriptor: "Ljava/util/List;".to_owned(),
+        name: "get".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "LI".to_owned(),
+            return_type: "Ljava/lang/Object;".to_owned(),
+            parameters: vec!["I".to_owned()],
+        },
+    };
+    let value = DexValue::String(std::rc::Rc::from("route"));
+    let result = program.invoke_builtin_method(
+        &n_copies,
+        Some(&test_invocation(vec![DexValue::Int(3), value.clone()])),
+    );
+    let Some(DexExecutionResult::Value(list)) = result else {
+        panic!("nCopies did not return a list reference");
+    };
+
+    assert_eq!(
+        program.invoke_builtin_method(&list_size, Some(&test_invocation(vec![list.clone()]))),
+        Some(DexExecutionResult::Int(3))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &list_get,
+            Some(&test_invocation(vec![list, DexValue::Int(2)])),
+        ),
+        Some(DexExecutionResult::Value(value))
+    );
+}
+
 #[test]
 fn builtin_arrays_as_list_copies_array_entries_into_list_storage() {
     let program = DexProgram::new(Vec::new());

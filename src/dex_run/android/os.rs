@@ -1337,13 +1337,51 @@ impl DexProgram {
         invocation: &DexInvocation,
     ) -> Option<bool> {
         let executor = invocation.arguments.first()?;
-        let known_service = match executor {
+        let known_service = self.is_known_executor_service(executor);
+        if !known_service {
+            return None;
+        }
+
+        Some(
+            self.runtime
+                .borrow()
+                .shutdown_executors
+                .contains(&map_identity_key(executor)),
+        )
+    }
+
+    // cite: libcore ExecutorService.java#shutdown
+    pub(in crate::dex_run) fn executor_service_shutdown(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<()> {
+        let executor = invocation.arguments.first()?;
+        if !self.is_known_executor_service(executor) {
+            return None;
+        }
+
+        self.runtime
+            .borrow_mut()
+            .shutdown_executors
+            .insert(map_identity_key(executor));
+
+        Some(())
+    }
+
+    // cite: libcore ExecutorService.java#isTerminated
+    pub(in crate::dex_run) fn executor_service_is_terminated(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<bool> {
+        self.executor_service_is_shutdown(invocation)
+    }
+
+    fn is_known_executor_service(&self, executor: &DexValue) -> bool {
+        match executor {
             DexValue::Reference(executor) => is_executors_factory_reference(executor),
             DexValue::Object(_) => self.is_thread_pool_executor(executor),
             _ => false,
-        };
-
-        known_service.then_some(false)
+        }
     }
 
     pub(in crate::dex_run) fn thread_pool_executor_submit_runnable(
@@ -1585,6 +1623,64 @@ impl DexProgram {
             &task,
             &future_task_runnable_result_field(),
             DexValue::Null,
+        );
+        self.runtime.borrow_mut().post_handler_runnable(
+            map_identity_key(executor),
+            task.clone(),
+            delay_millis,
+            false,
+        );
+
+        Some(DexExecutionResult::Value(task))
+    }
+
+    // cite: libcore ScheduledThreadPoolExecutor.java#scheduleAtFixedRate, triggerTime
+    pub(in crate::dex_run) fn scheduled_thread_pool_executor_schedule_at_fixed_rate(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        let [executor, command, DexValue::Long(initial_delay), DexValue::Long(initial_delay_high), DexValue::Long(period), DexValue::Long(period_high), unit] =
+            invocation.arguments.as_slice()
+        else {
+            return None;
+        };
+        if initial_delay != initial_delay_high || period != period_high {
+            return None;
+        }
+        if !self.is_thread_pool_executor(executor) {
+            return None;
+        }
+        if is_android_null_value(command) || is_android_null_value(unit) {
+            return Some(DexExecutionResult::Throw(
+                self.allocate_object("Ljava/lang/NullPointerException;".to_owned()),
+            ));
+        }
+        if !dex_value_is_object_like(command) {
+            return None;
+        }
+        if *period <= 0 {
+            return Some(DexExecutionResult::Throw(
+                self.allocate_object("Ljava/lang/IllegalArgumentException;".to_owned()),
+            ));
+        }
+        let unit = time_unit_reference_name(unit)?;
+        let initial_nanos = scale_to_nanos(unit, (*initial_delay).max(0))?;
+        let period_nanos = scale_to_nanos(unit, *period)?;
+        let delay_millis = initial_nanos.saturating_add(999_999) / 1_000_000;
+
+        let task = self.allocate_object(
+            "Ljava/util/concurrent/ScheduledThreadPoolExecutor$ScheduledFutureTask;".to_owned(),
+        );
+        self.write_stored_instance_field(&task, &future_task_runnable_field(), command.clone());
+        self.write_stored_instance_field(
+            &task,
+            &future_task_runnable_result_field(),
+            DexValue::Null,
+        );
+        self.write_stored_instance_field(
+            &task,
+            &scheduled_future_task_period_field(),
+            DexValue::Long(period_nanos),
         );
         self.runtime.borrow_mut().post_handler_runnable(
             map_identity_key(executor),

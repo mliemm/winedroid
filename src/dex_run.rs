@@ -12,7 +12,7 @@ use crate::binary_xml::{self, XmlEvent};
 use crate::config::{DisplaySize, WinedroidConfig};
 use crate::dex::{
     self, DexAnnotation, DexAnnotationValue, DexClassDef, DexCodeItem, DexEncodedMethod,
-    DexFieldId, DexFile, DexMethodId, DEX_VISIBILITY_RUNTIME,
+    DexFieldId, DexFile, DexMethodId, DEX_VISIBILITY_RUNTIME, DEX_VISIBILITY_SYSTEM,
 };
 #[cfg(all(feature = "jit", not(target_family = "wasm")))]
 use crate::dex_interpreter::DexFrame;
@@ -41,6 +41,7 @@ mod builtins;
 mod collections;
 #[cfg(all(feature = "jit", not(target_family = "wasm")))]
 mod dex3oat_bridge;
+mod generic_signature;
 mod heap;
 mod helpers;
 mod host_actions;
@@ -55,6 +56,7 @@ mod jni;
 mod method_filters;
 mod missing_support;
 mod model;
+mod proxy;
 mod reflection;
 mod runtime;
 mod sqlite;
@@ -67,6 +69,7 @@ use android::os::*;
 use bootstrap::*;
 use bootstrap_fields::*;
 use collections::*;
+use generic_signature::*;
 use heap::*;
 use helpers::*;
 use java_big_decimal::*;
@@ -75,6 +78,7 @@ use java_regex_engine::*;
 use java_text::*;
 use method_filters::*;
 pub use model::*;
+use proxy::*;
 use reflection::*;
 use runtime::*;
 use sqlite::{SqliteSessionKey, SqliteTransactionError, SqliteTransactionState};
@@ -1150,14 +1154,38 @@ impl DexProgram {
             return Ok(Some(Rc::clone(resolved)));
         }
 
-        let (field, signature) = self.field_id_and_signature(dex_file_index, field_index)?;
-        self.ensure_instance_class_layout(&field.class_descriptor)?;
-        let Some((_layout, slot)) = self
-            .runtime
-            .borrow()
-            .instance_fields
-            .class_field_slot(&field.class_descriptor, &signature)
-        else {
+        let (field, _) = self.field_id_and_signature(dex_file_index, field_index)?;
+        // cite: art class_linker.cc#ResolveField
+        let mut declaring_class = Some(field.class_descriptor.clone());
+        let mut visited = Vec::new();
+        let mut resolved_field = None;
+        while let Some(candidate) = declaring_class {
+            if visited.contains(&candidate) {
+                break;
+            }
+            visited.push(candidate.clone());
+
+            let candidate_field = DexFieldId {
+                class_descriptor: candidate.clone(),
+                type_descriptor: field.type_descriptor.clone(),
+                name: field.name.clone(),
+            };
+            let signature = self.field_signature(&candidate_field);
+            self.ensure_instance_class_layout(&candidate)?;
+            let slot = self
+                .runtime
+                .borrow()
+                .instance_fields
+                .class_field_slot(&candidate, &signature);
+            if let Some((_layout, slot)) = slot {
+                resolved_field = Some((candidate_field, signature, slot));
+                break;
+            }
+
+            declaring_class = self.superclass_descriptor(&candidate);
+        }
+
+        let Some((field, signature, slot)) = resolved_field else {
             return Ok(None);
         };
         let access_flags = self.instance_field_access_flags(&field).unwrap_or(0);
@@ -1168,7 +1196,7 @@ impl DexProgram {
             is_volatile: access_flags & DEX_ACC_VOLATILE != 0,
             slot,
             default_value: default_field_value(&field),
-            field,
+            field: std::rc::Rc::new(field),
             signature,
         });
         self.store_resolved_instance_field(dex_file_index, field_index, &resolved);
@@ -1209,14 +1237,38 @@ impl DexProgram {
             return Ok(Some(Rc::clone(resolved)));
         }
 
-        let (field, signature) = self.field_id_and_signature(dex_file_index, field_index)?;
-        self.ensure_static_class_layout(&field.class_descriptor)?;
-        let Some(slot) = self
-            .runtime
-            .borrow()
-            .static_fields
-            .class_field_slot(&field.class_descriptor, &signature)
-        else {
+        let (field, _) = self.field_id_and_signature(dex_file_index, field_index)?;
+        // cite: art class_linker.cc#ResolveField
+        let mut declaring_class = Some(field.class_descriptor.clone());
+        let mut visited = Vec::new();
+        let mut resolved_field = None;
+        while let Some(candidate) = declaring_class {
+            if visited.contains(&candidate) {
+                break;
+            }
+            visited.push(candidate.clone());
+
+            let candidate_field = DexFieldId {
+                class_descriptor: candidate.clone(),
+                type_descriptor: field.type_descriptor.clone(),
+                name: field.name.clone(),
+            };
+            let signature = self.field_signature(&candidate_field);
+            self.ensure_static_class_layout(&candidate)?;
+            let slot = self
+                .runtime
+                .borrow()
+                .static_fields
+                .class_field_slot(&candidate, &signature);
+            if let Some(slot) = slot {
+                resolved_field = Some((candidate_field, signature, slot));
+                break;
+            }
+
+            declaring_class = self.superclass_descriptor(&candidate);
+        }
+
+        let Some((field, signature, slot)) = resolved_field else {
             return Ok(None);
         };
         let access_flags = self.static_field_access_flags(&field).unwrap_or(0);
@@ -1227,7 +1279,7 @@ impl DexProgram {
             is_volatile: access_flags & DEX_ACC_VOLATILE != 0,
             slot,
             default_value: default_field_value(&field),
-            field,
+            field: std::rc::Rc::new(field),
             signature,
         });
         self.store_resolved_static_field(dex_file_index, field_index, &resolved);
@@ -3933,6 +3985,10 @@ impl DexProgram {
     }
 
     fn superclass_descriptor(&self, class_descriptor: &str) -> Option<String> {
+        if self.dynamic_proxy_class(class_descriptor).is_some() {
+            return Some("Ljava/lang/reflect/Proxy;".to_owned());
+        }
+
         if let Some(cached) = self
             .caches
             .borrow()
@@ -9516,6 +9572,13 @@ impl DexRunInvocationHandler<'_> {
         let Some(receiver_descriptor) = receiver_dispatch_descriptor(invocation) else {
             return Ok(None);
         };
+
+        if let Some(result) =
+            self.program
+                .invoke_dynamic_proxy_method(method, invocation, self.depth + 1)?
+        {
+            return Ok(Some(invocation_result_from_execution(result)));
+        }
 
         let method_key = method_cache_key(self.current_dex_file_index, invocation.method_index);
         let cached = object_receiver_dispatch_descriptor(invocation).and_then(|receiver| {
@@ -17382,10 +17445,72 @@ fn require_void_application_result(
         | DexExecutionResult::Throw(_) => {}
     }
 
+    let throwable = match &result {
+        DexExecutionResult::Throw(value) => {
+            format!("\nthrowable: {}", guest_throwable_detail(program, value))
+        }
+        DexExecutionResult::Void
+        | DexExecutionResult::Int(_)
+        | DexExecutionResult::Value(_)
+        | DexExecutionResult::Parked(_) => String::new(),
+    };
+
     Err(WinedroidError::new(format!(
-        "Application method returned a value\nclass: {class_descriptor}\nmethod: {}\nresult: {result}",
+        "Application method returned a value\nclass: {class_descriptor}\nmethod: {}\nresult: {result}{throwable}",
         method.display_signature()
     )))
+}
+
+fn guest_throwable_detail(program: &DexProgram, throwable: &DexValue) -> String {
+    let mut details = Vec::new();
+    let mut current = throwable.clone();
+    let mut visited = HashSet::new();
+
+    for _ in 0..4 {
+        let Some(class_descriptor) = value_class_descriptor(&current) else {
+            break;
+        };
+        let class_descriptor = class_descriptor.to_owned();
+        if !visited.insert(class_descriptor.clone()) {
+            details.push(format!("{class_descriptor}: circular cause"));
+            break;
+        }
+
+        let message = program
+            .read_stored_instance_field(
+                &current,
+                &DexFieldId {
+                    class_descriptor: "Ljava/lang/Throwable;".to_owned(),
+                    type_descriptor: "Ljava/lang/String;".to_owned(),
+                    name: "detailMessage".to_owned(),
+                },
+            )
+            .and_then(|value| match value {
+                DexValue::String(message) => Some(message.to_string()),
+                _ => None,
+            });
+        details.push(match message {
+            Some(message) => format!("{class_descriptor}: {message}"),
+            None => class_descriptor,
+        });
+
+        let cause = program.read_stored_instance_field(
+            &current,
+            &DexFieldId {
+                class_descriptor: "Ljava/lang/Throwable;".to_owned(),
+                type_descriptor: "Ljava/lang/Throwable;".to_owned(),
+                name: "cause".to_owned(),
+            },
+        );
+        match cause {
+            Some(value) if value != DexValue::Null && value != DexValue::Int(0) => {
+                current = value;
+            }
+            _ => break,
+        }
+    }
+
+    details.join(" <- ")
 }
 
 fn time_unit_to_nanos(invocation: &DexInvocation) -> Option<i64> {

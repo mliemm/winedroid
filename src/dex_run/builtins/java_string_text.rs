@@ -775,6 +775,15 @@ impl DexProgram {
             return Some(DexExecutionResult::Int(value));
         }
 
+        if method.class_descriptor == "Ljava/lang/StringBuilder;"
+            && method.name == "setLength"
+            && method.proto.descriptor_is("(I)V")
+        {
+            let invocation = invocation?;
+
+            return self.string_builder_set_length(invocation);
+        }
+
         if method.class_descriptor == "Ljava/lang/Enum;"
             && method.name == "<init>"
             && method.proto.descriptor_is("(Ljava/lang/String;I)V")

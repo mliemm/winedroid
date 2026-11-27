@@ -9,6 +9,10 @@ pub(super) fn bootstrap_method_return_descriptor(
             Some("[Ljava/lang/reflect/RecordComponent;")
         }
         ("Ljava/lang/Class;", "isRecord") => Some("Z"),
+        // cite: libcore Object.java#equals, hashCode, toString
+        ("Ljava/lang/Object;", "equals") => Some("Z"),
+        ("Ljava/lang/Object;", "hashCode") => Some("I"),
+        ("Ljava/lang/Object;", "toString") => Some("Ljava/lang/String;"),
         _ => None,
     }
 }
@@ -176,6 +180,8 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         | "Ljava/lang/Thread;"
         | "Ljava/lang/System;"
         | "Ljava/lang/Math;" => Some("Ljava/lang/Object;"),
+        // cite: libcore Proxy.java#Proxy
+        "Ljava/lang/reflect/Proxy;" => Some("Ljava/lang/Object;"),
         // cite: frameworks-base HandlerThread.java#HandlerThread
         "Landroid/os/HandlerThread;" => Some("Ljava/lang/Thread;"),
         // cite: frameworks-base ContentProvider.java#ContentProvider
@@ -513,6 +519,14 @@ pub(super) fn bootstrap_direct_interface_descriptors(
         }
         // cite: libcore GenericDeclaration.java#GenericDeclaration
         "Ljava/lang/reflect/GenericDeclaration;" => &["Ljava/lang/reflect/AnnotatedElement;"],
+        // cite: libcore ParameterizedType.java#ParameterizedType
+        "Ljava/lang/reflect/ParameterizedType;"
+        // cite: libcore GenericArrayType.java#GenericArrayType
+        | "Ljava/lang/reflect/GenericArrayType;"
+        // cite: libcore WildcardType.java#WildcardType
+        | "Ljava/lang/reflect/WildcardType;"
+        // cite: libcore TypeVariable.java#TypeVariable
+        | "Ljava/lang/reflect/TypeVariable;" => &["Ljava/lang/reflect/Type;"],
         // cite: libcore TypeDescriptor.java#OfField
         "Ljava/lang/invoke/TypeDescriptor$OfField;" => &["Ljava/lang/invoke/TypeDescriptor;"],
         "Ljava/lang/String;" | "Ljava/lang/StringBuilder;" | "Ljava/lang/StringBuffer;" => {
@@ -673,6 +687,14 @@ pub(super) fn is_bootstrap_interface_descriptor(class_descriptor: &str) -> bool 
             | "Ljava/lang/Iterable;"
             | "Ljava/lang/Runnable;"
             | "Ljava/lang/reflect/Type;"
+            // cite: libcore ParameterizedType.java#ParameterizedType
+            | "Ljava/lang/reflect/ParameterizedType;"
+            // cite: libcore GenericArrayType.java#GenericArrayType
+            | "Ljava/lang/reflect/GenericArrayType;"
+            // cite: libcore WildcardType.java#WildcardType
+            | "Ljava/lang/reflect/WildcardType;"
+            // cite: libcore TypeVariable.java#TypeVariable
+            | "Ljava/lang/reflect/TypeVariable;"
             | "Ljava/lang/reflect/GenericDeclaration;"
             | "Ljava/lang/reflect/AnnotatedElement;"
             // cite: libcore TypeDescriptor.java#TypeDescriptor

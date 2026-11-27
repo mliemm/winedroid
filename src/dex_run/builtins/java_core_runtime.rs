@@ -18,7 +18,7 @@ impl DexProgram {
             && method.proto.descriptor_is("()I")
         {
             let invocation = invocation?;
-            let value = object_hash_code(invocation)?;
+            let value = self.object_hash_code_value(invocation)?;
 
             return Some(DexExecutionResult::Int(value));
         }
@@ -140,7 +140,7 @@ impl DexProgram {
             && method.proto.descriptor_is("(Ljava/lang/Object;)Z")
         {
             let invocation = invocation?;
-            let value = object_equals(invocation)?;
+            let value = self.object_equals_value(invocation)?;
 
             return Some(DexExecutionResult::Int(value));
         }
@@ -998,6 +998,14 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Ljava/lang/System;"
+            && method.name == "getProperties"
+            && method.proto.descriptor_is("()Ljava/util/Properties;")
+        {
+            // cite: libcore System.java#getProperties
+            return Some(DexExecutionResult::Value(system_get_properties(self)));
+        }
+
+        if method.class_descriptor == "Ljava/lang/System;"
             && method.name == "arraycopy"
             && method
                 .proto
@@ -1061,6 +1069,24 @@ impl DexProgram {
             && method.proto.descriptor_is("()I")
         {
             return Some(DexExecutionResult::Int(runtime_available_processors()));
+        }
+
+        if method.class_descriptor == "Ljava/lang/Runtime;"
+            && matches!(
+                method.name.as_str(),
+                "maxMemory" | "totalMemory" | "freeMemory"
+            )
+            && method.proto.descriptor_is("()J")
+        {
+            // cite: libcore Runtime.java#maxMemory, totalMemory, freeMemory
+            let (max, total, free) = runtime_heap_bytes();
+            let value = match method.name.as_str() {
+                "maxMemory" => max,
+                "totalMemory" => total,
+                _ => free,
+            };
+
+            return Some(DexExecutionResult::Value(DexValue::Long(value)));
         }
 
         if method.class_descriptor == "Ljava/lang/Math;"
@@ -3938,4 +3964,34 @@ fn process_input_stream_field() -> DexFieldId {
         type_descriptor: "Ljava/io/InputStream;".to_owned(),
         name: "inputStream".to_owned(),
     }
+}
+
+// cite: libcore Runtime.java#maxMemory, totalMemory, freeMemory
+fn runtime_heap_bytes() -> (i64, i64, i64) {
+    const MIB: i64 = 1024 * 1024;
+
+    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+    let (system_total, resident) = {
+        let memory = crate::native::bionic::host_stats::memory();
+        let task = crate::native::bionic::host_stats::task();
+        (
+            i64::try_from(memory.total).unwrap_or(0),
+            i64::try_from(task.resident_size).unwrap_or(0),
+        )
+    };
+    #[cfg(not(all(target_arch = "aarch64", target_os = "macos")))]
+    let (system_total, resident) = (0, 0);
+
+    let max = if system_total > 0 {
+        (system_total / 4).clamp(64 * MIB, 512 * MIB)
+    } else {
+        256 * MIB
+    };
+    let free = if resident > 0 {
+        (max - resident).clamp(0, max)
+    } else {
+        max / 2
+    };
+
+    (max, max, free)
 }

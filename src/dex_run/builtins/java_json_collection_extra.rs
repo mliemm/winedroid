@@ -402,6 +402,16 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        if method.class_descriptor == "Ljava/util/concurrent/CopyOnWriteArrayList;"
+            && method.name == "<init>"
+            && method.proto.descriptor_is("(Ljava/util/Collection;)V")
+        {
+            let invocation = invocation?;
+            self.initialize_array_list_from_collection(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
         if method.class_descriptor == "Ljava/util/concurrent/ConcurrentLinkedQueue;"
             && method.name == "<init>"
             && method.proto.descriptor_is("()V")

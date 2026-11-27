@@ -987,6 +987,15 @@ fn builtin_atomic_reference_get_and_set_round_trip_values() {
             parameters: vec!["Ljava/lang/Object;".to_owned()],
         },
     };
+    let lazy_set = DexMethodId {
+        class_descriptor: "Ljava/util/concurrent/atomic/AtomicReference;".to_owned(),
+        name: "lazySet".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VL".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec!["Ljava/lang/Object;".to_owned()],
+        },
+    };
     let get_and_set = DexMethodId {
         class_descriptor: "Ljava/util/concurrent/atomic/AtomicReference;".to_owned(),
         name: "getAndSet".to_owned(),
@@ -1036,6 +1045,16 @@ fn builtin_atomic_reference_get_and_set_round_trip_values() {
     assert_eq!(
         program.invoke_builtin_method(&get, Some(&object_invocation)),
         Some(DexExecutionResult::Value(value))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &lazy_set,
+            Some(&test_invocation(vec![
+                object.clone(),
+                DexValue::Reference(std::rc::Rc::from("updated"))
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
     );
     assert_eq!(
         program.invoke_builtin_method(
@@ -2726,6 +2745,81 @@ fn libcore_scheduled_thread_pool_executor_constructor_stores_default_pool_state(
     assert!(program.value_matches_type(&executor, "Ljava/util/concurrent/Executor;"));
 }
 
+// cite: libcore ExecutorService.java#shutdown, isShutdown, isTerminated, awaitTermination
+#[test]
+fn executor_shutdown_state_is_observable() {
+    let program = DexProgram::new(Vec::new());
+    let executor = DexValue::Reference(std::rc::Rc::from(
+        "Ljava/util/concurrent/ScheduledExecutorService;.single",
+    ));
+    let method = |name: &str, proto: crate::dex::DexProto| DexMethodId {
+        class_descriptor: "Ljava/util/concurrent/ScheduledExecutorService;".to_owned(),
+        name: name.to_owned(),
+        proto,
+    };
+    let shutdown = method(
+        "shutdown",
+        crate::dex::DexProto {
+            shorty: "V".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: Vec::new(),
+        },
+    );
+    let is_shutdown = method(
+        "isShutdown",
+        crate::dex::DexProto {
+            shorty: "Z".to_owned(),
+            return_type: "Z".to_owned(),
+            parameters: Vec::new(),
+        },
+    );
+    let is_terminated = method(
+        "isTerminated",
+        crate::dex::DexProto {
+            shorty: "Z".to_owned(),
+            return_type: "Z".to_owned(),
+            parameters: Vec::new(),
+        },
+    );
+    let await_termination = method(
+        "awaitTermination",
+        crate::dex::DexProto {
+            shorty: "ZJL".to_owned(),
+            return_type: "Z".to_owned(),
+            parameters: vec!["J".to_owned(), "Ljava/util/concurrent/TimeUnit;".to_owned()],
+        },
+    );
+
+    assert_eq!(
+        program.invoke_builtin_method(&shutdown, Some(&test_invocation(vec![executor.clone()]))),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&is_shutdown, Some(&test_invocation(vec![executor.clone()]))),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &is_terminated,
+            Some(&test_invocation(vec![executor.clone()]))
+        ),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &await_termination,
+            Some(&test_invocation(vec![
+                executor,
+                DexValue::Long(0),
+                DexValue::Reference(std::rc::Rc::from(
+                    "Ljava/util/concurrent/TimeUnit;.MILLISECONDS"
+                ))
+            ]))
+        ),
+        Some(DexExecutionResult::Int(1))
+    );
+}
+
 #[test]
 fn libcore_scheduled_thread_pool_executor_constructor_checks_core_size_before_factory() {
     // cite: libcore ThreadPoolExecutor.java#ThreadPoolExecutor
@@ -3176,6 +3270,70 @@ fn libcore_schedule_with_fixed_delay_posts_and_repeats_a_periodic_task() {
             assert!(matches!(result, Some(DexExecutionResult::Value(_))));
         }
     }
+}
+
+// cite: libcore ScheduledThreadPoolExecutor.java#scheduleAtFixedRate
+#[test]
+fn libcore_schedule_at_fixed_rate_posts_a_positive_periodic_task() {
+    let program = DexProgram::new(Vec::new());
+    let executor =
+        program.allocate_object("Ljava/util/concurrent/ScheduledThreadPoolExecutor;".to_owned());
+    let command = program.allocate_object("Lcom/example/Task;".to_owned());
+    let schedule = builtin_method(
+        "Ljava/util/concurrent/ScheduledThreadPoolExecutor;",
+        "scheduleAtFixedRate",
+        "Ljava/util/concurrent/ScheduledFuture;",
+        &[
+            "Ljava/lang/Runnable;",
+            "J",
+            "J",
+            "Ljava/util/concurrent/TimeUnit;",
+        ],
+    );
+    let result = program.invoke_builtin_method(
+        &schedule,
+        Some(&test_invocation(vec![
+            executor.clone(),
+            command.clone(),
+            DexValue::Long(1),
+            DexValue::Long(1),
+            DexValue::Long(2),
+            DexValue::Long(2),
+            seconds_unit(),
+        ])),
+    );
+    let Some(DexExecutionResult::Value(task)) = result else {
+        panic!("scheduleAtFixedRate should return the task");
+    };
+    assert_eq!(
+        program.read_stored_instance_field(&task, &future_task_runnable_field()),
+        Some(command)
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&task, &scheduled_future_task_period_field()),
+        Some(DexValue::Long(2_000_000_000))
+    );
+    assert_eq!(
+        program.repeating_scheduled_task_delay_millis(&task),
+        Some(2000)
+    );
+
+    let zero_period = program.invoke_builtin_method(
+        &schedule,
+        Some(&test_invocation(vec![
+            executor,
+            program.allocate_object("Lcom/example/Task;".to_owned()),
+            DexValue::Long(1),
+            DexValue::Long(1),
+            DexValue::Long(0),
+            DexValue::Long(0),
+            seconds_unit(),
+        ])),
+    );
+    assert!(program.value_matches_type(
+        &thrown_exception(zero_period),
+        "Ljava/lang/IllegalArgumentException;"
+    ));
 }
 
 #[test]

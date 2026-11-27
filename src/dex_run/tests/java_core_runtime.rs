@@ -1002,6 +1002,70 @@ fn builtin_runtime_available_processors_returns_positive_count() {
     assert!(value > 0);
 }
 
+// cite: libcore Runtime.java#maxMemory, totalMemory, freeMemory
+#[test]
+fn builtin_runtime_memory_keeps_heap_invariants() {
+    let program = DexProgram::new(Vec::new());
+
+    let memory = |name: &str| {
+        let method = DexMethodId {
+            class_descriptor: "Ljava/lang/Runtime;".to_owned(),
+            name: name.to_owned(),
+            proto: crate::dex::DexProto {
+                shorty: "J".to_owned(),
+                return_type: "J".to_owned(),
+                parameters: Vec::new(),
+            },
+        };
+        let Some(DexExecutionResult::Value(DexValue::Long(value))) =
+            program.invoke_builtin_method(&method, None)
+        else {
+            panic!("{name} should return a long");
+        };
+
+        value
+    };
+
+    let max = memory("maxMemory");
+    let total = memory("totalMemory");
+    let free = memory("freeMemory");
+
+    assert!(max > 0);
+    assert!(free >= 0);
+    assert!(free <= total);
+    assert_eq!(total, max);
+}
+
+// cite: libcore System.java#getProperties
+#[test]
+fn builtin_system_get_properties_includes_bootstrap_properties() {
+    let program = DexProgram::new(Vec::new());
+    let method = DexMethodId {
+        class_descriptor: "Ljava/lang/System;".to_owned(),
+        name: "getProperties".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "L".to_owned(),
+            return_type: "Ljava/util/Properties;".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let Some(DexExecutionResult::Value(properties)) = program.invoke_builtin_method(&method, None)
+    else {
+        panic!("getProperties should return a Properties reference");
+    };
+    let properties_key = map_identity_key(&properties);
+
+    assert_eq!(
+        program
+            .runtime
+            .borrow()
+            .map_entries
+            .get(&(properties_key, "string:java.version".to_owned()))
+            .cloned(),
+        Some(DexValue::String(std::rc::Rc::from("0")))
+    );
+}
+
 #[test]
 fn builtin_math_min_and_max_return_integer_extrema() {
     let program = DexProgram::new(Vec::new());

@@ -549,6 +549,10 @@ impl DexProgram {
             return Ok(false);
         }
 
+        if let Some(equal) = self.generic_type_values_equal(left, right) {
+            return Ok(equal);
+        }
+
         if let Some(equal) = self.runtime_map_equals(left, right, depth + 1)? {
             return Ok(equal);
         }
@@ -5159,6 +5163,118 @@ impl DexProgram {
         Some(list)
     }
 
+    // cite: libcore Collection.java#removeIf
+    pub(super) fn list_remove_if(
+        &self,
+        invocation: &DexInvocation,
+        depth: usize,
+    ) -> Result<DexExecutionResult> {
+        let [list, predicate] = invocation.arguments.as_slice() else {
+            return Err(WinedroidError::new(
+                "removeIf expects a list receiver and a predicate",
+            ));
+        };
+        let Some(predicate_descriptor) = value_class_descriptor(predicate) else {
+            return Err(WinedroidError::new(format!(
+                "removeIf requires an object-backed predicate\npredicate: {predicate}"
+            )));
+        };
+        let test_method = DexMethodId {
+            class_descriptor: "Ljava/util/function/Predicate;".to_owned(),
+            name: "test".to_owned(),
+            proto: crate::dex::DexProto {
+                shorty: "ZL".to_owned(),
+                return_type: "Z".to_owned(),
+                parameters: vec!["Ljava/lang/Object;".to_owned()],
+            },
+        };
+        let Some(resolved) =
+            self.resolve_exact_method_in_class_hierarchy(predicate_descriptor, &test_method)?
+        else {
+            return Err(WinedroidError::new(format!(
+                "Predicate.test(Object) was not found\npredicate class: {predicate_descriptor}\nnext missing primitive: method Ljava/util/function/Predicate;.test(Ljava/lang/Object;)Z"
+            )));
+        };
+
+        let list_key = map_identity_key(list);
+        let values = self
+            .runtime
+            .borrow()
+            .list_entries
+            .get(&list_key)
+            .cloned()
+            .unwrap_or_default();
+        let mut kept = Vec::with_capacity(values.len());
+        let mut removed = false;
+        for value in values {
+            let result = self.execute_method(
+                None,
+                &resolved,
+                Some(&[predicate.clone(), value.clone()]),
+                depth + 1,
+            )?;
+            match result {
+                DexExecutionResult::Int(result) => {
+                    if result == 0 {
+                        kept.push(value);
+                    } else {
+                        removed = true;
+                    }
+                }
+                DexExecutionResult::Throw(exception) => {
+                    return Ok(DexExecutionResult::Throw(exception));
+                }
+                DexExecutionResult::Void => {
+                    return Err(WinedroidError::new("Predicate.test(Object) returned void"));
+                }
+                DexExecutionResult::Value(value) => {
+                    return Err(WinedroidError::new(format!(
+                        "Predicate.test(Object) did not return a boolean\nresult: {value}"
+                    )));
+                }
+                DexExecutionResult::Parked(execution) => {
+                    self.discard_parked_execution(&execution);
+                    return Err(WinedroidError::new(
+                        "Predicate.test(Object) parked while removing elements",
+                    ));
+                }
+            }
+        }
+
+        self.runtime
+            .borrow_mut()
+            .list_entries
+            .insert(list_key, kept);
+
+        Ok(DexExecutionResult::Int(i32::from(removed)))
+    }
+
+    // cite: libcore Collections.java#nCopies
+    pub(super) fn collections_n_copies(&self, invocation: &DexInvocation) -> Option<DexValue> {
+        if invocation.arguments.len() != 2 {
+            return None;
+        }
+        let DexValue::Int(count) = invocation.arguments[0] else {
+            return None;
+        };
+        let count = usize::try_from(count).ok()?;
+        if count > 1_000_000 {
+            return None;
+        }
+
+        let value = invocation.arguments[1].clone();
+        let mut runtime = self.runtime.borrow_mut();
+        let list_key = format!("collections:nCopies:{}", runtime.next_object_id);
+        runtime.next_object_id += 1;
+        let list = DexValue::Reference(std::rc::Rc::from(format!("Ljava/util/List;:{list_key}")));
+
+        runtime
+            .list_entries
+            .insert(map_identity_key(&list), vec![value; count]);
+
+        Some(list)
+    }
+
     pub(super) fn collections_empty_list(&self) -> DexValue {
         let list = DexValue::Reference(std::rc::Rc::from("Ljava/util/List;:collections:emptyList"));
 
@@ -5324,11 +5440,70 @@ impl DexProgram {
 
         let left_key = map_identity_key(&invocation.arguments[0]);
         let right_key = map_identity_key(&invocation.arguments[1]);
-        let runtime = self.runtime.borrow();
-        let left = runtime.array_entries.get(&left_key)?;
-        let right = runtime.array_entries.get(&right_key)?;
+        let (left, right) = {
+            let runtime = self.runtime.borrow();
+            (
+                runtime.array_entries.get(&left_key)?.clone(),
+                runtime.array_entries.get(&right_key)?.clone(),
+            )
+        };
+        if left.len() != right.len() {
+            return Some(0);
+        }
+        for (left, right) in left.iter().zip(right.iter()) {
+            if !self.runtime_values_equal(left, right, 1, true).ok()? {
+                return Some(0);
+            }
+        }
 
-        Some(i32::from(left == right))
+        Some(1)
+    }
+
+    // cite: libcore Arrays.java#hashCode
+    pub(super) fn arrays_hash_code_object(&self, invocation: &DexInvocation) -> Option<i32> {
+        if invocation.arguments.len() != 1 {
+            return None;
+        }
+        if invocation.arguments[0] == DexValue::Null {
+            return None;
+        }
+
+        let array_key = map_identity_key(&invocation.arguments[0]);
+        let values = self.runtime.borrow().array_entries.get(&array_key)?.clone();
+        let mut hash = 1i32;
+        for value in &values {
+            hash = hash
+                .wrapping_mul(31)
+                .wrapping_add(self.java_value_hash_code(value)?);
+        }
+
+        Some(hash)
+    }
+
+    // cite: libcore Arrays.java#hashCode
+    fn java_value_hash_code(&self, value: &DexValue) -> Option<i32> {
+        match value {
+            DexValue::Null => Some(0),
+            DexValue::String(value) => {
+                let mut hash = 0i32;
+                for unit in value.encode_utf16() {
+                    hash = hash.wrapping_mul(31).wrapping_add(i32::from(unit));
+                }
+
+                Some(hash)
+            }
+            DexValue::Int(value) => Some(*value),
+            DexValue::Long(value) => {
+                let bits = *value as u64;
+                Some((bits ^ (bits >> 32)) as i32)
+            }
+            DexValue::Float(value) => Some(value.to_bits() as i32),
+            DexValue::Object(_) | DexValue::Reference(_) => self
+                .generic_type_from_value(value)
+                .map(|ty| self.generic_type_hash_code(&ty))
+                .or_else(|| Some(stable_hash_i32(&map_identity_key(value)))),
+            DexValue::Uninitialized => None,
+        }
     }
 
     pub(super) fn arrays_sort_int_range(&self, invocation: &DexInvocation) -> Option<()> {

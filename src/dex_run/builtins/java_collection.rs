@@ -217,6 +217,23 @@ impl DexProgram {
             return Some(DexExecutionResult::Int(removed));
         }
 
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/util/Collection;"
+                | "Ljava/util/List;"
+                | "Ljava/util/ArrayList;"
+                | "Ljava/util/LinkedList;"
+                | "Ljava/util/concurrent/CopyOnWriteArrayList;"
+        ) && method.name == "removeIf"
+            && method
+                .proto
+                .descriptor_is("(Ljava/util/function/Predicate;)Z")
+        {
+            let invocation = invocation?;
+
+            return Some(self.list_remove_if(invocation, 1).ok()?);
+        }
+
         if method.class_descriptor == "Ljava/util/Collections;"
             && method.name == "singletonList"
             && method
@@ -225,6 +242,18 @@ impl DexProgram {
         {
             let invocation = invocation?;
             let value = self.collections_singleton_list(invocation)?;
+
+            return Some(DexExecutionResult::Value(value));
+        }
+
+        if method.class_descriptor == "Ljava/util/Collections;"
+            && method.name == "nCopies"
+            && method
+                .proto
+                .descriptor_is("(ILjava/lang/Object;)Ljava/util/List;")
+        {
+            let invocation = invocation?;
+            let value = self.collections_n_copies(invocation)?;
 
             return Some(DexExecutionResult::Value(value));
         }
@@ -406,6 +435,16 @@ impl DexProgram {
         {
             let invocation = invocation?;
             let value = self.arrays_equals_object(invocation)?;
+
+            return Some(DexExecutionResult::Int(value));
+        }
+
+        if method.class_descriptor == "Ljava/util/Arrays;"
+            && method.name == "hashCode"
+            && method.proto.descriptor_is("([Ljava/lang/Object;)I")
+        {
+            let invocation = invocation?;
+            let value = self.arrays_hash_code_object(invocation)?;
 
             return Some(DexExecutionResult::Int(value));
         }

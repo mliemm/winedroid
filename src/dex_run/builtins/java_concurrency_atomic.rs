@@ -107,6 +107,17 @@ impl DexProgram {
         }
 
         if method.matches_builtin_signature(
+            "Ljava/util/concurrent/ScheduledThreadPoolExecutor;",
+            "scheduleAtFixedRate",
+            "(Ljava/lang/Runnable;JJLjava/util/concurrent/TimeUnit;)Ljava/util/concurrent/ScheduledFuture;",
+        ) {
+            // cite: libcore ScheduledThreadPoolExecutor.java#scheduleAtFixedRate
+            let invocation = invocation?;
+
+            return self.scheduled_thread_pool_executor_schedule_at_fixed_rate(invocation);
+        }
+
+        if method.matches_builtin_signature(
             "Ljava/util/concurrent/ThreadPoolExecutor;",
             "setKeepAliveTime",
             "(JLjava/util/concurrent/TimeUnit;)V",
@@ -243,6 +254,64 @@ impl DexProgram {
         {
             let invocation = invocation?;
             let value = self.executor_service_is_shutdown(invocation)?;
+
+            return Some(DexExecutionResult::Int(i32::from(value)));
+        }
+
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/util/concurrent/ExecutorService;"
+                | "Ljava/util/concurrent/ScheduledExecutorService;"
+                | "Ljava/util/concurrent/ThreadPoolExecutor;"
+        ) && method.name == "shutdown"
+            && method.proto.descriptor_is("()V")
+        {
+            let invocation = invocation?;
+            self.executor_service_shutdown(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/util/concurrent/ExecutorService;"
+                | "Ljava/util/concurrent/ScheduledExecutorService;"
+                | "Ljava/util/concurrent/ThreadPoolExecutor;"
+        ) && method.name == "shutdownNow"
+            && method.proto.descriptor_is("()Ljava/util/List;")
+        {
+            let invocation = invocation?;
+            self.executor_service_shutdown(invocation)?;
+
+            return Some(DexExecutionResult::Value(self.collections_empty_list()));
+        }
+
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/util/concurrent/ExecutorService;"
+                | "Ljava/util/concurrent/ScheduledExecutorService;"
+                | "Ljava/util/concurrent/ThreadPoolExecutor;"
+        ) && method.name == "isTerminated"
+            && method.proto.descriptor_is("()Z")
+        {
+            let invocation = invocation?;
+            let value = self.executor_service_is_terminated(invocation)?;
+
+            return Some(DexExecutionResult::Int(i32::from(value)));
+        }
+
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/util/concurrent/ExecutorService;"
+                | "Ljava/util/concurrent/ScheduledExecutorService;"
+                | "Ljava/util/concurrent/ThreadPoolExecutor;"
+        ) && method.name == "awaitTermination"
+            && method
+                .proto
+                .descriptor_is("(JLjava/util/concurrent/TimeUnit;)Z")
+        {
+            let invocation = invocation?;
+            let value = self.executor_service_is_terminated(invocation)?;
 
             return Some(DexExecutionResult::Int(i32::from(value)));
         }
@@ -751,6 +820,18 @@ impl DexProgram {
             "set",
             "(Ljava/lang/Object;)V",
         ) {
+            let invocation = invocation?;
+            self.atomic_reference_set(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.matches_builtin_signature(
+            "Ljava/util/concurrent/atomic/AtomicReference;",
+            "lazySet",
+            "(Ljava/lang/Object;)V",
+        ) {
+            // cite: libcore AtomicReference.java#lazySet
             let invocation = invocation?;
             self.atomic_reference_set(invocation)?;
 

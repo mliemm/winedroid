@@ -31,6 +31,100 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Ljava/lang/Class;"
+            && method.name == "getTypeParameters"
+            && method
+                .proto
+                .descriptor_is("()[Ljava/lang/reflect/TypeVariable;")
+        {
+            let invocation = invocation?;
+
+            return self.class_type_parameters(invocation);
+        }
+
+        if method.class_descriptor == "Ljava/lang/reflect/ParameterizedType;"
+            && method.name == "getActualTypeArguments"
+            && method.proto.descriptor_is("()[Ljava/lang/reflect/Type;")
+        {
+            let invocation = invocation?;
+
+            return self.parameterized_type_arguments(invocation);
+        }
+
+        if method.class_descriptor == "Ljava/lang/reflect/ParameterizedType;"
+            && method.name == "getRawType"
+            && method.proto.descriptor_is("()Ljava/lang/reflect/Type;")
+        {
+            let invocation = invocation?;
+
+            return self.parameterized_type_raw_type(invocation);
+        }
+
+        if method.class_descriptor == "Ljava/lang/reflect/ParameterizedType;"
+            && method.name == "getOwnerType"
+            && method.proto.descriptor_is("()Ljava/lang/reflect/Type;")
+        {
+            let invocation = invocation?;
+
+            return self.parameterized_type_owner_type(invocation);
+        }
+
+        if method.class_descriptor == "Ljava/lang/reflect/GenericArrayType;"
+            && method.name == "getGenericComponentType"
+            && method.proto.descriptor_is("()Ljava/lang/reflect/Type;")
+        {
+            let invocation = invocation?;
+
+            return self.generic_array_component_type(invocation);
+        }
+
+        if method.class_descriptor == "Ljava/lang/reflect/WildcardType;"
+            && method.name == "getUpperBounds"
+            && method.proto.descriptor_is("()[Ljava/lang/reflect/Type;")
+        {
+            let invocation = invocation?;
+
+            return self.wildcard_upper_bounds(invocation);
+        }
+
+        if method.class_descriptor == "Ljava/lang/reflect/WildcardType;"
+            && method.name == "getLowerBounds"
+            && method.proto.descriptor_is("()[Ljava/lang/reflect/Type;")
+        {
+            let invocation = invocation?;
+
+            return self.wildcard_lower_bounds(invocation);
+        }
+
+        if method.class_descriptor == "Ljava/lang/reflect/TypeVariable;"
+            && method.name == "getName"
+            && method.proto.descriptor_is("()Ljava/lang/String;")
+        {
+            let invocation = invocation?;
+
+            return self.type_variable_name(invocation);
+        }
+
+        if method.class_descriptor == "Ljava/lang/reflect/TypeVariable;"
+            && method.name == "getBounds"
+            && method.proto.descriptor_is("()[Ljava/lang/reflect/Type;")
+        {
+            let invocation = invocation?;
+
+            return self.type_variable_bounds(invocation);
+        }
+
+        if method.class_descriptor == "Ljava/lang/reflect/TypeVariable;"
+            && method.name == "getGenericDeclaration"
+            && method
+                .proto
+                .descriptor_is("()Ljava/lang/reflect/GenericDeclaration;")
+        {
+            let invocation = invocation?;
+
+            return self.type_variable_declaration(invocation);
+        }
+
+        if method.class_descriptor == "Ljava/lang/Class;"
             && method.name == "getCanonicalName"
             && method.proto.descriptor_is("()Ljava/lang/String;")
         {
@@ -126,6 +220,36 @@ impl DexProgram {
             let value = self.class_get_constructors(invocation)?;
 
             return Some(DexExecutionResult::Value(value));
+        }
+
+        if method.class_descriptor == "Ljava/lang/reflect/Proxy;"
+            && method.name == "newProxyInstance"
+            && method.proto.descriptor()
+                == "(Ljava/lang/ClassLoader;[Ljava/lang/Class;Ljava/lang/reflect/InvocationHandler;)Ljava/lang/Object;"
+        {
+            let invocation = invocation?;
+
+            return self.new_dynamic_proxy_instance(invocation);
+        }
+
+        if method.class_descriptor == "Ljava/lang/reflect/Proxy;"
+            && method.name == "getInvocationHandler"
+            && method
+                .proto
+                .descriptor_is("(Ljava/lang/Object;)Ljava/lang/reflect/InvocationHandler;")
+        {
+            let invocation = invocation?;
+
+            return self.proxy_get_invocation_handler(invocation);
+        }
+
+        if method.class_descriptor == "Ljava/lang/reflect/Proxy;"
+            && method.name == "isProxyClass"
+            && method.proto.descriptor_is("(Ljava/lang/Class;)Z")
+        {
+            let invocation = invocation?;
+
+            return self.proxy_is_proxy_class(invocation);
         }
 
         if method.class_descriptor == "Ljava/lang/reflect/Constructor;"
@@ -242,9 +366,8 @@ impl DexProgram {
             && method.proto.descriptor_is("()[Ljava/lang/reflect/Type;")
         {
             let invocation = invocation?;
-            let value = self.class_get_generic_interfaces(invocation)?;
 
-            return Some(DexExecutionResult::Value(value));
+            return self.class_generic_interfaces(invocation);
         }
 
         if method.class_descriptor == "Ljava/lang/Class;"
@@ -262,9 +385,26 @@ impl DexProgram {
             && method.proto.descriptor_is("()Ljava/lang/reflect/Type;")
         {
             let invocation = invocation?;
-            let value = self.class_get_generic_superclass(invocation)?;
 
-            return Some(DexExecutionResult::Value(value));
+            return self.class_generic_superclass(invocation);
+        }
+
+        if method.class_descriptor == "Ljava/lang/Class;"
+            && method.name == "getEnclosingClass"
+            && method.proto.descriptor_is("()Ljava/lang/Class;")
+        {
+            let invocation = invocation?;
+
+            return self.class_get_enclosing_class(invocation);
+        }
+
+        if method.class_descriptor == "Ljava/lang/Class;"
+            && method.name == "getDeclaringClass"
+            && method.proto.descriptor_is("()Ljava/lang/Class;")
+        {
+            let invocation = invocation?;
+
+            return self.class_get_declaring_class(invocation);
         }
 
         if method.class_descriptor == "Ljava/lang/Class;"
@@ -429,6 +569,38 @@ impl DexProgram {
         {
             let invocation = invocation?;
             let value = self.reflect_method_invoke(invocation)?;
+
+            return Some(DexExecutionResult::Value(value));
+        }
+
+        if method.class_descriptor == "Ljava/lang/reflect/Method;"
+            && method.name == "getName"
+            && method.proto.descriptor_is("()Ljava/lang/String;")
+        {
+            let invocation = invocation?;
+            let value = reflect_method_get_name(invocation)?;
+
+            return Some(DexExecutionResult::Value(DexValue::String(
+                std::rc::Rc::from(value),
+            )));
+        }
+
+        if method.class_descriptor == "Ljava/lang/reflect/Method;"
+            && method.name == "getDeclaringClass"
+            && method.proto.descriptor_is("()Ljava/lang/Class;")
+        {
+            let invocation = invocation?;
+            let value = reflect_method_get_declaring_class(invocation)?;
+
+            return Some(DexExecutionResult::Value(value));
+        }
+
+        if method.class_descriptor == "Ljava/lang/reflect/Method;"
+            && method.name == "getParameterTypes"
+            && method.proto.descriptor_is("()[Ljava/lang/Class;")
+        {
+            let invocation = invocation?;
+            let value = self.method_get_parameter_types(invocation)?;
 
             return Some(DexExecutionResult::Value(value));
         }

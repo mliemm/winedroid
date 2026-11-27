@@ -592,13 +592,6 @@ impl DexProgram {
         ))))
     }
 
-    pub(super) fn class_get_generic_superclass(
-        &self,
-        invocation: &DexInvocation,
-    ) -> Option<DexValue> {
-        self.class_get_superclass(invocation)
-    }
-
     pub(super) fn class_get_interfaces(&self, invocation: &DexInvocation) -> Option<DexValue> {
         let descriptor = class_reference_descriptor(invocation)?;
 
@@ -613,25 +606,6 @@ impl DexProgram {
             .collect();
 
         Some(self.allocate_filled_array("[Ljava/lang/Class;".to_owned(), interfaces))
-    }
-
-    pub(super) fn class_get_generic_interfaces(
-        &self,
-        invocation: &DexInvocation,
-    ) -> Option<DexValue> {
-        let descriptor = class_reference_descriptor(invocation)?;
-
-        let interfaces = self
-            .class_interface_descriptors(descriptor)
-            .into_iter()
-            .map(|interface_descriptor| {
-                DexValue::Reference(std::rc::Rc::from(format!(
-                    "Ljava/lang/Class;:{interface_descriptor}"
-                )))
-            })
-            .collect();
-
-        Some(self.allocate_filled_array("[Ljava/lang/reflect/Type;".to_owned(), interfaces))
     }
 
     pub(super) fn class_get_declared_fields(&self, invocation: &DexInvocation) -> Option<DexValue> {
@@ -745,6 +719,10 @@ impl DexProgram {
     }
 
     pub(super) fn class_interface_descriptors(&self, descriptor: &str) -> Vec<String> {
+        if let Some(proxy_class) = self.dynamic_proxy_class(descriptor) {
+            return proxy_class.interfaces;
+        }
+
         if let Some(cached) = self
             .caches
             .borrow()
@@ -788,6 +766,10 @@ impl DexProgram {
 
     pub(super) fn class_get_modifiers(&self, invocation: &DexInvocation) -> Option<i32> {
         let descriptor = class_reference_descriptor(invocation)?;
+
+        if let Some(modifiers) = self.dynamic_proxy_class_modifiers(descriptor) {
+            return i32::try_from(modifiers).ok();
+        }
 
         let mut access_flags = self
             .load_class(descriptor)
@@ -1028,6 +1010,20 @@ impl DexProgram {
         Some(DexValue::Null)
     }
 
+    pub(super) fn method_get_parameter_types(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexValue> {
+        if invocation.arguments.len() != 1 {
+            return None;
+        }
+
+        let parameter_key = reflect_method_parameter_key(&invocation.arguments[0])?;
+        let descriptors = self.reflect_constructor_parameter_descriptors(parameter_key)?;
+
+        self.allocate_class_array(&descriptors)
+    }
+
     pub(super) fn reflect_method_get_return_type(
         &self,
         invocation: &DexInvocation,
@@ -1257,7 +1253,7 @@ impl DexProgram {
         self.allocate_class_array(&descriptors)
     }
 
-    fn allocate_class_array(&self, descriptors: &[String]) -> Option<DexValue> {
+    pub(super) fn allocate_class_array(&self, descriptors: &[String]) -> Option<DexValue> {
         let classes: Vec<DexValue> = descriptors
             .iter()
             .map(|descriptor| {
@@ -1351,6 +1347,20 @@ impl DexProgram {
             return false;
         }
         visited.push(candidate.to_owned());
+
+        if let Some(proxy_class) = self.dynamic_proxy_class(candidate) {
+            if target == "Ljava/lang/reflect/Proxy;" {
+                return true;
+            }
+            for interface_descriptor in &proxy_class.interfaces {
+                if interface_descriptor == target
+                    || self.descriptor_matches_type_inner(interface_descriptor, target, visited)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
 
         let Some(loaded_class) = self.load_class(candidate) else {
             return self.bootstrap_descriptor_matches_type(candidate, target, visited);
@@ -1613,6 +1623,39 @@ pub(super) fn reflect_method_reference(value: &DexValue) -> Option<(&str, &str)>
     let (method_name, _parameter_key) = rest.split_once(':')?;
 
     Some((class_descriptor, method_name))
+}
+
+fn reflect_method_parameter_key(value: &DexValue) -> Option<&str> {
+    let DexValue::Reference(reference) = value else {
+        return None;
+    };
+    let method_reference = reference.strip_prefix("Ljava/lang/reflect/Method;:")?;
+    let (_, rest) = method_reference.split_once(':')?;
+    let (_, parameter_key) = rest.split_once(':')?;
+
+    Some(parameter_key)
+}
+
+pub(super) fn reflect_method_get_name(invocation: &DexInvocation) -> Option<String> {
+    if invocation.arguments.len() != 1 {
+        return None;
+    }
+
+    let (_, method_name) = reflect_method_reference(&invocation.arguments[0])?;
+
+    Some(method_name.to_owned())
+}
+
+pub(super) fn reflect_method_get_declaring_class(invocation: &DexInvocation) -> Option<DexValue> {
+    if invocation.arguments.len() != 1 {
+        return None;
+    }
+
+    let (class_descriptor, _) = reflect_method_reference(&invocation.arguments[0])?;
+
+    Some(DexValue::Reference(std::rc::Rc::from(format!(
+        "Ljava/lang/Class;:{class_descriptor}"
+    ))))
 }
 
 pub(super) fn reflect_constructor_reference(value: &DexValue) -> Option<(&str, &str)> {
@@ -1972,6 +2015,15 @@ pub(super) fn box_reflected_field_value(field: &DexFieldId, value: DexValue) -> 
             )))),
             _ => None,
         },
+        "D" => match value {
+            DexValue::Long(bits) => {
+                let bits = bits as u64;
+                Some(DexValue::Reference(std::rc::Rc::from(format!(
+                    "Ljava/lang/Double;:{bits:016x}"
+                ))))
+            }
+            _ => None,
+        },
         "F" => match value {
             DexValue::Float(value) => Some(DexValue::Reference(std::rc::Rc::from(format!(
                 "Ljava/lang/Float;:{:08x}",
@@ -1987,6 +2039,7 @@ pub(super) fn box_reflected_field_value(field: &DexFieldId, value: DexValue) -> 
             DexValue::String(_) | DexValue::Object(_) | DexValue::Reference(_) | DexValue::Null => {
                 Some(value)
             }
+            DexValue::Int(0) => Some(DexValue::Null),
             DexValue::Uninitialized | DexValue::Int(_) | DexValue::Long(_) | DexValue::Float(_) => {
                 None
             }

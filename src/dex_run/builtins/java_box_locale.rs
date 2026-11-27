@@ -74,6 +74,45 @@ impl DexProgram {
             )));
         }
 
+        // cite: libcore Integer.java#getInteger
+        if method.class_descriptor == "Ljava/lang/Integer;"
+            && method.name == "getInteger"
+            && matches!(
+                method.proto.descriptor().as_str(),
+                "(Ljava/lang/String;)Ljava/lang/Integer;"
+                    | "(Ljava/lang/String;I)Ljava/lang/Integer;"
+                    | "(Ljava/lang/String;Ljava/lang/Integer;)Ljava/lang/Integer;"
+            )
+        {
+            let invocation = invocation?;
+            let [key, default] = invocation.arguments.as_slice() else {
+                return None;
+            };
+            let DexValue::String(key) = key else {
+                return None;
+            };
+            let property = bootstrap_system_property(key).and_then(|value| java_decode_int(&value));
+            let value = match property {
+                Some(value) => {
+                    DexValue::Reference(std::rc::Rc::from(format!("Ljava/lang/Integer;:{value}")))
+                }
+                None => match method.proto.descriptor().as_str() {
+                    "(Ljava/lang/String;)Ljava/lang/Integer;" => DexValue::Null,
+                    "(Ljava/lang/String;I)Ljava/lang/Integer;" => {
+                        let DexValue::Int(default) = default else {
+                            return None;
+                        };
+                        DexValue::Reference(std::rc::Rc::from(format!(
+                            "Ljava/lang/Integer;:{default}"
+                        )))
+                    }
+                    _ => default.clone(),
+                },
+            };
+
+            return Some(DexExecutionResult::Value(value));
+        }
+
         if method.matches_builtin_signature("Ljava/lang/Integer;", "<init>", "(I)V") {
             let invocation = invocation?;
             self.initialize_integer_box(invocation)?;
@@ -645,6 +684,29 @@ fn double_value_field() -> DexFieldId {
         type_descriptor: "D".to_owned(),
         name: "value".to_owned(),
     }
+}
+
+// cite: libcore Integer.java#decode
+fn java_decode_int(value: &str) -> Option<i32> {
+    let (negative, value) = match value.strip_prefix('-') {
+        Some(value) => (true, value),
+        None => (false, value.strip_prefix('+').unwrap_or(value)),
+    };
+    let (radix, digits) = if let Some(digits) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .or_else(|| value.strip_prefix('#'))
+    {
+        (16, digits)
+    } else if value.len() > 1 && value.starts_with('0') {
+        (8, &value[1..])
+    } else {
+        (10, value)
+    };
+    let magnitude = i64::from_str_radix(digits, radix).ok()?;
+    let value = if negative { -magnitude } else { magnitude };
+
+    i32::try_from(value).ok()
 }
 
 // cite: libcore Integer.java#toString

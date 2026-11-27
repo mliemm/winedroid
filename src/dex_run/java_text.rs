@@ -3249,6 +3249,48 @@ impl DexProgram {
         )
     }
 
+    // cite: libcore AbstractStringBuilder.java#setLength
+    pub(super) fn string_builder_set_length(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        if invocation.arguments.len() != 2 {
+            return None;
+        }
+        let DexValue::Int(new_length) = invocation.arguments[1] else {
+            return None;
+        };
+        if new_length < 0 {
+            return Some(DexExecutionResult::Throw(
+                self.allocate_generated_exception(DexGeneratedException {
+                    class_descriptor: "Ljava/lang/StringIndexOutOfBoundsException;".to_owned(),
+                    detail_message: Some(new_length.to_string()),
+                }),
+            ));
+        }
+        let builder_key = map_identity_key(&invocation.arguments[0]);
+        let current = self
+            .runtime
+            .borrow()
+            .string_builder_values
+            .get(&builder_key)
+            .cloned()
+            .unwrap_or_default();
+        let mut units: Vec<u16> = current.encode_utf16().collect();
+        let new_length = usize::try_from(new_length).ok()?;
+        if new_length < units.len() {
+            units.truncate(new_length);
+        } else {
+            units.resize(new_length, 0);
+        }
+        self.runtime
+            .borrow_mut()
+            .string_builder_values
+            .insert(builder_key, String::from_utf16_lossy(&units));
+
+        Some(DexExecutionResult::Void)
+    }
+
     pub(super) fn string_builder_length(&self, invocation: &DexInvocation) -> Option<i32> {
         if invocation.arguments.len() != 1 {
             return None;
@@ -3300,6 +3342,9 @@ impl DexProgram {
             DexValue::String(value) => Some(value.clone().to_string()),
             DexValue::Reference(reference) => {
                 if let Some(display) = boxed_reference_display_value(reference) {
+                    return Some(display);
+                }
+                if let Some(display) = self.generic_type_object_to_string(value) {
                     return Some(display);
                 }
 
@@ -4402,6 +4447,39 @@ pub(super) fn print_stream_write(invocation: &DexInvocation) -> Option<()> {
         | DexValue::Float(_)
         | DexValue::String(_) => None,
     }
+}
+
+// cite: libcore System.java#getProperties
+pub(super) fn system_get_properties(program: &DexProgram) -> DexValue {
+    const KEYS: [&str; 6] = [
+        "java.version",
+        "file.separator",
+        "java.vm.name",
+        "line.separator",
+        "os.name",
+        "path.separator",
+    ];
+
+    let properties = program.allocate_object("Ljava/util/Properties;".to_owned());
+    let properties_key = map_identity_key(&properties);
+    let mut runtime = program.runtime.borrow_mut();
+    for key in KEYS {
+        let Some(value) = bootstrap_system_property(key) else {
+            continue;
+        };
+        let key_value = DexValue::String(std::rc::Rc::from(key));
+        let entry_key = map_identity_key(&key_value);
+        runtime
+            .map_entry_keys
+            .insert((properties_key.clone(), entry_key.clone()), key_value);
+        runtime.map_entries.insert(
+            (properties_key.clone(), entry_key),
+            DexValue::String(std::rc::Rc::from(value)),
+        );
+    }
+    drop(runtime);
+
+    properties
 }
 
 pub(super) fn bootstrap_system_property(key: &str) -> Option<String> {

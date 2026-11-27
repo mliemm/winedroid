@@ -61,6 +61,46 @@ fn builtin_boolean_value_of_round_trips_boolean_value() {
     );
 }
 
+// cite: libcore Integer.java#getInteger, decode
+#[test]
+fn builtin_integer_get_integer_reads_system_property_with_default() {
+    let program = DexProgram::new(Vec::new());
+    let get_integer = DexMethodId {
+        class_descriptor: "Ljava/lang/Integer;".to_owned(),
+        name: "getInteger".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "LLI".to_owned(),
+            return_type: "Ljava/lang/Integer;".to_owned(),
+            parameters: vec!["Ljava/lang/String;".to_owned(), "I".to_owned()],
+        },
+    };
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &get_integer,
+            Some(&test_invocation(vec![
+                DexValue::String(std::rc::Rc::from("java.version")),
+                DexValue::Int(7)
+            ]))
+        ),
+        Some(DexExecutionResult::Value(DexValue::Reference(
+            std::rc::Rc::from("Ljava/lang/Integer;:0")
+        )))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &get_integer,
+            Some(&test_invocation(vec![
+                DexValue::String(std::rc::Rc::from("winedroid.missing")),
+                DexValue::Int(7)
+            ]))
+        ),
+        Some(DexExecutionResult::Value(DexValue::Reference(
+            std::rc::Rc::from("Ljava/lang/Integer;:7")
+        )))
+    );
+}
+
 #[test]
 fn builtin_integer_value_of_returns_boxed_integer_reference() {
     let program = DexProgram::new(Vec::new());

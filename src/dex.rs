@@ -425,6 +425,8 @@ pub struct DexExceptionHandler {
 
 // cite: art dex_file.h#kDexVisibilityRuntime
 pub const DEX_VISIBILITY_RUNTIME: u8 = 0x01;
+// cite: art dex_file.h#kDexVisibilitySystem
+pub const DEX_VISIBILITY_SYSTEM: u8 = 0x02;
 
 // cite: art dex_file.h#kDexAnnotationByte, kDexAnnotationShort, kDexAnnotationChar, kDexAnnotationInt, kDexAnnotationLong, kDexAnnotationFloat, kDexAnnotationDouble, kDexAnnotationMethodType, kDexAnnotationMethodHandle, kDexAnnotationString, kDexAnnotationType, kDexAnnotationField, kDexAnnotationMethod, kDexAnnotationEnum, kDexAnnotationArray, kDexAnnotationAnnotation, kDexAnnotationNull, kDexAnnotationBoolean, kDexAnnotationValueTypeMask, kDexAnnotationValueArgShift
 const DEX_ANNOTATION_BYTE: u8 = 0x00;
