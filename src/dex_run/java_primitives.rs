@@ -123,11 +123,37 @@ pub(in crate::dex_run) fn double_parse_double(invocation: &DexInvocation) -> Opt
     let DexValue::String(value) = invocation.arguments.first()? else {
         return None;
     };
-    let trimmed = value.trim().trim_end_matches(['d', 'D', 'f', 'F']);
-    trimmed
-        .parse::<f64>()
-        .ok()
-        .map(|parsed| parsed.to_bits() as i64)
+    java_parse_double(value).map(|parsed| parsed.to_bits() as i64)
+}
+
+// cite: libcore FloatingDecimal.java#readJavaFormatString
+// cite: libcore String.java#trim
+fn java_parse_double(text: &str) -> Option<f64> {
+    let trimmed = text.trim_matches(|character: char| character <= ' ');
+    let unsigned = trimmed.strip_prefix(['+', '-']).unwrap_or(trimmed);
+    if matches!(unsigned, "NaN" | "Infinity") {
+        return trimmed.parse::<f64>().ok();
+    }
+    let number = unsigned
+        .strip_suffix(['f', 'F', 'd', 'D'])
+        .unwrap_or(unsigned);
+    let (mantissa, exponent) = match number.find(['e', 'E']) {
+        Some(index) => (&number[..index], Some(&number[index + 1..])),
+        None => (number, None),
+    };
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let digits = |part: &str| part.bytes().all(|byte| byte.is_ascii_digit());
+    if (whole.is_empty() && fraction.is_empty()) || !digits(whole) || !digits(fraction) {
+        return None;
+    }
+    if let Some(exponent) = exponent {
+        let exponent = exponent.strip_prefix(['+', '-']).unwrap_or(exponent);
+        if exponent.is_empty() || !digits(exponent) {
+            return None;
+        }
+    }
+    let sign = if trimmed.starts_with('-') { "-" } else { "" };
+    format!("{sign}{number}").parse::<f64>().ok()
 }
 
 pub(in crate::dex_run) fn long_to_hex_string(invocation: &DexInvocation) -> Option<String> {

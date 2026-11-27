@@ -3044,13 +3044,7 @@ impl DexProgram {
         }
 
         // cite: libcore FutureTask.java#run
-        if matches!(
-            value_class_descriptor(runnable),
-            Some(
-                "Ljava/util/concurrent/FutureTask;"
-                    | "Ljava/util/concurrent/ScheduledThreadPoolExecutor$ScheduledFutureTask;"
-            )
-        ) {
+        if self.is_future_task_without_guest_run(runnable)? {
             return self.future_task_run(runnable, depth);
         }
 
@@ -3068,6 +3062,21 @@ impl DexProgram {
         )
     }
 
+    fn is_future_task_without_guest_run(&self, runnable: &DexValue) -> Result<bool> {
+        let Some(class_descriptor) = value_class_descriptor(runnable) else {
+            return Ok(false);
+        };
+        if !self.descriptor_matches_type(class_descriptor, "Ljava/util/concurrent/FutureTask;") {
+            return Ok(false);
+        }
+        Ok(self
+            .resolve_exact_method_in_class_hierarchy(
+                class_descriptor,
+                &runnable_run_method(class_descriptor),
+            )?
+            .is_none())
+    }
+
     // cite: libcore FutureTask.java#run
     fn future_task_run(&self, receiver: &DexValue, depth: usize) -> Result<()> {
         match self.future_task_run_result(receiver, depth)? {
@@ -3075,7 +3084,15 @@ impl DexProgram {
                 "FutureTask.run threw uncaught {}",
                 self.describe_uncaught_throw(&exception)
             ))),
-            _ => Ok(()),
+            DexExecutionResult::Parked(execution) => {
+                self.discard_parked_execution(&execution);
+                Err(WinedroidError::new(
+                    "next missing primitive: FutureTask.run that parks outside a guest frame",
+                ))
+            }
+            DexExecutionResult::Void
+            | DexExecutionResult::Int(_)
+            | DexExecutionResult::Value(_) => Ok(()),
         }
     }
 
@@ -3156,16 +3173,40 @@ impl DexProgram {
             Some(DexValue::Long(period)) if period != 0
         );
 
-        self.dispatch_runnable(runnable, "FutureTask.run", depth)?;
-
-        if periodic {
-            return Ok(DexExecutionResult::Void);
+        let ran = match value_class_descriptor(runnable) {
+            Some(class_descriptor) => self.resolve_exact_method_in_class_hierarchy(
+                class_descriptor,
+                &runnable_run_method(class_descriptor),
+            )?,
+            None => None,
+        };
+        let outcome = match ran {
+            Some(resolved) => {
+                self.execute_method(None, &resolved, Some(&[runnable.clone()]), depth + 1)?
+            }
+            None => {
+                self.dispatch_runnable(runnable, "FutureTask.run", depth)?;
+                DexExecutionResult::Void
+            }
+        };
+        match outcome {
+            DexExecutionResult::Throw(exception) => {
+                self.future_task_complete(receiver, DexExecutionResult::Throw(exception), depth)
+            }
+            DexExecutionResult::Parked(execution) => {
+                self.discard_parked_execution(&execution);
+                Err(WinedroidError::new(
+                    "next missing primitive: FutureTask Runnable.run that parks",
+                ))
+            }
+            _ if periodic => Ok(DexExecutionResult::Void),
+            _ => {
+                let fixed_result = self
+                    .read_stored_instance_field(receiver, &future_task_runnable_result_field())
+                    .unwrap_or(DexValue::Null);
+                self.future_task_complete(receiver, DexExecutionResult::Value(fixed_result), depth)
+            }
         }
-
-        let fixed_result = self
-            .read_stored_instance_field(receiver, &future_task_runnable_result_field())
-            .unwrap_or(DexValue::Null);
-        self.future_task_complete(receiver, DexExecutionResult::Value(fixed_result), depth)
     }
 
     // cite: libcore FutureTask.java#run
@@ -3715,10 +3756,37 @@ impl DexProgram {
             type_descriptor: "Ljava/lang/String;".to_owned(),
             name: "detailMessage".to_owned(),
         };
-        match self.read_stored_instance_field(exception, &field) {
+        let mut description = match self.read_stored_instance_field(exception, &field) {
             Some(DexValue::String(message)) => format!("{class_descriptor}: {message}"),
             _ => class_descriptor.to_owned(),
+        };
+        // cite: libcore Throwable.java#printStackTrace, getCause
+        let cause_field = DexFieldId {
+            class_descriptor: "Ljava/lang/Throwable;".to_owned(),
+            type_descriptor: "Ljava/lang/Throwable;".to_owned(),
+            name: "cause".to_owned(),
+        };
+        let mut seen = vec![map_identity_key(exception)];
+        let mut current = exception.clone();
+        while let Some(cause) = self
+            .read_stored_instance_field(&current, &cause_field)
+            .filter(dex_value_is_object_like)
+        {
+            let key = map_identity_key(&cause);
+            if seen.contains(&key) {
+                break;
+            }
+            seen.push(key);
+            let cause_class = value_class_descriptor(&cause).unwrap_or("unknown class");
+            match self.read_stored_instance_field(&cause, &field) {
+                Some(DexValue::String(message)) => {
+                    description.push_str(&format!("\nCaused by: {cause_class}: {message}"))
+                }
+                _ => description.push_str(&format!("\nCaused by: {cause_class}")),
+            }
+            current = cause;
         }
+        description
     }
 
     fn new_sax_attributes(&self, attributes: &[crate::binary_xml::XmlAttribute]) -> DexValue {
@@ -17954,6 +18022,18 @@ fn object_wait_timeout(invocation: &DexInvocation) -> Result<(i64, i32)> {
             Ok((*low, *nanos))
         }
         _ => Err(invalid()),
+    }
+}
+
+fn runnable_run_method(class_descriptor: &str) -> DexMethodId {
+    DexMethodId {
+        class_descriptor: class_descriptor.to_owned(),
+        name: "run".to_owned(),
+        proto: dex::DexProto {
+            shorty: "V".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: Vec::new(),
+        },
     }
 }
 

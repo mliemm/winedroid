@@ -12,6 +12,7 @@ pub(super) enum ClassInitializationStart {
     Complete,
     Started,
     Wait(DexParkedExecution),
+    Erroneous(DexValue),
 }
 
 impl DexProgram {
@@ -452,6 +453,9 @@ impl DexProgram {
             ClassInitializationStart::Started => {
                 self.initialize_started_class(class_descriptor, depth, active_classes)
             }
+            ClassInitializationStart::Erroneous(earlier) => Ok(ClassInitializationResult::Throw(
+                self.earlier_class_failure(class_descriptor, earlier),
+            )),
         };
         active_classes.remove(class_descriptor);
         if result.is_err() {
@@ -482,7 +486,7 @@ impl DexProgram {
                 match self.ensure_class_initialized_inner(&superclass, depth, active_classes)? {
                     ClassInitializationResult::Complete => {}
                     ClassInitializationResult::Throw(exception) => {
-                        self.abort_class_initialization(class_descriptor);
+                        self.fail_class_initialization(class_descriptor, exception.clone());
                         return Ok(ClassInitializationResult::Throw(exception));
                     }
                     ClassInitializationResult::Parked(mut execution) => {
@@ -544,7 +548,10 @@ impl DexProgram {
             )? {
                 ClassInitializationResult::Complete => {}
                 ClassInitializationResult::Throw(exception) => {
-                    self.abort_class_initialization(&continuation.class_descriptor);
+                    self.fail_class_initialization(
+                        &continuation.class_descriptor,
+                        exception.clone(),
+                    );
                     return Ok(ClassInitializationResult::Throw(exception));
                 }
                 ClassInitializationResult::Parked(mut execution) => {
@@ -572,7 +579,8 @@ impl DexProgram {
                 Ok(ClassInitializationResult::Complete)
             }
             ClassInitializationResult::Throw(exception) => {
-                self.abort_class_initialization(&continuation.class_descriptor);
+                let exception = self.wrap_exception_in_initializer(exception);
+                self.fail_class_initialization(&continuation.class_descriptor, exception.clone());
                 Ok(ClassInitializationResult::Throw(exception))
             }
             ClassInitializationResult::Parked(mut execution) => {
@@ -664,6 +672,9 @@ impl DexProgram {
         if runtime.initialized_classes.contains(class_descriptor) {
             return ClassInitializationStart::Complete;
         }
+        if let Some(earlier) = runtime.erroneous_classes.get(class_descriptor) {
+            return ClassInitializationStart::Erroneous(earlier.clone());
+        }
         let current_thread = map_identity_key(&runtime.current_guest_thread);
         if let Some(initializing_thread) = runtime.initializing_classes.get(class_descriptor) {
             if initializing_thread == &current_thread {
@@ -684,6 +695,43 @@ impl DexProgram {
         self.runtime
             .borrow_mut()
             .complete_class_initialization(class_descriptor);
+    }
+
+    // cite: art class_linker.cc#WrapExceptionInInitializer
+    fn wrap_exception_in_initializer(&self, exception: DexValue) -> DexValue {
+        if self.value_matches_type(&exception, "Ljava/lang/Error;") {
+            return exception;
+        }
+        let wrapper = self.allocate_generated_exception(DexGeneratedException {
+            class_descriptor: "Ljava/lang/ExceptionInInitializerError;".to_owned(),
+            detail_message: None,
+        });
+        self.write_stored_instance_field(&wrapper, &throwable_cause_field_id(), exception);
+        wrapper
+    }
+
+    // cite: art class_linker.cc#ClassLinker::InitializeClass
+    fn fail_class_initialization(&self, class_descriptor: &str, exception: DexValue) {
+        self.runtime
+            .borrow_mut()
+            .erroneous_classes
+            .insert(class_descriptor.to_owned(), exception);
+        self.abort_class_initialization(class_descriptor);
+    }
+
+    // cite: art class_linker.cc#ClassLinker::ThrowEarlierClassFailure
+    fn earlier_class_failure(&self, class_descriptor: &str, earlier: DexValue) -> DexValue {
+        let pretty = class_descriptor
+            .strip_prefix('L')
+            .and_then(|name| name.strip_suffix(';'))
+            .unwrap_or(class_descriptor)
+            .replace('/', ".");
+        let error = self.allocate_generated_exception(DexGeneratedException {
+            class_descriptor: "Ljava/lang/NoClassDefFoundError;".to_owned(),
+            detail_message: Some(pretty),
+        });
+        self.write_stored_instance_field(&error, &throwable_cause_field_id(), earlier);
+        error
     }
 
     pub(super) fn abort_class_initialization(&self, class_descriptor: &str) {
@@ -864,4 +912,12 @@ fn object_key_to_value(key: &str, class_descriptor: &str) -> Option<DexValue> {
         id: object_id,
         class_descriptor: std::rc::Rc::from(class_descriptor.to_owned()),
     }))
+}
+
+fn throwable_cause_field_id() -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Ljava/lang/Throwable;".to_owned(),
+        type_descriptor: "Ljava/lang/Throwable;".to_owned(),
+        name: "cause".to_owned(),
+    }
 }

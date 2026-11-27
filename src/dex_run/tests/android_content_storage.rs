@@ -3382,3 +3382,55 @@ fn context_impl_get_external_cache_dir_creates_the_primary_volume_cache_dir() {
 
     fs::remove_dir_all(app_dir).ok();
 }
+
+// cite: frameworks-base ContextImpl.java#registerReceiverInternal
+// cite: frameworks-base BatteryService.java#sendBatteryChangedIntentLocked
+#[test]
+fn builtin_context_register_receiver_leaves_the_sticky_battery_intent_unclaimed() {
+    let program = DexProgram::new(Vec::new());
+    let add_action = builtin_method(
+        "Landroid/content/IntentFilter;",
+        "<init>",
+        "V",
+        &["Ljava/lang/String;"],
+    );
+    let register = builtin_method(
+        "Landroid/content/Context;",
+        "registerReceiver",
+        "Landroid/content/Intent;",
+        &[
+            "Landroid/content/BroadcastReceiver;",
+            "Landroid/content/IntentFilter;",
+        ],
+    );
+    let filter_for = |action: &str| {
+        let filter = program.allocate_object("Landroid/content/IntentFilter;".to_owned());
+        program.invoke_builtin_method(
+            &add_action,
+            Some(&test_invocation(vec![
+                filter.clone(),
+                DexValue::String(action.into()),
+            ])),
+        );
+        filter
+    };
+    let register_with = |filter: DexValue| {
+        program.invoke_builtin_method(
+            &register,
+            Some(&test_invocation(vec![
+                DexValue::Reference(std::rc::Rc::from("context")),
+                DexValue::Null,
+                filter,
+            ])),
+        )
+    };
+
+    assert_eq!(
+        register_with(filter_for("com.example.PING")),
+        Some(DexExecutionResult::Value(DexValue::Null))
+    );
+    assert_eq!(
+        register_with(filter_for("android.intent.action.BATTERY_CHANGED")),
+        None
+    );
+}

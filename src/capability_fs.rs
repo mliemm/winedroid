@@ -247,13 +247,7 @@ impl Directory {
                 if FileType::from_raw_mode(stat.st_mode as _) == FileType::Symlink {
                     return Err(io::Error::from(io::ErrorKind::PermissionDenied));
                 }
-                fs::chmodat(
-                    &parent.directory,
-                    &parent.leaf,
-                    without_write(stat),
-                    AtFlags::empty(),
-                )
-                .map_err(io::Error::from)
+                chmod_leaf_without_following(&parent.directory, &parent.leaf, without_write(stat))
             }
         }
     }
@@ -847,4 +841,21 @@ mod tests {
             let _ = fs::remove_dir_all(&self.root);
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn chmod_leaf_without_following(directory: &OwnedFd, leaf: &CStr, mode: Mode) -> io::Result<()> {
+    fs::chmodat(directory, leaf, mode, AtFlags::SYMLINK_NOFOLLOW).map_err(io::Error::from)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn chmod_leaf_without_following(directory: &OwnedFd, leaf: &CStr, mode: Mode) -> io::Result<()> {
+    let file = fs::openat(
+        directory,
+        leaf,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(io::Error::from)?;
+    fs::fchmod(&file, mode).map_err(io::Error::from)
 }

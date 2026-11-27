@@ -2150,3 +2150,73 @@ fn libcore_sorted_set_collection_constructor_sorts_its_elements() {
         Some(vec![string("a"), string("b"), string("c")])
     );
 }
+
+// cite: libcore ConcurrentHashMap.java#ConcurrentHashMap, putAll, putVal, size
+#[test]
+fn libcore_concurrent_hash_map_copy_constructor_copies_entries_and_rejects_nulls() {
+    let program = DexProgram::new(Vec::new());
+    let put = builtin_method(
+        "Ljava/util/HashMap;",
+        "put",
+        "Ljava/lang/Object;",
+        &["Ljava/lang/Object;", "Ljava/lang/Object;"],
+    );
+    let copy = builtin_method(
+        "Ljava/util/concurrent/ConcurrentHashMap;",
+        "<init>",
+        "V",
+        &["Ljava/util/Map;"],
+    );
+    let size = builtin_method("Ljava/util/Map;", "size", "I", &[]);
+    let get = builtin_method(
+        "Ljava/util/Map;",
+        "get",
+        "Ljava/lang/Object;",
+        &["Ljava/lang/Object;"],
+    );
+    let string = |text: &str| DexValue::String(text.into());
+    let source = program.allocate_object("Ljava/util/HashMap;".to_owned());
+    for (key, value) in [("a", "1"), ("b", "2")] {
+        program.invoke_builtin_method(
+            &put,
+            Some(&test_invocation(vec![
+                source.clone(),
+                string(key),
+                string(value),
+            ])),
+        );
+    }
+    let concurrent = program.allocate_object("Ljava/util/concurrent/ConcurrentHashMap;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &copy,
+            Some(&test_invocation(vec![concurrent.clone(), source.clone()]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&size, Some(&test_invocation(vec![concurrent.clone()]))),
+        Some(DexExecutionResult::Int(2))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&get, Some(&test_invocation(vec![concurrent, string("b")]))),
+        Some(DexExecutionResult::Value(string("2")))
+    );
+
+    program.invoke_builtin_method(
+        &put,
+        Some(&test_invocation(vec![
+            source.clone(),
+            string("c"),
+            DexValue::Null,
+        ])),
+    );
+    let rejected = program.allocate_object("Ljava/util/concurrent/ConcurrentHashMap;".to_owned());
+    let Some(DexExecutionResult::Throw(exception)) =
+        program.invoke_builtin_method(&copy, Some(&test_invocation(vec![rejected, source])))
+    else {
+        panic!("a null value should be rejected");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
+}

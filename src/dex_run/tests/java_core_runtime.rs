@@ -5052,60 +5052,132 @@ fn libcore_object_clone_without_cloneable_throws_clone_not_supported() {
     );
 }
 
-// cite: libcore Observable.java#addObserver, deleteObserver, deleteObservers, countObservers, setChanged, clearChanged, hasChanged
+fn observable_contract_result(method: &str) -> DexExecutionResult {
+    let dex_file = crate::dex::parse_dex_file(
+        "observable_contract.dex",
+        include_bytes!("fixtures/observable_contract.dex").to_vec(),
+    )
+    .expect("Observable contract DEX should parse");
+    let program = DexProgram::new(vec![dex_file]);
+    let method = DexMethodId {
+        class_descriptor: "Lwinedroid/tests/ObservableContract;".to_owned(),
+        name: method.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "L".to_owned(),
+            return_type: "Ljava/lang/String;".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let resolved = program.resolve_exact_method(&method).unwrap().unwrap();
+    program.execute_method(None, &resolved, None, 0).unwrap()
+}
+
+// cite: libcore Observable.java#addObserver, deleteObserver, deleteObservers, countObservers
+// cite: libcore Vector.java#contains, removeElement
 #[test]
-fn libcore_observable_keeps_distinct_observers_and_a_changed_flag() {
+fn libcore_observable_membership_compares_observers_with_equals() {
+    assert_eq!(
+        observable_contract_result("membershipUsesEquals"),
+        DexExecutionResult::Value(DexValue::String("4,2,npe,0".into()))
+    );
+}
+
+// cite: libcore Observable.java#setChanged, clearChanged, hasChanged
+#[test]
+fn libcore_observable_changed_flag_follows_set_and_clear() {
     let program = DexProgram::new(Vec::new());
     let observable = program.allocate_object("Ljava/util/Observable;".to_owned());
-    let first = program.allocate_object("Lapp/First;".to_owned());
-    let second = program.allocate_object("Lapp/Second;".to_owned());
-    let call = |name: &str, return_type: &str, parameters: &[&str], arguments: Vec<DexValue>| {
-        let method = builtin_method("Ljava/util/Observable;", name, return_type, parameters);
-        let mut all = vec![observable.clone()];
-        all.extend(arguments);
-        program.invoke_builtin_method(&method, Some(&test_invocation(all)))
+    let call = |name: &str, return_type: &str| {
+        let method = builtin_method("Ljava/util/Observable;", name, return_type, &[]);
+        program.invoke_builtin_method(&method, Some(&test_invocation(vec![observable.clone()])))
     };
-    let add = |observer: &DexValue| {
-        call(
-            "addObserver",
-            "V",
-            &["Ljava/util/Observer;"],
-            vec![observer.clone()],
+
+    assert_eq!(call("hasChanged", "Z"), Some(DexExecutionResult::Int(0)));
+    call("setChanged", "V");
+    assert_eq!(call("hasChanged", "Z"), Some(DexExecutionResult::Int(1)));
+    call("clearChanged", "V");
+    assert_eq!(call("hasChanged", "Z"), Some(DexExecutionResult::Int(0)));
+}
+
+// cite: art java_vm_ext.cc#LoadNativeLibrary
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[test]
+fn native_load_failure_with_a_missing_primitive_stops_instead_of_throwing() {
+    let program = DexProgram::new(Vec::new());
+    let missing = program
+        .native_load_result(
+            "libquick.so",
+            Err(WinedroidError::new(
+                "next missing primitive: native import JNIEnv slot 142",
+            )),
         )
-    };
-    let count = || call("countObservers", "I", &[], Vec::new());
+        .expect_err("a missing primitive must surface as an error");
+    assert_eq!(
+        missing.missing_primitive(),
+        Some("native import JNIEnv slot 142")
+    );
 
-    assert_eq!(count(), Some(DexExecutionResult::Int(0)));
-    add(&first);
-    add(&first);
-    add(&second);
-    assert_eq!(count(), Some(DexExecutionResult::Int(2)));
-    call(
-        "deleteObserver",
-        "V",
-        &["Ljava/util/Observer;"],
-        vec![first],
-    );
-    assert_eq!(count(), Some(DexExecutionResult::Int(1)));
-    call("deleteObservers", "V", &[], Vec::new());
-    assert_eq!(count(), Some(DexExecutionResult::Int(0)));
-    let Some(DexExecutionResult::Throw(exception)) = add(&DexValue::Null) else {
-        panic!("addObserver(null) should throw");
+    let Ok(DexExecutionResult::Throw(exception)) = program.native_load_result(
+        "libbad.so",
+        Err(WinedroidError::new("JNI_OnLoad in libbad.so returned 0x0")),
+    ) else {
+        panic!("an ordinary load failure should throw UnsatisfiedLinkError");
     };
-    assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
+    assert!(program.value_matches_type(&exception, "Ljava/lang/UnsatisfiedLinkError;"));
+}
+
+// cite: libcore Thread.java#Thread, getThreadGroup, setPriority
+#[test]
+fn builtin_thread_inherits_the_creating_threads_group_and_ignores_priority_after_exit() {
+    let program = DexProgram::new(Vec::new());
+    let constructor = builtin_method("Ljava/lang/Thread;", "<init>", "V", &[]);
+    let get_group = builtin_method(
+        "Ljava/lang/Thread;",
+        "getThreadGroup",
+        "Ljava/lang/ThreadGroup;",
+        &[],
+    );
+    let set_priority = builtin_method("Ljava/lang/Thread;", "setPriority", "V", &["I"]);
+    let get_priority = builtin_method("Ljava/lang/Thread;", "getPriority", "I", &[]);
+    let group = program.allocate_object("Ljava/lang/ThreadGroup;".to_owned());
+    let parent = program.allocate_object("Ljava/lang/Thread;".to_owned());
+    program.write_stored_instance_field(
+        &parent,
+        &DexFieldId {
+            class_descriptor: "Ljava/lang/Thread;".to_owned(),
+            type_descriptor: "Ljava/lang/ThreadGroup;".to_owned(),
+            name: "group".to_owned(),
+        },
+        group.clone(),
+    );
+    let previous = std::mem::replace(
+        &mut program.runtime.borrow_mut().current_guest_thread,
+        parent,
+    );
+    let child = program.allocate_object("Ljava/lang/Thread;".to_owned());
+    program.invoke_builtin_method(&constructor, Some(&test_invocation(vec![child.clone()])));
+    program.runtime.borrow_mut().current_guest_thread = previous;
 
     assert_eq!(
-        call("hasChanged", "Z", &[], Vec::new()),
-        Some(DexExecutionResult::Int(0))
+        program.invoke_builtin_method(&get_group, Some(&test_invocation(vec![child.clone()]))),
+        Some(DexExecutionResult::Value(group))
     );
-    call("setChanged", "V", &[], Vec::new());
-    assert_eq!(
-        call("hasChanged", "Z", &[], Vec::new()),
-        Some(DexExecutionResult::Int(1))
+
+    program.write_stored_instance_field(
+        &child,
+        &DexFieldId {
+            class_descriptor: "Ljava/lang/Thread;".to_owned(),
+            type_descriptor: "Z".to_owned(),
+            name: "terminated".to_owned(),
+        },
+        DexValue::Int(1),
     );
-    call("clearChanged", "V", &[], Vec::new());
+    program.invoke_builtin_method(
+        &set_priority,
+        Some(&test_invocation(vec![child.clone(), DexValue::Int(9)])),
+    );
     assert_eq!(
-        call("hasChanged", "Z", &[], Vec::new()),
-        Some(DexExecutionResult::Int(0))
+        program.invoke_builtin_method(&get_priority, Some(&test_invocation(vec![child]))),
+        Some(DexExecutionResult::Int(5))
     );
 }

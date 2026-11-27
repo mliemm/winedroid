@@ -248,18 +248,36 @@ impl DexProgram {
         let key: NativeMethod = method.into();
         let registered = self.jni.bindings.borrow().get(&key).copied();
         let address = match registered {
-            Some(address) => Some(address),
-            None => match NativeRuntime::current() {
-                Some(runtime) => self.find_native_method(runtime.loader(), method)?,
-                None => None,
-            },
-        }
-        .ok_or_else(|| {
-            WinedroidError::new(format!(
-                "JNI method has no registered entry point\nnext missing primitive: JNI binding {}.{}",
-                method.class_descriptor, method.display_signature()
-            ))
-        })?;
+            Some(address) => address,
+            None => {
+                let runtime =
+                    NativeRuntime::current().filter(|_| !self.jni.handles.borrow().is_empty());
+                let Some(runtime) = runtime else {
+                    return Err(WinedroidError::new(format!(
+                        "JNI method has no registered entry point\nnext missing primitive: JNI binding {}.{}",
+                        method.class_descriptor, method.display_signature()
+                    )));
+                };
+                match self.find_native_method(runtime.loader(), method)? {
+                    Some(address) => address,
+                    None => {
+                        // cite: art jni_entrypoints.cc#artFindNativeMethodRunnable
+                        // cite: art java_vm_ext.cc#FindNativeMethod
+                        let short_name = jni_short_name(&method.class_descriptor, &method.name);
+                        let long_name = jni_long_name(&short_name, &method.proto.parameters);
+                        return Ok(DexExecutionResult::Throw(self.allocate_generated_exception(
+                            DexGeneratedException {
+                                class_descriptor: "Ljava/lang/UnsatisfiedLinkError;".to_owned(),
+                                detail_message: Some(format!(
+                                    "No implementation found for {} (tried {short_name} and {long_name}) - is the library loaded, e.g. System.loadLibrary?",
+                                    pretty_method(method)
+                                )),
+                            },
+                        )));
+                    }
+                }
+            }
+        };
         self.jni.bindings.borrow_mut().insert(key, address);
         let frame = env::Frame::new(self, depth);
         let is_static = resolved.encoded_method.access_flags & DEX_ACC_STATIC != 0;
@@ -346,6 +364,26 @@ impl DexProgram {
         };
         Ok(DexExecutionResult::Value(value))
     }
+}
+
+// cite: art art_method.cc#PrettyMethod
+fn pretty_method(method: &DexMethodId) -> String {
+    let pretty = |descriptor: &str| {
+        descriptor_to_pretty_name(descriptor).unwrap_or_else(|| descriptor.to_owned())
+    };
+    let parameters: Vec<String> = method
+        .proto
+        .parameters
+        .iter()
+        .map(|parameter| pretty(parameter))
+        .collect();
+    format!(
+        "{} {}.{}({})",
+        pretty(&method.proto.return_type),
+        pretty(&method.class_descriptor),
+        method.name,
+        parameters.join(", ")
+    )
 }
 
 fn jni_short_name(class_descriptor: &str, method: &str) -> String {
@@ -578,6 +616,47 @@ mod tests {
                 .get(&recorded)
                 .cloned(),
             Some(DexValue::Int(42))
+        );
+    }
+
+    #[test]
+    fn art_jni_native_without_binding_or_symbol_throws_unsatisfied_link_error() {
+        // cite: art jni_entrypoints.cc#artFindNativeMethodRunnable
+        // cite: art java_vm_ext.cc#FindNativeMethod
+        let dex = dex::parse_dex_file(
+            "jni_static_long.dex",
+            include_bytes!("tests/fixtures/jni_static_long.dex").to_vec(),
+        )
+        .unwrap();
+        let program = DexProgram::new(vec![dex]);
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/native_fixtures/bin/16k");
+        let runtime = NativeRuntime::initialize(vec![dir.clone()]).unwrap();
+        program
+            .load_native_image(runtime.loader(), &dir.join("libfx_jni.so"))
+            .unwrap();
+        let method = program
+            .resolve_named_method("Lfx/Native;", "unbound")
+            .unwrap();
+
+        let DexExecutionResult::Throw(exception) = program
+            .execute_method(None, &method, Some(&[DexValue::Null, DexValue::Null]), 0)
+            .unwrap()
+        else {
+            panic!("an unbound native should throw");
+        };
+        assert!(program.value_matches_type(&exception, "Ljava/lang/UnsatisfiedLinkError;"));
+        assert_eq!(
+            program.read_stored_instance_field(
+                &exception,
+                &DexFieldId {
+                    class_descriptor: "Ljava/lang/Throwable;".to_owned(),
+                    type_descriptor: "Ljava/lang/String;".to_owned(),
+                    name: "detailMessage".to_owned(),
+                }
+            ),
+            Some(DexValue::String(std::rc::Rc::from(
+                "No implementation found for int fx.Native.unbound(java.lang.String, int[]) (tried Java_fx_Native_unbound and Java_fx_Native_unbound__Ljava_lang_String_2_3I) - is the library loaded, e.g. System.loadLibrary?"
+            )))
         );
     }
 

@@ -670,6 +670,23 @@ impl DexProgram {
                     | "(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;I)Landroid/content/Intent;"
             )
         {
+            // cite: frameworks-base ContextImpl.java#registerReceiverInternal
+            // cite: frameworks-base BatteryService.java#sendBatteryChangedIntentLocked
+            let invocation = invocation?;
+            let filter = invocation.arguments.get(2)?;
+            let wants_sticky_battery = self
+                .runtime
+                .borrow()
+                .intent_filter_actions
+                .get(&map_identity_key(filter))
+                .is_some_and(|actions| {
+                    actions
+                        .iter()
+                        .any(|action| action == "android.intent.action.BATTERY_CHANGED")
+                });
+            if wants_sticky_battery {
+                return None;
+            }
             return Some(DexExecutionResult::Value(DexValue::Null));
         }
 

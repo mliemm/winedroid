@@ -7,6 +7,8 @@ public class Native {
 
     public static native void callStaticVoid(int value);
 
+    public static native int unbound(String name, int[] values);
+
     public static int recorded;
 
     public static void record(int value) {

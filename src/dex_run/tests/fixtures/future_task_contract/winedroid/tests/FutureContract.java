@@ -64,4 +64,66 @@ public class FutureContract extends FutureTask<String> {
         }
         return log + "no failure";
     }
+
+    static class Plain extends FutureTask<String> {
+        Plain(Callable<String> callable) {
+            super(callable);
+        }
+
+        @Override
+        protected void done() {
+            log += "done;";
+        }
+    }
+
+    static class RunnableTask extends FutureTask<String> {
+        RunnableTask(Runnable runnable, String value) {
+            super(runnable, value);
+        }
+
+        @Override
+        protected void setException(Throwable failure) {
+            log += "ex:" + failure.getMessage() + ";";
+            super.setException(failure);
+        }
+    }
+
+    public static String runnableFailure() throws Exception {
+        log = "";
+        RunnableTask task = new RunnableTask(new Runnable() {
+            @Override
+            public void run() {
+                throw new IllegalStateException("bad");
+            }
+        }, "v");
+        task.run();
+        try {
+            task.get();
+        } catch (ExecutionException failure) {
+            return log + failure.getCause().getMessage();
+        }
+        return log + "no failure";
+    }
+
+    public static String cancelRunsDoneOnce() {
+        Plain task = plainTask();
+        boolean first = task.cancel(false);
+        boolean second = task.cancel(false);
+        return log + first + ":" + second + ":" + task.isCancelled();
+    }
+
+    public static Plain plainTask() {
+        log = "";
+        return new Plain(new Callable<String>() {
+            @Override
+            public String call() {
+                log += "call;";
+                return "v";
+            }
+        });
+    }
+
+    public static String log() {
+        return log;
+    }
 }

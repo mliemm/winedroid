@@ -1066,3 +1066,57 @@ fn libcore_integer_to_string_formats_signed_decimal() {
         );
     }
 }
+
+// cite: libcore FloatingDecimal.java#readJavaFormatString
+#[test]
+fn libcore_double_parse_double_accepts_only_java_number_syntax() {
+    let program = DexProgram::new(Vec::new());
+    let parse = builtin_method(
+        "Ljava/lang/Double;",
+        "parseDouble",
+        "D",
+        &["Ljava/lang/String;"],
+    );
+    let parsed = |text: &str| match program.invoke_builtin_method(
+        &parse,
+        Some(&test_invocation(vec![DexValue::String(text.into())])),
+    ) {
+        Some(DexExecutionResult::Value(DexValue::Long(bits))) => Some(f64::from_bits(bits as u64)),
+        _ => None,
+    };
+
+    for (text, expected) in [
+        (" 12.5 ", 12.5),
+        ("-1e3", -1000.0),
+        ("+.5", 0.5),
+        ("7.", 7.0),
+        ("2.5f", 2.5),
+        ("3D", 3.0),
+        ("\t\n1\u{1}", 1.0),
+    ] {
+        assert_eq!(parsed(text), Some(expected), "{text:?}");
+    }
+    assert_eq!(parsed("-Infinity"), Some(f64::NEG_INFINITY));
+    assert!(parsed("NaN").unwrap().is_nan());
+    for bad in [
+        "inf",
+        "infinity",
+        "nan",
+        "5dd",
+        "",
+        ".",
+        "1e",
+        "1e+",
+        "\u{2003}1",
+        "0x10",
+    ] {
+        assert_eq!(parsed(bad), None, "{bad:?}");
+        let Some(DexExecutionResult::Throw(exception)) = program.invoke_builtin_method(
+            &parse,
+            Some(&test_invocation(vec![DexValue::String(bad.into())])),
+        ) else {
+            panic!("{bad:?} should throw");
+        };
+        assert!(program.value_matches_type(&exception, "Ljava/lang/NumberFormatException;"));
+    }
+}

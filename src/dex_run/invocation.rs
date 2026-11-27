@@ -424,6 +424,34 @@ impl DexRunInvocationHandler<'_> {
             return Ok(invocation_result_from_execution(result));
         }
 
+        if let Some(result) =
+            self.program
+                .print_writer_intrinsic(&method, &invocation, self.depth)?
+        {
+            return Ok(invocation_result_from_execution(result));
+        }
+
+        if let Some(result) =
+            self.program
+                .observable_membership_intrinsic(&method, &invocation, self.depth)?
+        {
+            return Ok(invocation_result_from_execution(result));
+        }
+
+        if method.class_descriptor == "Ljava/lang/System;"
+            && proto_descriptor == "(Ljava/lang/String;)V"
+            && matches!(method.name.as_str(), "load" | "loadLibrary")
+        {
+            let result = if method.name == "load" {
+                self.program.system_load_result(&invocation)?
+            } else {
+                self.program.system_load_library_result(&invocation)?
+            };
+            if let Some(result) = result {
+                return Ok(invocation_result_from_execution(result));
+            }
+        }
+
         if method.class_descriptor == "Ljava/io/File;"
             && method.name == "listFiles"
             && proto_descriptor == "(Ljava/io/FileFilter;)[Ljava/io/File;"
@@ -980,6 +1008,22 @@ impl DexProgram {
                 .future_task_set_outcome(receiver, exception.clone(), true, depth)
                 .map(Some),
             ("done", "()V", None) => Ok(Some(DexExecutionResult::Void)),
+            // cite: libcore FutureTask.java#cancel, finishCompletion
+            ("cancel", "(Z)Z", Some(DexValue::Int(_))) => {
+                let Some(cancelled) = self.future_task_cancel(invocation) else {
+                    return Ok(None);
+                };
+                if cancelled == 1 {
+                    if let Some(result) =
+                        self.guest_void_override(receiver, "done", &[], Vec::new(), depth)?
+                    {
+                        if !matches!(result, DexExecutionResult::Void) {
+                            return Ok(Some(result));
+                        }
+                    }
+                }
+                Ok(Some(DexExecutionResult::Int(cancelled)))
+            }
             _ => Ok(None),
         }
     }
@@ -1035,5 +1079,271 @@ impl DexProgram {
             ("close", "()V", []) => Ok(self.file_output_stream_close(receiver)),
             _ => Ok(None),
         }
+    }
+
+    // cite: libcore PrintWriter.java#PrintWriter, println, newLine, close, ensureOpen
+    // cite: libcore Writer.java#Writer
+    pub(super) fn print_writer_intrinsic(
+        &self,
+        method: &DexMethodId,
+        invocation: &DexInvocation,
+        depth: usize,
+    ) -> Result<Option<DexExecutionResult>> {
+        let print_writer = "Ljava/io/PrintWriter;";
+        if !self.descriptor_matches_type(&method.class_descriptor, print_writer)
+            || self.guest_overrides(method, Some(invocation))
+        {
+            return Ok(None);
+        }
+        let Some(receiver) = invocation.arguments.first() else {
+            return Ok(None);
+        };
+        if !self.value_matches_type(receiver, print_writer) {
+            return Ok(None);
+        }
+        let out_field = print_writer_field("Ljava/io/Writer;", "out");
+        let descriptor = method.proto.descriptor();
+        match (
+            method.name.as_str(),
+            descriptor.as_str(),
+            &invocation.arguments[1..],
+        ) {
+            ("<init>", "(Ljava/io/Writer;)V" | "(Ljava/io/Writer;Z)V", [out, rest @ ..]) => {
+                if matches!(out, DexValue::Null | DexValue::Int(0)) {
+                    return Ok(Some(self.null_pointer_exception_result()));
+                }
+                let auto_flush = match rest {
+                    [] => 0,
+                    [DexValue::Int(flag)] => i32::from(*flag != 0),
+                    _ => return Ok(None),
+                };
+                self.write_stored_instance_field(receiver, &out_field, out.clone());
+                self.write_stored_instance_field(
+                    receiver,
+                    &print_writer_field("Z", "autoFlush"),
+                    DexValue::Int(auto_flush),
+                );
+                Ok(Some(DexExecutionResult::Void))
+            }
+            ("println", "()V", []) => {
+                let Some(out) = self.print_writer_open_out(receiver) else {
+                    self.print_writer_set_trouble(receiver);
+                    return Ok(Some(DexExecutionResult::Void));
+                };
+                let separator = DexValue::String(std::rc::Rc::from("\n"));
+                let Some(result) = self.writer_write_string(&out, &separator, depth)? else {
+                    return Ok(None);
+                };
+                if let DexExecutionResult::Throw(exception) = &result {
+                    if self.value_matches_type(exception, "Ljava/io/IOException;") {
+                        self.print_writer_set_trouble(receiver);
+                        return Ok(Some(DexExecutionResult::Void));
+                    }
+                    return Ok(Some(result));
+                }
+                let auto_flush = self
+                    .read_stored_instance_field(receiver, &print_writer_field("Z", "autoFlush"))
+                    == Some(DexValue::Int(1));
+                if auto_flush {
+                    let flushed =
+                        self.guest_void_override(&out, "flush", &[], Vec::new(), depth)?;
+                    if flushed.is_none() {
+                        return Ok(None);
+                    }
+                }
+                Ok(Some(DexExecutionResult::Void))
+            }
+            ("close", "()V", []) => {
+                let Some(out) = self.print_writer_open_out(receiver) else {
+                    return Ok(Some(DexExecutionResult::Void));
+                };
+                let result =
+                    match self.guest_void_override(&out, "close", &[], Vec::new(), depth)? {
+                        Some(result) => result,
+                        None => {
+                            let close = DexMethodId {
+                                class_descriptor: value_class_descriptor(&out)
+                                    .unwrap_or_default()
+                                    .to_owned(),
+                                name: "close".to_owned(),
+                                proto: dex::DexProto {
+                                    shorty: "V".to_owned(),
+                                    return_type: "V".to_owned(),
+                                    parameters: Vec::new(),
+                                },
+                            };
+                            let mut close_invocation = invocation.clone();
+                            close_invocation.arguments = smallvec::smallvec![out.clone()];
+                            match self.invoke_builtin_method(&close, Some(&close_invocation)) {
+                                Some(result) => result,
+                                None => return Ok(None),
+                            }
+                        }
+                    };
+                if let DexExecutionResult::Throw(exception) = &result {
+                    if !self.value_matches_type(exception, "Ljava/io/IOException;") {
+                        return Ok(Some(result));
+                    }
+                    self.print_writer_set_trouble(receiver);
+                    return Ok(Some(DexExecutionResult::Void));
+                }
+                self.write_stored_instance_field(receiver, &out_field, DexValue::Null);
+                Ok(Some(DexExecutionResult::Void))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn print_writer_open_out(&self, writer: &DexValue) -> Option<DexValue> {
+        self.read_stored_instance_field(writer, &print_writer_field("Ljava/io/Writer;", "out"))
+            .filter(dex_value_is_object_like)
+    }
+
+    fn print_writer_set_trouble(&self, writer: &DexValue) {
+        self.write_stored_instance_field(
+            writer,
+            &print_writer_field("Z", "trouble"),
+            DexValue::Int(1),
+        );
+    }
+
+    // cite: libcore Writer.java#write
+    fn writer_write_string(
+        &self,
+        writer: &DexValue,
+        text: &DexValue,
+        depth: usize,
+    ) -> Result<Option<DexExecutionResult>> {
+        let string = "Ljava/lang/String;";
+        if let Some(result) =
+            self.guest_void_override(writer, "write", &[string], vec![text.clone()], depth)?
+        {
+            return Ok(Some(result));
+        }
+        let Some(content) = self.string_text(text) else {
+            return Ok(None);
+        };
+        let units: Vec<u16> = content.encode_utf16().collect();
+        let length = DexValue::Int(i32::try_from(units.len()).unwrap_or(i32::MAX));
+        if let Some(result) = self.guest_void_override(
+            writer,
+            "write",
+            &[string, "I", "I"],
+            vec![text.clone(), DexValue::Int(0), length.clone()],
+            depth,
+        )? {
+            return Ok(Some(result));
+        }
+        let chars = self.allocate_filled_array(
+            "[C".to_owned(),
+            units
+                .iter()
+                .map(|unit| DexValue::Int(i32::from(*unit)))
+                .collect(),
+        );
+        if let Some(result) = self.guest_void_override(
+            writer,
+            "write",
+            &["[C", "I", "I"],
+            vec![chars, DexValue::Int(0), length],
+            depth,
+        )? {
+            return Ok(Some(result));
+        }
+        let write = DexMethodId {
+            class_descriptor: value_class_descriptor(writer)
+                .unwrap_or_default()
+                .to_owned(),
+            name: "write".to_owned(),
+            proto: dex::DexProto {
+                shorty: "VL".to_owned(),
+                return_type: "V".to_owned(),
+                parameters: vec![string.to_owned()],
+            },
+        };
+        let invocation = DexInvocation {
+            kind: DexInvokeKind::Virtual,
+            range: false,
+            method_index: 0,
+            argument_registers: Default::default(),
+            arguments: smallvec::smallvec![writer.clone(), text.clone()],
+        };
+        Ok(self.invoke_builtin_method(&write, Some(&invocation)))
+    }
+}
+
+impl DexProgram {
+    // cite: libcore Observable.java#addObserver, deleteObserver
+    // cite: libcore Vector.java#contains, indexOf, removeElement
+    pub(super) fn observable_membership_intrinsic(
+        &self,
+        method: &DexMethodId,
+        invocation: &DexInvocation,
+        depth: usize,
+    ) -> Result<Option<DexExecutionResult>> {
+        if !self.descriptor_matches_type(&method.class_descriptor, "Ljava/util/Observable;")
+            || !matches!(method.name.as_str(), "addObserver" | "deleteObserver")
+            || !method.proto.descriptor_is("(Ljava/util/Observer;)V")
+            || self.guest_overrides(method, Some(invocation))
+        {
+            return Ok(None);
+        }
+        let [observable, observer] = invocation.arguments.as_slice() else {
+            return Ok(None);
+        };
+        if !dex_value_is_object_like(observable) {
+            return Ok(None);
+        }
+        let observers_field = DexFieldId {
+            class_descriptor: "Ljava/util/Observable;".to_owned(),
+            type_descriptor: "[Ljava/util/Observer;".to_owned(),
+            name: "obs".to_owned(),
+        };
+        let mut observers = match self.read_stored_instance_field(observable, &observers_field) {
+            Some(array @ DexValue::Object(_)) => self
+                .runtime
+                .borrow()
+                .array_entries
+                .get(&map_identity_key(&array))
+                .cloned()
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let null_observer = matches!(observer, DexValue::Null | DexValue::Int(0));
+        if method.name == "addObserver" && null_observer {
+            return Ok(Some(self.null_pointer_exception_result()));
+        }
+        let mut position = None;
+        for (index, existing) in observers.iter().enumerate() {
+            let equal = if null_observer {
+                matches!(existing, DexValue::Null)
+            } else {
+                self.runtime_values_equal(observer, existing, depth, true)?
+            };
+            if equal {
+                position = Some(index);
+                break;
+            }
+        }
+        match (method.name.as_str(), position) {
+            ("addObserver", Some(_)) => return Ok(Some(DexExecutionResult::Void)),
+            ("addObserver", None) => observers.push(observer.clone()),
+            (_, Some(index)) => {
+                observers.remove(index);
+            }
+            (_, None) => return Ok(Some(DexExecutionResult::Void)),
+        }
+        let array = self.allocate_filled_array("[Ljava/util/Observer;".to_owned(), observers);
+        self.write_stored_instance_field(observable, &observers_field, array);
+
+        Ok(Some(DexExecutionResult::Void))
+    }
+}
+
+fn print_writer_field(type_descriptor: &str, name: &str) -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Ljava/io/PrintWriter;".to_owned(),
+        type_descriptor: type_descriptor.to_owned(),
+        name: name.to_owned(),
     }
 }

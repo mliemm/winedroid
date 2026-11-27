@@ -1198,19 +1198,6 @@ impl DexProgram {
 
         let path = file_path_from_value(self, &invocation.arguments[0])?;
         let absolute_path = crate::guest_filesystem::absolute_guest_path(&path);
-        let filesystem = self.guest_filesystem.as_ref()?;
-        if filesystem
-            .resolve(
-                &absolute_path,
-                ExternalStorageAccess::Read,
-                &self.external_storage_policy,
-            )
-            .is_err()
-        {
-            return Some(DexExecutionResult::Throw(
-                self.allocate_object("Ljava/io/IOException;".to_owned()),
-            ));
-        }
         // cite: libcore File.java#getCanonicalPath
         // cite: libcore canonicalize_md.c#canonicalize, collapse
         let canonical_path = match crate::guest_filesystem::canonical_guest_path(&absolute_path) {
@@ -1345,10 +1332,18 @@ impl DexProgram {
         } else {
             path.open_truncate()
         };
-        if let Err(error) = opened {
-            let exception = self.file_not_found_exception_for_path(&guest_path, &error.to_string());
-            return Some(DexExecutionResult::Throw(exception));
-        }
+        let file = match opened {
+            Ok(file) => file,
+            Err(error) => {
+                let exception =
+                    self.file_not_found_exception_for_path(&guest_path, &error.to_string());
+                return Some(DexExecutionResult::Throw(exception));
+            }
+        };
+        self.runtime
+            .borrow_mut()
+            .output_streams
+            .insert(map_identity_key(&invocation.arguments[0]), file);
 
         self.write_stored_instance_field(
             &invocation.arguments[0],
@@ -1531,6 +1526,15 @@ impl DexProgram {
             return None;
         };
         let channel = self.new_file_channel(path.to_string());
+        self.share_file_channel_position(&channel, stream);
+        let closed = DexFieldId {
+            class_descriptor: "Ljava/io/FileInputStream;".to_owned(),
+            type_descriptor: "Z".to_owned(),
+            name: "closed".to_owned(),
+        };
+        if self.read_stored_instance_field(stream, &closed) == Some(DexValue::Int(1)) {
+            self.close_file_channel(&channel);
+        }
         self.write_stored_instance_field(stream, &channel_field, channel.clone());
 
         Some(channel)
@@ -1645,18 +1649,14 @@ impl DexProgram {
         if count == 0 {
             return Some(DexExecutionResult::Void);
         }
-        let DexValue::String(guest_path) =
-            self.read_stored_instance_field(stream, &file_output_stream_path_field())?
-        else {
-            return None;
-        };
         let bytes = self.byte_array_contents(array)?;
-        let path = self.resolved_guest_path(&guest_path, ExternalStorageAccess::Write)?;
 
         use std::io::Write;
-        let written = path.open_append().and_then(|mut file| {
+        let written = {
+            let mut runtime = self.runtime.borrow_mut();
+            let file = runtime.output_streams.get_mut(&map_identity_key(stream))?;
             file.write_all(&bytes[offset as usize..(offset + count) as usize])
-        });
+        };
         match written {
             Ok(()) => Some(DexExecutionResult::Void),
             Err(error) => Some(DexExecutionResult::Throw(
@@ -1673,6 +1673,10 @@ impl DexProgram {
         &self,
         stream: &DexValue,
     ) -> Option<DexExecutionResult> {
+        self.runtime
+            .borrow_mut()
+            .output_streams
+            .remove(&map_identity_key(stream));
         self.write_stored_instance_field(
             stream,
             &file_output_stream_closed_field(),

@@ -128,6 +128,49 @@ impl DexProgram {
         channel
     }
 
+    // cite: libcore FileInputStream.java#getChannel
+    // cite: libcore FileChannelImpl.java#open, position
+    pub(in crate::dex_run) fn share_file_channel_position(
+        &self,
+        channel: &DexValue,
+        stream: &DexValue,
+    ) {
+        self.write_stored_instance_field(
+            channel,
+            &nio_field(
+                FILE_CHANNEL_IMPL,
+                "Ljava/io/FileInputStream;",
+                "positionOwner",
+            ),
+            stream.clone(),
+        );
+    }
+
+    fn file_channel_position_owner(&self, channel: &DexValue) -> (DexValue, DexFieldId) {
+        match self.read_stored_instance_field(
+            channel,
+            &nio_field(
+                FILE_CHANNEL_IMPL,
+                "Ljava/io/FileInputStream;",
+                "positionOwner",
+            ),
+        ) {
+            Some(stream @ DexValue::Object(_)) => (
+                stream,
+                nio_field("Ljava/io/FileInputStream;", "J", "winedroidPosition"),
+            ),
+            _ => (
+                channel.clone(),
+                nio_field(FILE_CHANNEL_IMPL, "J", "position"),
+            ),
+        }
+    }
+
+    fn set_file_channel_position(&self, channel: &DexValue, position: i64) {
+        let (owner, field) = self.file_channel_position_owner(channel);
+        self.write_stored_instance_field(&owner, &field, DexValue::Long(position));
+    }
+
     pub(in crate::dex_run) fn mark_file_channel_writable(&self, channel: &DexValue) {
         self.write_stored_instance_field(
             channel,
@@ -137,17 +180,28 @@ impl DexProgram {
     }
 
     // cite: libcore FileChannelImpl.java#lock, ensureOpen, writable
+    // cite: libcore FileLockTable.java#add, checkList
     fn file_channel_lock(&self, invocation: &DexInvocation) -> Option<DexExecutionResult> {
         let [channel] = invocation.arguments.as_slice() else {
             return None;
         };
-        if let Err(exception) = self.open_file_channel_state(channel)? {
-            return Some(exception);
-        }
+        let state = match self.open_file_channel_state(channel)? {
+            Ok(state) => state,
+            Err(exception) => return Some(exception),
+        };
         let writable = self
             .read_stored_instance_field(channel, &nio_field(FILE_CHANNEL_IMPL, "Z", "writable"));
         if writable != Some(DexValue::Int(1)) {
             return Some(self.nio_throw("Ljava/nio/channels/NonWritableChannelException;", None));
+        }
+        let held = self
+            .runtime
+            .borrow()
+            .file_locks
+            .get(&state.path)
+            .is_some_and(|locks| !locks.is_empty());
+        if held {
+            return Some(self.nio_throw("Ljava/nio/channels/OverlappingFileLockException;", None));
         }
         let lock = self.allocate_object(FILE_LOCK_IMPL.to_owned());
         self.write_stored_instance_field(
@@ -155,8 +209,28 @@ impl DexProgram {
             &nio_field(FILE_LOCK, FILE_CHANNEL, "channel"),
             channel.clone(),
         );
+        self.runtime
+            .borrow_mut()
+            .file_locks
+            .entry(state.path)
+            .or_default()
+            .push(lock.clone());
 
         Some(DexExecutionResult::Value(lock))
+    }
+
+    // cite: libcore FileLockImpl.java#invalidate
+    // cite: libcore FileLockTable.java#remove
+    fn invalidate_file_lock(&self, lock: &DexValue) {
+        self.write_stored_instance_field(
+            lock,
+            &nio_field(FILE_LOCK_IMPL, "Z", "invalid"),
+            DexValue::Int(1),
+        );
+        let key = map_identity_key(lock);
+        for locks in self.runtime.borrow_mut().file_locks.values_mut() {
+            locks.retain(|held| map_identity_key(held) != key);
+        }
     }
 
     // cite: libcore FileLockImpl.java#release, isValid, invalidate
@@ -169,11 +243,7 @@ impl DexProgram {
         if !self.file_channel_is_open(&channel)? {
             return Some(self.nio_throw("Ljava/nio/channels/ClosedChannelException;", None));
         }
-        self.write_stored_instance_field(
-            lock,
-            &nio_field(FILE_LOCK_IMPL, "Z", "invalid"),
-            DexValue::Int(1),
-        );
+        self.invalidate_file_lock(lock);
 
         Some(DexExecutionResult::Void)
     }
@@ -192,12 +262,33 @@ impl DexProgram {
         )))
     }
 
+    // cite: libcore FileChannelImpl.java#implCloseChannel
+    // cite: libcore FileLockTable.java#removeAll
     pub(in crate::dex_run) fn close_file_channel(&self, channel: &DexValue) {
         self.write_stored_instance_field(
             channel,
             &nio_field(FILE_CHANNEL_IMPL, "Z", "open"),
             DexValue::Int(0),
         );
+        let channel_key = map_identity_key(channel);
+        let held: Vec<DexValue> = self
+            .runtime
+            .borrow()
+            .file_locks
+            .values()
+            .flatten()
+            .filter(|lock| {
+                self.read_stored_instance_field(
+                    lock,
+                    &nio_field(FILE_LOCK, FILE_CHANNEL, "channel"),
+                )
+                .is_some_and(|owner| map_identity_key(&owner) == channel_key)
+            })
+            .cloned()
+            .collect();
+        for lock in held {
+            self.invalidate_file_lock(&lock);
+        }
     }
 
     pub(in crate::dex_run) fn file_channel_is_open(&self, channel: &DexValue) -> Option<bool> {
@@ -505,10 +596,11 @@ impl DexProgram {
         else {
             return None;
         };
-        let DexValue::Long(position) = self
-            .read_stored_instance_field(channel, &nio_field(FILE_CHANNEL_IMPL, "J", "position"))?
-        else {
-            return None;
+        let (owner, position_field) = self.file_channel_position_owner(channel);
+        let position = match self.read_stored_instance_field(&owner, &position_field) {
+            Some(DexValue::Long(position)) => position,
+            None if owner != *channel => 0,
+            _ => return None,
         };
         let DexValue::Int(open) =
             self.read_stored_instance_field(channel, &nio_field(FILE_CHANNEL_IMPL, "Z", "open"))?
@@ -574,11 +666,7 @@ impl DexProgram {
         if new_position < 0 {
             return Some(self.nio_throw("Ljava/lang/IllegalArgumentException;", None));
         }
-        self.write_stored_instance_field(
-            channel,
-            &nio_field(FILE_CHANNEL_IMPL, "J", "position"),
-            DexValue::Long(new_position),
-        );
+        self.set_file_channel_position(channel, new_position);
 
         Some(DexExecutionResult::Value(channel.clone()))
     }
@@ -660,11 +748,7 @@ impl DexProgram {
         let read = i32::try_from(read).ok()?;
         self.set_buffer_int(destination, "position", buffer.position + read);
         if absolute_position.is_none() {
-            self.write_stored_instance_field(
-                channel,
-                &nio_field(FILE_CHANNEL_IMPL, "J", "position"),
-                DexValue::Long(state.position + i64::from(read)),
-            );
+            self.set_file_channel_position(channel, state.position + i64::from(read));
         }
 
         Some(DexExecutionResult::Int(read))

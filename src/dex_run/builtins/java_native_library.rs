@@ -15,81 +15,97 @@ fn unsatisfied_link_error_message(message: String) -> DexGeneratedException {
 
 impl DexProgram {
     pub(super) fn system_load(&self, invocation: &DexInvocation) -> Option<DexExecutionResult> {
+        self.system_load_result(invocation).ok().flatten()
+    }
+
+    pub(in crate::dex_run) fn system_load_result(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Result<Option<DexExecutionResult>> {
         // cite: libcore System.java#load
         // cite: libcore Runtime.java#load0
         let [value] = invocation.arguments.as_slice() else {
-            return None;
+            return Ok(None);
         };
         if is_android_null_value(value) {
-            return Some(self.null_pointer_exception_result());
+            return Ok(Some(self.null_pointer_exception_result()));
         }
         let DexValue::String(filename) = value else {
-            return None;
+            return Ok(None);
         };
         if !filename.starts_with('/') {
-            return Some(self.throw_library_error(format!(
+            return Ok(Some(self.throw_library_error(format!(
                 "Expecting an absolute path of the library: {filename}"
-            )));
+            ))));
         }
         #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
         if let Some(package) = self.package_name.as_deref() {
             if let Some(soname) = crate::guest_app_paths::native_library_name(package, filename) {
                 if let Some(result) = self.load_jni_library(soname) {
-                    return self.native_load_result(soname, result);
+                    return self.native_load_result(soname, result).map(Some);
                 }
             }
         }
-        Some(self.throw_library_error(format!("dlopen failed: library \"{filename}\" not found")))
+        Ok(Some(self.throw_library_error(format!(
+            "dlopen failed: library \"{filename}\" not found"
+        ))))
     }
 
     pub(super) fn system_load_library(
         &self,
         invocation: &DexInvocation,
     ) -> Option<DexExecutionResult> {
+        self.system_load_library_result(invocation).ok().flatten()
+    }
+
+    pub(in crate::dex_run) fn system_load_library_result(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Result<Option<DexExecutionResult>> {
         // cite: libcore System.java#loadLibrary
         // cite: libcore Runtime.java#loadLibrary0, nativeLoad
         let [library_name] = invocation.arguments.as_slice() else {
-            return None;
+            return Ok(None);
         };
         if is_android_null_value(library_name) {
-            return Some(self.null_pointer_exception_result());
+            return Ok(Some(self.null_pointer_exception_result()));
         }
         let library_name = match library_name {
             DexValue::String(library_name) => library_name.as_ref(),
-            _ => return None,
+            _ => return Ok(None),
         };
         if library_name.contains('/') {
-            return Some(DexExecutionResult::Throw(
+            return Ok(Some(DexExecutionResult::Throw(
                 self.allocate_generated_exception(unsatisfied_link_error_message(format!(
                     "Directory separator should not appear in library name: {library_name}"
                 ))),
-            ));
+            )));
         }
         if library_name.encode_utf16().count() > 240 {
-            return Some(DexExecutionResult::Throw(
+            return Ok(Some(DexExecutionResult::Throw(
                 self.allocate_generated_exception(DexGeneratedException {
                     class_descriptor: "Ljava/lang/IllegalArgumentException;".to_owned(),
                     detail_message: Some("name too long".to_owned()),
                 }),
-            ));
+            )));
         }
 
         let soname = map_library_name(library_name);
         #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
         if let Some(result) = self.load_jni_library(&soname) {
-            return self.native_load_result(&soname, result);
+            return self.native_load_result(&soname, result).map(Some);
         }
         if self.installed_native_library_exists(&soname) {
-            return None;
+            return Ok(None);
         }
 
         // cite: bionic dlfcn.cpp#dlopen_ext, __bionic_format_dlerror
         // cite: bionic linker.cpp#DL_OPEN_ERR
-        Some(DexExecutionResult::Throw(
+        Ok(Some(DexExecutionResult::Throw(
             self.allocate_generated_exception(unsatisfied_link_error_message(format!(
                 "dlopen failed: library \"{soname}\" not found"
             ))),
-        ))
+        )))
     }
 
     fn throw_library_error(&self, message: String) -> DexExecutionResult {
@@ -99,17 +115,19 @@ impl DexProgram {
     }
 
     #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-    fn native_load_result(&self, soname: &str, result: Result<()>) -> Option<DexExecutionResult> {
+    pub(in crate::dex_run) fn native_load_result(
+        &self,
+        soname: &str,
+        result: Result<()>,
+    ) -> Result<DexExecutionResult> {
         match result {
-            Ok(()) => Some(DexExecutionResult::Void),
+            Ok(()) => Ok(DexExecutionResult::Void),
             Err(error) => {
                 trace::event("jni", format!("failed to load {soname}: {error}"));
-                let message = error.to_string();
-                if crate::missing::primitive_from_message(&message).is_some() {
-                    crate::missing::record_from_error_message(&message);
-                    return None;
+                if error.missing_primitive().is_some() {
+                    return Err(error);
                 }
-                Some(self.throw_library_error(message))
+                Ok(self.throw_library_error(error.to_string()))
             }
         }
     }

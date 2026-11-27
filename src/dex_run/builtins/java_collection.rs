@@ -1180,6 +1180,43 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        // cite: libcore ConcurrentHashMap.java#ConcurrentHashMap, putAll, putVal
+        if method.matches_builtin_signature(
+            "Ljava/util/concurrent/ConcurrentHashMap;",
+            "<init>",
+            "(Ljava/util/Map;)V",
+        ) {
+            let invocation = invocation?;
+            let source = invocation.arguments.get(1)?;
+            if matches!(source, DexValue::Null | DexValue::Int(0)) {
+                return Some(self.null_pointer_exception_result());
+            }
+            if !is_supported_map_implementation_class(value_class_descriptor(source)?) {
+                return None;
+            }
+            let source_key = map_identity_key(source);
+            let has_null = {
+                let runtime = self.runtime.borrow();
+                runtime
+                    .map_entries
+                    .iter()
+                    .any(|((map_key, entry_key), value)| {
+                        map_key == &source_key
+                            && (*value == DexValue::Null
+                                || runtime
+                                    .map_entry_keys
+                                    .get(&(map_key.clone(), entry_key.clone()))
+                                    == Some(&DexValue::Null))
+                    })
+            };
+            if has_null {
+                return Some(self.null_pointer_exception_result());
+            }
+            self.initialize_hash_map_from_map(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
         if matches!(
             method.class_descriptor.as_str(),
             "Ljava/util/HashMap;" | "Ljava/util/LinkedHashMap;"

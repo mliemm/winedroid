@@ -18,4 +18,32 @@ public class StaticInitContract {
         int value = Target.code();
         return log + value;
     }
+
+    static class Broken {
+        static int value = fail();
+
+        static int fail() {
+            throw new IllegalStateException("boom");
+        }
+
+        static int code() {
+            return value;
+        }
+    }
+
+    public static String failedInitializerThenNoClassDefFound() {
+        String result = "";
+        try {
+            Broken.code();
+        } catch (ExceptionInInitializerError first) {
+            result += "eiie:" + first.getCause().getMessage() + ";";
+        }
+        try {
+            Broken.code();
+        } catch (NoClassDefFoundError second) {
+            result += "ncdfe:" + second.getMessage() + ";"
+                    + (second.getCause() instanceof ExceptionInInitializerError);
+        }
+        return result;
+    }
 }

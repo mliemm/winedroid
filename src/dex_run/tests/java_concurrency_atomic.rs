@@ -3794,3 +3794,65 @@ fn libcore_future_task_subclass_failure_reaches_overridden_set_exception() {
         DexExecutionResult::Value(DexValue::String("run;ex:boom;done;ran;boom".into()))
     );
 }
+
+fn future_contract_static(
+    program: &DexProgram,
+    method: &str,
+    return_type: &str,
+) -> DexExecutionResult {
+    let method = DexMethodId {
+        class_descriptor: "Lwinedroid/tests/FutureContract;".to_owned(),
+        name: method.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "L".to_owned(),
+            return_type: return_type.to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let resolved = program.resolve_exact_method(&method).unwrap().unwrap();
+    program.execute_method(None, &resolved, None, 0).unwrap()
+}
+
+// cite: libcore FutureTask.java#run, setException
+// cite: libcore Executors.java#RunnableAdapter
+#[test]
+fn libcore_future_task_runnable_failure_reaches_set_exception_and_get() {
+    assert_eq!(
+        future_contract_result("runnableFailure"),
+        DexExecutionResult::Value(DexValue::String("ex:bad;bad".into()))
+    );
+}
+
+// cite: libcore FutureTask.java#cancel, finishCompletion, done
+#[test]
+fn libcore_future_task_cancel_runs_the_done_override_once() {
+    assert_eq!(
+        future_contract_result("cancelRunsDoneOnce"),
+        DexExecutionResult::Value(DexValue::String("done;true:false:true".into()))
+    );
+}
+
+// cite: libcore FutureTask.java#run, done
+#[test]
+fn libcore_future_task_subclass_without_run_override_runs_when_dispatched() {
+    let dex_file = crate::dex::parse_dex_file(
+        "future_task_contract.dex",
+        include_bytes!("fixtures/future_task_contract.dex").to_vec(),
+    )
+    .unwrap();
+    let program = DexProgram::new(vec![dex_file]);
+    let DexExecutionResult::Value(task) = future_contract_static(
+        &program,
+        "plainTask",
+        "Lwinedroid/tests/FutureContract$Plain;",
+    ) else {
+        panic!("plainTask should return a task");
+    };
+
+    program.dispatch_runnable(&task, "test", 0).unwrap();
+
+    assert_eq!(
+        future_contract_static(&program, "log", "Ljava/lang/String;"),
+        DexExecutionResult::Value(DexValue::String("call;done;".into()))
+    );
+}

@@ -1131,3 +1131,24 @@ fn frameworks_build_supported_abis_splits_the_device_abi_list_once() {
         Some(DexValue::String(std::rc::Rc::from("arm64-v8a")))
     );
 }
+
+// cite: libcore String.java#String
+// cite: libcore StringBuilder.java#StringBuilder
+#[test]
+fn libcore_string_types_are_comparable_char_sequences() {
+    let program = DexProgram::new(Vec::new());
+    let text = DexValue::String("key".into());
+    for interface in [
+        "Ljava/lang/Comparable;",
+        "Ljava/lang/CharSequence;",
+        "Ljava/io/Serializable;",
+    ] {
+        assert!(program.value_matches_type(&text, interface), "{interface}");
+        assert!(
+            program.descriptor_matches_type("Ljava/lang/StringBuilder;", interface),
+            "{interface}"
+        );
+    }
+    assert!(program.descriptor_matches_type("Ljava/lang/StringBuffer;", "Ljava/lang/Appendable;"));
+    assert!(!program.value_matches_type(&text, "Ljava/lang/Appendable;"));
+}

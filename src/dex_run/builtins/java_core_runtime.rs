@@ -1474,7 +1474,30 @@ impl DexProgram {
             && method.proto.descriptor_is("(Ljava/lang/String;)D")
         {
             let invocation = invocation?;
-            let bits = double_parse_double(invocation)?;
+            // cite: libcore FloatingDecimal.java#readJavaFormatString
+            let text = match invocation.arguments.first()? {
+                DexValue::String(text) => text.clone(),
+                DexValue::Null | DexValue::Int(0) => {
+                    return Some(self.null_pointer_exception_result())
+                }
+                _ => return None,
+            };
+            let Some(bits) = double_parse_double(invocation) else {
+                let message = if text
+                    .trim_matches(|character: char| character <= ' ')
+                    .is_empty()
+                {
+                    "empty String".to_owned()
+                } else {
+                    format!("For input string: \"{text}\"")
+                };
+                return Some(DexExecutionResult::Throw(
+                    self.allocate_generated_exception(DexGeneratedException {
+                        class_descriptor: "Ljava/lang/NumberFormatException;".to_owned(),
+                        detail_message: Some(message),
+                    }),
+                ));
+            };
 
             return Some(DexExecutionResult::Value(DexValue::Long(bits)));
         }
@@ -2129,6 +2152,9 @@ impl DexProgram {
                     }),
                 ));
             }
+            if self.thread_is_terminated(thread) {
+                return Some(DexExecutionResult::Void);
+            }
             self.write_stored_instance_field(
                 thread,
                 &thread_priority_field(),
@@ -2485,7 +2511,7 @@ impl DexProgram {
             .then_some(queue)
     }
 
-    // cite: libcore Observable.java#addObserver, deleteObserver, deleteObservers, countObservers, setChanged, clearChanged, hasChanged
+    // cite: libcore Observable.java#deleteObservers, countObservers, setChanged, clearChanged, hasChanged
     fn observable_method(
         &self,
         method: &DexMethodId,
@@ -2520,37 +2546,11 @@ impl DexProgram {
             self.write_stored_instance_field(observable, &observers_field, array);
             Some(DexExecutionResult::Void)
         };
-        let same_observer =
-            |left: &DexValue, right: &DexValue| map_identity_key(left) == map_identity_key(right);
         match (
             method.name.as_str(),
             method.proto.descriptor().as_str(),
             &invocation.arguments[1..],
         ) {
-            ("addObserver", "(Ljava/util/Observer;)V", [observer]) => {
-                if !dex_value_is_object_like(observer) {
-                    return Some(self.null_pointer_exception_result());
-                }
-                if observers
-                    .iter()
-                    .any(|existing| same_observer(existing, observer))
-                {
-                    return Some(DexExecutionResult::Void);
-                }
-                let mut observers = observers;
-                observers.push(observer.clone());
-                store_observers(observers)
-            }
-            ("deleteObserver", "(Ljava/util/Observer;)V", [observer]) => {
-                let mut observers = observers;
-                if let Some(index) = observers
-                    .iter()
-                    .position(|existing| same_observer(existing, observer))
-                {
-                    observers.remove(index);
-                }
-                store_observers(observers)
-            }
             ("deleteObservers", "()V", []) => store_observers(Vec::new()),
             ("countObservers", "()I", []) => Some(DexExecutionResult::Int(
                 i32::try_from(observers.len()).ok()?,
@@ -2594,6 +2594,12 @@ impl DexProgram {
         if dex_value_is_object_like(thread) {
             if self.thread_is_daemon(&parent) == 1 {
                 self.write_stored_instance_field(thread, &thread_daemon_field(), DexValue::Int(1));
+            }
+            if let Some(group) = self
+                .read_stored_instance_field(&parent, &thread_group_field())
+                .filter(dex_value_is_object_like)
+            {
+                self.write_stored_instance_field(thread, &thread_group_field(), group);
             }
             self.write_stored_instance_field(
                 thread,

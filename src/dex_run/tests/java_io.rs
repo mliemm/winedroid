@@ -3312,3 +3312,317 @@ fn libcore_file_constructors_accept_string_objects_built_at_runtime() {
         Some(DexValue::String(std::rc::Rc::from("/data/lib.so")))
     );
 }
+
+fn print_writer_contract_result(method: &str) -> DexExecutionResult {
+    let dex_file = crate::dex::parse_dex_file(
+        "print_writer_contract.dex",
+        include_bytes!("fixtures/print_writer_contract.dex").to_vec(),
+    )
+    .expect("PrintWriter contract DEX should parse");
+    let program = DexProgram::new(vec![dex_file]);
+    let method = DexMethodId {
+        class_descriptor: "Lwinedroid/tests/PrintWriterContract;".to_owned(),
+        name: method.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "L".to_owned(),
+            return_type: "Ljava/lang/String;".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let resolved = program
+        .resolve_exact_method(&method)
+        .expect("PrintWriter contract method should resolve")
+        .expect("PrintWriter contract method should exist");
+
+    program
+        .execute_method(None, &resolved, None, 0)
+        .expect("PrintWriter contract method should execute")
+}
+
+#[test]
+fn libcore_print_writer_println_writes_the_separator_string_and_closes_once() {
+    // cite: libcore PrintWriter.java#println, newLine, close, ensureOpen
+    assert_eq!(
+        print_writer_contract_result("printlnUsesWriteStringThenCloseOnce"),
+        DexExecutionResult::Value(DexValue::String("s[\\n]:1".into()))
+    );
+}
+
+#[test]
+fn libcore_print_writer_println_reaches_a_writer_that_only_writes_char_arrays() {
+    // cite: libcore Writer.java#write
+    assert_eq!(
+        print_writer_contract_result("printlnFallsBackToCharArrayWrite"),
+        DexExecutionResult::Value(DexValue::String("\\n".into()))
+    );
+}
+
+#[test]
+fn libcore_file_lock_table_rejects_overlaps_and_close_invalidates_locks() {
+    // cite: libcore FileLockTable.java#add, checkList, removeAll
+    // cite: libcore FileChannelImpl.java#lock, implCloseChannel
+    // cite: libcore FileLockImpl.java#isValid, release
+    let fixture = GuestIoFixture::new("file_lock_table");
+    let program = fixture.program();
+    fs::create_dir_all(fixture.private.join("files")).expect("files directory");
+    let constructor = java_io_method(
+        "Ljava/io/RandomAccessFile;",
+        "<init>",
+        "V",
+        &["Ljava/io/File;", "Ljava/lang/String;"],
+    );
+    let get_channel = java_io_method(
+        "Ljava/io/RandomAccessFile;",
+        "getChannel",
+        "Ljava/nio/channels/FileChannel;",
+        &[],
+    );
+    let close = java_io_method("Ljava/io/RandomAccessFile;", "close", "V", &[]);
+    let lock = java_io_method(
+        "Ljava/nio/channels/FileChannel;",
+        "lock",
+        "Ljava/nio/channels/FileLock;",
+        &[],
+    );
+    let release = java_io_method("Ljava/nio/channels/FileLock;", "release", "V", &[]);
+    let is_valid = java_io_method("Ljava/nio/channels/FileLock;", "isValid", "Z", &[]);
+    let open = || {
+        let file = program.allocate_object("Ljava/io/RandomAccessFile;".to_owned());
+        invoke_value(
+            &program,
+            &constructor,
+            vec![
+                file.clone(),
+                file_value("/data/user/0/com.example/files/process.lock"),
+                DexValue::String(std::rc::Rc::from("rw")),
+            ],
+        );
+        let DexExecutionResult::Value(channel) =
+            invoke_value(&program, &get_channel, vec![file.clone()])
+        else {
+            panic!("getChannel should return a channel");
+        };
+        (file, channel)
+    };
+    let lock_of = |channel: &DexValue| invoke_value(&program, &lock, vec![channel.clone()]);
+
+    let (first_file, first) = open();
+    let (second_file, second) = open();
+    let DexExecutionResult::Value(held) = lock_of(&first) else {
+        panic!("the first lock should be granted");
+    };
+    assert_eq!(
+        thrown_class(lock_of(&second)),
+        "Ljava/nio/channels/OverlappingFileLockException;"
+    );
+    assert_eq!(
+        thrown_class(lock_of(&first)),
+        "Ljava/nio/channels/OverlappingFileLockException;"
+    );
+
+    invoke_value(&program, &release, vec![held.clone()]);
+    let DexExecutionResult::Value(reacquired) = lock_of(&second) else {
+        panic!("a released lock should free the file");
+    };
+    let (_, third) = open();
+    assert_eq!(
+        thrown_class(lock_of(&third)),
+        "Ljava/nio/channels/OverlappingFileLockException;"
+    );
+
+    let _ = first_file;
+    invoke_value(&program, &close, vec![second_file]);
+    assert_eq!(
+        invoke_value(&program, &is_valid, vec![reacquired]),
+        DexExecutionResult::Int(0)
+    );
+    let DexExecutionResult::Value(_) = lock_of(&third) else {
+        panic!("closing the owning channel should free the file");
+    };
+}
+
+#[test]
+fn libcore_file_output_stream_writes_through_the_descriptor_it_opened() {
+    // cite: libcore FileOutputStream.java#FileOutputStream, write
+    // cite: libcore IoBridge.java#open, write
+    let fixture = GuestIoFixture::new("output_stream_descriptor");
+    let program = fixture.program();
+    let directory = fixture.private.join("files");
+    fs::create_dir_all(&directory).expect("files directory");
+    let stream = program.allocate_object("Ljava/io/FileOutputStream;".to_owned());
+    let constructor = builtin_method(
+        "Ljava/io/FileOutputStream;",
+        "<init>",
+        "V",
+        &["Ljava/io/File;"],
+    );
+    program.invoke_builtin_method(
+        &constructor,
+        Some(&test_invocation(vec![
+            stream.clone(),
+            file_value("/data/user/0/com.example/files/log.txt"),
+        ])),
+    );
+    let write = builtin_method("Ljava/io/OutputStream;", "write", "V", &["I"]);
+    let write_byte = |byte: u8| {
+        program
+            .file_output_stream_intrinsic(
+                &write,
+                &test_invocation(vec![stream.clone(), DexValue::Int(i32::from(byte))]),
+                0,
+            )
+            .unwrap()
+    };
+
+    assert_eq!(write_byte(b'a'), Some(DexExecutionResult::Void));
+    fs::rename(directory.join("log.txt"), directory.join("old.txt")).expect("rename log");
+    assert_eq!(write_byte(b'b'), Some(DexExecutionResult::Void));
+
+    assert_eq!(fs::read(directory.join("old.txt")).unwrap(), b"ab");
+    assert!(!directory.join("log.txt").exists());
+}
+
+#[test]
+fn libcore_file_input_stream_and_its_channel_share_one_file_position() {
+    // cite: libcore FileInputStream.java#getChannel, read, close
+    // cite: libcore FileChannelImpl.java#position, read
+    let fixture = GuestIoFixture::new("file_input_stream_shared_position");
+    let program = fixture.program();
+    let path = fixture.private.join("files/data.bin");
+    fs::create_dir_all(path.parent().expect("parent")).expect("files directory");
+    fs::write(&path, [1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10]).expect("data bytes");
+    let guest = "/data/user/0/com.example/files/data.bin";
+    let constructor = java_io_method(
+        "Ljava/io/FileInputStream;",
+        "<init>",
+        "V",
+        &["Ljava/io/File;"],
+    );
+    let get_channel = java_io_method(
+        "Ljava/io/FileInputStream;",
+        "getChannel",
+        "Ljava/nio/channels/FileChannel;",
+        &[],
+    );
+    let read_range = java_io_method("Ljava/io/InputStream;", "read", "I", &["[B", "I", "I"]);
+    let read_byte = java_io_method("Ljava/io/InputStream;", "read", "I", &[]);
+    let close = java_io_method("Ljava/io/InputStream;", "close", "V", &[]);
+    let position = java_io_method("Ljava/nio/channels/FileChannel;", "position", "J", &[]);
+    let channel_read = java_io_method(
+        "Ljava/nio/channels/FileChannel;",
+        "read",
+        "I",
+        &["Ljava/nio/ByteBuffer;"],
+    );
+    let get_at = java_io_method("Ljava/nio/ByteBuffer;", "get", "B", &["I"]);
+    let open = || {
+        let stream = program.allocate_object("Ljava/io/FileInputStream;".to_owned());
+        invoke_value(
+            &program,
+            &constructor,
+            vec![stream.clone(), file_value(guest)],
+        );
+        stream
+    };
+
+    let stream = open();
+    let header = program.allocate_filled_array("[B".to_owned(), vec![DexValue::Int(0); 4]);
+    assert_eq!(
+        invoke_value(
+            &program,
+            &read_range,
+            vec![stream.clone(), header, DexValue::Int(0), DexValue::Int(4)]
+        ),
+        DexExecutionResult::Int(4)
+    );
+    let DexExecutionResult::Value(channel) =
+        invoke_value(&program, &get_channel, vec![stream.clone()])
+    else {
+        panic!("getChannel should return a channel");
+    };
+    assert_eq!(
+        invoke_value(&program, &position, vec![channel.clone()]),
+        DexExecutionResult::Value(DexValue::Long(4))
+    );
+    let buffer = allocate_byte_buffer(&program, 2);
+    assert_eq!(
+        invoke_value(
+            &program,
+            &channel_read,
+            vec![channel.clone(), buffer.clone()]
+        ),
+        DexExecutionResult::Int(2)
+    );
+    assert_eq!(
+        invoke_value(&program, &get_at, vec![buffer, DexValue::Int(0)]),
+        DexExecutionResult::Int(5)
+    );
+    assert_eq!(
+        invoke_value(&program, &read_byte, vec![stream.clone()]),
+        DexExecutionResult::Int(7)
+    );
+
+    let closed = open();
+    invoke_value(&program, &close, vec![closed.clone()]);
+    let DexExecutionResult::Value(late_channel) =
+        invoke_value(&program, &get_channel, vec![closed])
+    else {
+        panic!("getChannel after close should still return a channel");
+    };
+    assert_eq!(
+        thrown_class(invoke_value(&program, &position, vec![late_channel])),
+        "Ljava/nio/channels/ClosedChannelException;"
+    );
+}
+
+#[test]
+fn libcore_file_set_read_only_never_changes_a_symlink_target() {
+    // cite: libcore UnixFileSystem_md.c#Java_java_io_UnixFileSystem_setReadOnly0
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = GuestIoFixture::new("set_read_only_symlink");
+    let program = fixture.program();
+    let directory = fixture.private.join("files");
+    fs::create_dir_all(&directory).expect("files directory");
+    let outside = fixture.shared.join("outside.txt");
+    fs::create_dir_all(outside.parent().unwrap()).expect("outside parent");
+    fs::write(&outside, b"host").expect("outside file");
+    fs::set_permissions(&outside, fs::Permissions::from_mode(0o644)).expect("outside mode");
+    std::os::unix::fs::symlink(&outside, directory.join("link")).expect("symlink");
+    let set_read_only = java_io_method("Ljava/io/File;", "setReadOnly", "Z", &[]);
+
+    assert_eq!(
+        invoke_value(
+            &program,
+            &set_read_only,
+            vec![file_value("/data/user/0/com.example/files/link")]
+        ),
+        DexExecutionResult::Int(0)
+    );
+    assert_eq!(
+        fs::metadata(&outside).unwrap().permissions().mode() & 0o777,
+        0o644
+    );
+}
+
+#[test]
+fn libcore_file_get_canonical_path_collapses_paths_outside_the_app_mounts() {
+    // cite: libcore File.java#getCanonicalPath
+    // cite: libcore canonicalize_md.c#canonicalize, collapse
+    let fixture = GuestIoFixture::new("canonical_path_outside");
+    let program = fixture.program();
+    let get_canonical_path = java_io_method(
+        "Ljava/io/File;",
+        "getCanonicalPath",
+        "Ljava/lang/String;",
+        &[],
+    );
+
+    assert_eq!(
+        invoke_value(
+            &program,
+            &get_canonical_path,
+            vec![file_value("/system/lib64/../lib64/./libc.so")]
+        ),
+        DexExecutionResult::Value(DexValue::String(std::rc::Rc::from("/system/lib64/libc.so")))
+    );
+}

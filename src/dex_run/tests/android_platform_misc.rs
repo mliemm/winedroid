@@ -2251,3 +2251,44 @@ fn environment_reports_the_emulated_primary_volume_as_emulated() {
         Some(DexExecutionResult::Int(1))
     );
 }
+
+// cite: frameworks-base Base64.java#decode, process, DEFAULT, URL_SAFE
+#[test]
+fn android_base64_decode_matches_the_platform_decoder_state_machine() {
+    let program = DexProgram::new(Vec::new());
+    let decode = builtin_method(
+        "Landroid/util/Base64;",
+        "decode",
+        "[B",
+        &["Ljava/lang/String;", "I"],
+    );
+    let bytes_of = |input: &str, flags: i32| match program.invoke_builtin_method(
+        &decode,
+        Some(&test_invocation(vec![
+            DexValue::String(input.into()),
+            DexValue::Int(flags),
+        ])),
+    ) {
+        Some(DexExecutionResult::Value(array)) => Ok(program.runtime.borrow().array_entries
+            [&map_identity_key(&array)]
+            .iter()
+            .map(|value| match value {
+                DexValue::Int(byte) => *byte as u8,
+                other => panic!("byte array entry {other}"),
+            })
+            .collect::<Vec<u8>>()),
+        Some(DexExecutionResult::Throw(exception)) => Err(exception),
+        other => panic!("unexpected decode result {other:?}"),
+    };
+
+    assert_eq!(bytes_of("aGVsbG8=", 0).unwrap(), b"hello");
+    assert_eq!(bytes_of("aGVsbG8", 0).unwrap(), b"hello");
+    assert_eq!(bytes_of("aGVs\n bG8=\n", 0).unwrap(), b"hello");
+    assert_eq!(bytes_of("+/8=", 0).unwrap(), [0xfb, 0xff]);
+    assert_eq!(bytes_of("-_8=", 8).unwrap(), [0xfb, 0xff]);
+    assert_eq!(bytes_of("", 0).unwrap(), b"");
+    for bad in ["a", "a===", "aGVsbG8==", "aGVsbG=8", "aA=="[..3].as_ref()] {
+        let exception = bytes_of(bad, 0).expect_err(bad);
+        assert!(program.value_matches_type(&exception, "Ljava/lang/IllegalArgumentException;"));
+    }
+}

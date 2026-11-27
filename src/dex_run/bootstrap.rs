@@ -220,6 +220,8 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         "Ljava/io/OutputStream;" => Some("Ljava/lang/Object;"),
         // cite: libcore StringWriter.java#StringWriter
         "Ljava/io/StringWriter;" => Some("Ljava/io/Writer;"),
+        // cite: libcore PrintWriter.java#PrintWriter
+        "Ljava/io/PrintWriter;" => Some("Ljava/io/Writer;"),
         // cite: libcore Writer.java#Writer
         "Ljava/io/Writer;" => Some("Ljava/lang/Object;"),
         "Ljava/lang/Throwable;" => Some("Ljava/lang/Object;"),
@@ -232,6 +234,8 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         "Ljava/lang/UnsatisfiedLinkError;" => Some("Ljava/lang/LinkageError;"),
         // cite: libcore NoClassDefFoundError.java#NoClassDefFoundError
         "Ljava/lang/NoClassDefFoundError;" => Some("Ljava/lang/LinkageError;"),
+        // cite: libcore ExceptionInInitializerError.java#ExceptionInInitializerError
+        "Ljava/lang/ExceptionInInitializerError;" => Some("Ljava/lang/LinkageError;"),
         // cite: libcore ReflectiveOperationException.java#ReflectiveOperationException
         "Ljava/lang/ReflectiveOperationException;" => Some("Ljava/lang/Exception;"),
         // cite: libcore InstantiationException.java#InstantiationException
@@ -288,6 +292,10 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         "Lsun/nio/ch/FileChannelImpl;" => Some("Ljava/nio/channels/FileChannel;"),
         // cite: libcore FileLockImpl.java#FileLockImpl
         "Lsun/nio/ch/FileLockImpl;" => Some("Ljava/nio/channels/FileLock;"),
+        // cite: libcore OverlappingFileLockException.java#OverlappingFileLockException
+        "Ljava/nio/channels/OverlappingFileLockException;" => {
+            Some("Ljava/lang/IllegalStateException;")
+        }
         // cite: libcore NonWritableChannelException.java#NonWritableChannelException
         "Ljava/nio/channels/NonWritableChannelException;" => {
             Some("Ljava/lang/IllegalStateException;")
@@ -572,9 +580,21 @@ pub(super) fn bootstrap_direct_interface_descriptors(
         | "Ljava/lang/reflect/TypeVariable;" => &["Ljava/lang/reflect/Type;"],
         // cite: libcore TypeDescriptor.java#OfField
         "Ljava/lang/invoke/TypeDescriptor$OfField;" => &["Ljava/lang/invoke/TypeDescriptor;"],
-        "Ljava/lang/String;" | "Ljava/lang/StringBuilder;" | "Ljava/lang/StringBuffer;" => {
-            &["Ljava/lang/CharSequence;", "Ljava/io/Serializable;"]
-        }
+        // cite: libcore String.java#String
+        "Ljava/lang/String;" => &[
+            "Ljava/io/Serializable;",
+            "Ljava/lang/Comparable;",
+            "Ljava/lang/CharSequence;",
+        ],
+        // cite: libcore StringBuilder.java#StringBuilder
+        // cite: libcore StringBuffer.java#StringBuffer
+        // cite: libcore AbstractStringBuilder.java#AbstractStringBuilder
+        "Ljava/lang/StringBuilder;" | "Ljava/lang/StringBuffer;" => &[
+            "Ljava/io/Serializable;",
+            "Ljava/lang/Comparable;",
+            "Ljava/lang/CharSequence;",
+            "Ljava/lang/Appendable;",
+        ],
         // cite: libcore Enum.java#Enum
         "Ljava/lang/Enum;" => &["Ljava/lang/Comparable;", "Ljava/io/Serializable;"],
         "Ljava/lang/Number;"

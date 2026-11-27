@@ -7029,15 +7029,15 @@ fn parse_json_literal(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> O
     }
 }
 
+// cite: libcore JSON.java#toString
 pub(in crate::dex_run) fn json_coerce_to_string(value: &DexValue) -> Option<String> {
     match value {
         DexValue::String(text) => Some(text.clone().to_string()),
         DexValue::Int(value) => Some(value.to_string()),
         DexValue::Long(value) => Some(value.to_string()),
         DexValue::Float(value) => Some(value.to_string()),
-        DexValue::Null | DexValue::Object(_) | DexValue::Reference(_) | DexValue::Uninitialized => {
-            None
-        }
+        DexValue::Reference(reference) => boxed_reference_display_value(reference),
+        DexValue::Null | DexValue::Object(_) | DexValue::Uninitialized => None,
     }
 }
 

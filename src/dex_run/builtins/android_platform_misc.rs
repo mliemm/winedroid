@@ -119,6 +119,38 @@ impl DexProgram {
             }
         }
 
+        // cite: frameworks-base Base64.java#decode, URL_SAFE
+        if method.matches_builtin_signature(
+            "Landroid/util/Base64;",
+            "decode",
+            "(Ljava/lang/String;I)[B",
+        ) {
+            let invocation = invocation?;
+            let [input, DexValue::Int(flags)] = invocation.arguments.as_slice() else {
+                return None;
+            };
+            if matches!(input, DexValue::Null | DexValue::Int(0)) {
+                return Some(self.null_pointer_exception_result());
+            }
+            let text = self.string_text(input)?;
+            let Some(bytes) = android_base64_decode(text.as_bytes(), flags & 8 != 0) else {
+                return Some(DexExecutionResult::Throw(
+                    self.allocate_generated_exception(DexGeneratedException {
+                        class_descriptor: "Ljava/lang/IllegalArgumentException;".to_owned(),
+                        detail_message: Some("bad base-64".to_owned()),
+                    }),
+                ));
+            };
+            let values = bytes
+                .into_iter()
+                .map(|byte| DexValue::Int(i32::from(byte as i8)))
+                .collect();
+
+            return Some(DexExecutionResult::Value(
+                self.allocate_filled_array("[B".to_owned(), values),
+            ));
+        }
+
         // cite: frameworks-base Environment.java#isExternalStorageEmulated, getExternalDirs
         if method.matches_builtin_signature(
             "Landroid/os/Environment;",
@@ -4113,4 +4145,63 @@ fn audio_stream_volume_limits(stream: i32) -> Option<(i32, i32)> {
     };
 
     Some((max, default))
+}
+
+// cite: frameworks-base Base64.java#process, DECODE, DECODE_WEBSAFE, SKIP, EQUALS
+fn android_base64_decode(input: &[u8], url_safe: bool) -> Option<Vec<u8>> {
+    const SKIP: i32 = -1;
+    const EQUALS: i32 = -2;
+    let alphabet = |byte: u8| -> i32 {
+        match byte {
+            b'A'..=b'Z' => i32::from(byte - b'A'),
+            b'a'..=b'z' => i32::from(byte - b'a') + 26,
+            b'0'..=b'9' => i32::from(byte - b'0') + 52,
+            b'+' if !url_safe => 62,
+            b'/' if !url_safe => 63,
+            b'-' if url_safe => 62,
+            b'_' if url_safe => 63,
+            b'=' => EQUALS,
+            _ => SKIP,
+        }
+    };
+    let mut output = Vec::with_capacity(input.len() * 3 / 4);
+    let mut state = 0;
+    let mut value: i32 = 0;
+    for &byte in input {
+        let digit = alphabet(byte);
+        match state {
+            0 | 1 if digit >= 0 => {
+                value = (value << 6) | digit;
+                state += 1;
+            }
+            2 if digit >= 0 => {
+                value = (value << 6) | digit;
+                state = 3;
+            }
+            2 if digit == EQUALS => {
+                output.push((value >> 4) as u8);
+                state = 4;
+            }
+            3 if digit >= 0 => {
+                value = (value << 6) | digit;
+                output.extend([(value >> 16) as u8, (value >> 8) as u8, value as u8]);
+                value = 0;
+                state = 0;
+            }
+            3 if digit == EQUALS => {
+                output.extend([(value >> 10) as u8, (value >> 2) as u8]);
+                state = 5;
+            }
+            4 if digit == EQUALS => state = 5,
+            _ if digit == SKIP => {}
+            _ => return None,
+        }
+    }
+    match state {
+        0 | 5 => {}
+        2 => output.push((value >> 4) as u8),
+        3 => output.extend([(value >> 10) as u8, (value >> 2) as u8]),
+        _ => return None,
+    }
+    Some(output)
 }

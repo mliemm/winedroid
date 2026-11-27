@@ -3968,3 +3968,14 @@ fn art_invoke_static_initializes_the_declaring_class_before_the_call() {
         DexExecutionResult::Value(DexValue::String("clinit;7".into()))
     );
 }
+
+// cite: art class_linker.cc#WrapExceptionInInitializer, ClassLinker::ThrowEarlierClassFailure
+#[test]
+fn art_failed_class_initializer_wraps_then_rejects_reinitialization() {
+    assert_eq!(
+        static_init_contract_result("failedInitializerThenNoClassDefFound").unwrap(),
+        DexExecutionResult::Value(DexValue::String(
+            "eiie:boom;ncdfe:winedroid.tests.StaticInitContract$Broken;true".into()
+        ))
+    );
+}

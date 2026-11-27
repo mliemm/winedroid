@@ -3792,12 +3792,14 @@ pub(super) fn boxed_reference_display_value(reference: &str) -> Option<String> {
         return Some(value.to_string());
     }
 
+    // cite: libcore Float.java#toString
     if let Some(value) = boxed_float_reference_value(reference) {
-        return Some(value.to_string());
+        return java_float_to_string(value);
     }
 
-    if let Some(value) = boxed_double_reference_value(reference) {
-        return Some(value.to_string());
+    // cite: libcore Double.java#toString
+    if let Some(bits) = boxed_double_reference_value(reference) {
+        return java_double_to_string(f64::from_bits(bits as u64));
     }
 
     None

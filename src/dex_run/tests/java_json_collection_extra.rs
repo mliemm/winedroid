@@ -1080,3 +1080,42 @@ fn libcore_json_object_opt_long_keeps_long_range_and_truncates_doubles() {
         Some(DexExecutionResult::Int(12_345_678_901_i64 as i32))
     );
 }
+
+// cite: libcore JSONObject.java#getString, optString
+// cite: libcore JSON.java#toString
+#[test]
+fn libcore_json_object_get_string_coerces_parsed_booleans() {
+    let program = DexProgram::new(Vec::new());
+    let object = program.allocate_object("Lorg/json/JSONObject;".to_owned());
+    let constructor = builtin_method(
+        "Lorg/json/JSONObject;",
+        "<init>",
+        "V",
+        &["Ljava/lang/String;"],
+    );
+    program.invoke_builtin_method(
+        &constructor,
+        Some(&test_invocation(vec![
+            object.clone(),
+            DexValue::String(r#"{"enabled":true,"off":false}"#.into()),
+        ])),
+    );
+    let get_string = builtin_method(
+        "Lorg/json/JSONObject;",
+        "getString",
+        "Ljava/lang/String;",
+        &["Ljava/lang/String;"],
+    );
+    for (key, expected) in [("enabled", "true"), ("off", "false")] {
+        assert_eq!(
+            program.invoke_builtin_method(
+                &get_string,
+                Some(&test_invocation(vec![
+                    object.clone(),
+                    DexValue::String(key.into())
+                ]))
+            ),
+            Some(DexExecutionResult::Value(DexValue::String(expected.into())))
+        );
+    }
+}
