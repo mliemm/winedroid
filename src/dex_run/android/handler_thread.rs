@@ -21,6 +21,40 @@ fn handler_thread_tid_field() -> DexFieldId {
 }
 
 impl DexProgram {
+    // cite: frameworks-base Looper.java#myLooper, sThreadLocal, prepare
+    pub(in crate::dex_run) fn current_thread_looper(&self) -> DexValue {
+        let thread = self.runtime.borrow().current_guest_thread.clone();
+        if let Some(looper) = self
+            .runtime
+            .borrow()
+            .thread_loopers
+            .get(&map_identity_key(&thread))
+            .cloned()
+        {
+            return looper;
+        }
+        if self.current_guest_thread_is_main() {
+            return DexValue::Reference(std::rc::Rc::from("Landroid/os/Looper;:main"));
+        }
+        match self.read_stored_instance_field(&thread, &handler_thread_looper_field()) {
+            Some(looper @ (DexValue::Object(_) | DexValue::Reference(_))) => looper,
+            _ => DexValue::Null,
+        }
+    }
+
+    pub(in crate::dex_run) fn set_current_thread_looper(&self, looper: Option<DexValue>) {
+        let thread = map_identity_key(&self.runtime.borrow().current_guest_thread);
+        let mut runtime = self.runtime.borrow_mut();
+        match looper {
+            Some(looper) => {
+                runtime.thread_loopers.insert(thread, looper);
+            }
+            None => {
+                runtime.thread_loopers.remove(&thread);
+            }
+        }
+    }
+
     // cite: frameworks-base Process.java#myTid
     pub(in crate::dex_run) fn current_guest_thread_tid(&self) -> i32 {
         if self.current_guest_thread_is_main() {

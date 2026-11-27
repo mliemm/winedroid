@@ -3748,3 +3748,49 @@ fn libcore_atomic_long_updates_wrap_like_java() {
     assert_eq!(call("addAndGet", "J", &["J"], wide(10).to_vec()), long(18));
     assert_eq!(call("get", "J", &[], vec![]), long(18));
 }
+
+fn future_contract_result(method: &str) -> DexExecutionResult {
+    let dex_file = crate::dex::parse_dex_file(
+        "future_task_contract.dex",
+        include_bytes!("fixtures/future_task_contract.dex").to_vec(),
+    )
+    .expect("FutureTask contract DEX should parse");
+    let program = DexProgram::new(vec![dex_file]);
+    let method = DexMethodId {
+        class_descriptor: "Lwinedroid/tests/FutureContract;".to_owned(),
+        name: method.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "L".to_owned(),
+            return_type: "Ljava/lang/String;".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let resolved = program
+        .resolve_exact_method(&method)
+        .expect("FutureTask contract method should resolve")
+        .expect("FutureTask contract method should exist");
+
+    program
+        .execute_method(None, &resolved, None, 0)
+        .expect("FutureTask contract method should execute")
+}
+
+// cite: libcore FutureTask.java#run, set, done, finishCompletion
+#[test]
+fn libcore_future_task_subclass_run_calls_overridden_set_then_done_once() {
+    assert_eq!(
+        future_contract_result("runValue"),
+        DexExecutionResult::Value(DexValue::String(
+            "run;set:value;done;ran;run;ran;value".into()
+        ))
+    );
+}
+
+// cite: libcore FutureTask.java#run, setException, done, report
+#[test]
+fn libcore_future_task_subclass_failure_reaches_overridden_set_exception() {
+    assert_eq!(
+        future_contract_result("runFailure"),
+        DexExecutionResult::Value(DexValue::String("run;ex:boom;done;ran;boom".into()))
+    );
+}

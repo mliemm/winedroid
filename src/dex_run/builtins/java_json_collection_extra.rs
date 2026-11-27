@@ -13,6 +13,31 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        let looper_thread_local = invocation
+            .and_then(|invocation| invocation.arguments.first())
+            .is_some_and(|receiver| *receiver == looper_thread_local_reference());
+        if looper_thread_local && method.class_descriptor == "Ljava/lang/ThreadLocal;" {
+            // cite: frameworks-base Looper.java#sThreadLocal, myLooper, prepare
+            let invocation = invocation?;
+            match (method.name.as_str(), method.proto.descriptor().as_str()) {
+                ("get", "()Ljava/lang/Object;") => {
+                    return Some(DexExecutionResult::Value(self.current_thread_looper()));
+                }
+                ("set", "(Ljava/lang/Object;)V") => {
+                    let looper = invocation.arguments.get(1)?;
+                    self.set_current_thread_looper(
+                        dex_value_is_object_like(looper).then(|| looper.clone()),
+                    );
+                    return Some(DexExecutionResult::Void);
+                }
+                ("remove", "()V") => {
+                    self.set_current_thread_looper(None);
+                    return Some(DexExecutionResult::Void);
+                }
+                _ => {}
+            }
+        }
+
         if method.class_descriptor == "Ljava/lang/ThreadLocal;"
             && method.name == "get"
             && method.proto.descriptor_is("()Ljava/lang/Object;")
@@ -1013,4 +1038,10 @@ impl DexProgram {
             _ => None,
         }
     }
+}
+
+pub(in crate::dex_run) fn looper_thread_local_reference() -> DexValue {
+    DexValue::Reference(std::rc::Rc::from(
+        "Ljava/lang/ThreadLocal;:android.os.Looper.sThreadLocal",
+    ))
 }

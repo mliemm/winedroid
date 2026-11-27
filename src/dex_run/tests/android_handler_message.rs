@@ -1081,3 +1081,52 @@ fn frameworks_handler_has_messages_tracks_queued_and_removed_messages() {
     );
     assert_eq!(has_what(4), Some(DexExecutionResult::Int(0)));
 }
+
+// cite: frameworks-base Looper.java#myLooper, sThreadLocal
+#[test]
+fn looper_my_looper_is_per_thread_and_shared_with_s_thread_local() {
+    let program = DexProgram::new(Vec::new());
+    let my_looper = builtin_method(
+        "Landroid/os/Looper;",
+        "myLooper",
+        "Landroid/os/Looper;",
+        &[],
+    );
+    let thread_local_get =
+        builtin_method("Ljava/lang/ThreadLocal;", "get", "Ljava/lang/Object;", &[]);
+    let thread_local_set = builtin_method(
+        "Ljava/lang/ThreadLocal;",
+        "set",
+        "V",
+        &["Ljava/lang/Object;"],
+    );
+    let field = DexFieldId {
+        class_descriptor: "Landroid/os/Looper;".to_owned(),
+        type_descriptor: "Ljava/lang/ThreadLocal;".to_owned(),
+        name: "sThreadLocal".to_owned(),
+    };
+    let thread_local = crate::dex_run::bootstrap_fields::bootstrap_static_field(&field)
+        .expect("sThreadLocal should be a ThreadLocal");
+    let main = DexValue::Reference(std::rc::Rc::from("Landroid/os/Looper;:main"));
+    let worker = program.allocate_object("Ljava/lang/Thread;".to_owned());
+    let current = || program.invoke_builtin_method(&my_looper, Some(&test_invocation(Vec::new())));
+
+    assert_eq!(current(), Some(DexExecutionResult::Value(main.clone())));
+    program.with_current_guest_thread(worker.clone(), || {
+        assert_eq!(current(), Some(DexExecutionResult::Value(DexValue::Null)));
+        let looper = program.allocate_object("Landroid/os/Looper;".to_owned());
+        program.invoke_builtin_method(
+            &thread_local_set,
+            Some(&test_invocation(vec![thread_local.clone(), looper.clone()])),
+        );
+        assert_eq!(current(), Some(DexExecutionResult::Value(looper.clone())));
+        assert_eq!(
+            program.invoke_builtin_method(
+                &thread_local_get,
+                Some(&test_invocation(vec![thread_local.clone()]))
+            ),
+            Some(DexExecutionResult::Value(looper))
+        );
+    });
+    assert_eq!(current(), Some(DexExecutionResult::Value(main)));
+}

@@ -1795,9 +1795,8 @@ impl DexProgram {
             && method.name == "myLooper"
             && method.proto.descriptor_is("()Landroid/os/Looper;")
         {
-            return Some(DexExecutionResult::Value(DexValue::Reference(
-                std::rc::Rc::from("Landroid/os/Looper;:main"),
-            )));
+            // cite: frameworks-base Looper.java#myLooper
+            return Some(DexExecutionResult::Value(self.current_thread_looper()));
         }
 
         if method.class_descriptor == "Landroid/os/MessageQueue;"
@@ -1946,6 +1945,29 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(message));
         }
 
+        // cite: libcore Throwable.java#getCause
+        if method.class_descriptor == "Ljava/lang/Throwable;"
+            && method.name == "getCause"
+            && method.proto.descriptor_is("()Ljava/lang/Throwable;")
+            && !self.guest_overrides(method, invocation)
+        {
+            let invocation = invocation?;
+            let [throwable] = invocation.arguments.as_slice() else {
+                return None;
+            };
+            let cause = match self.read_stored_instance_field(throwable, &throwable_cause_field()) {
+                Some(cause)
+                    if dex_value_is_object_like(&cause)
+                        && map_identity_key(&cause) != map_identity_key(throwable) =>
+                {
+                    cause
+                }
+                _ => DexValue::Null,
+            };
+
+            return Some(DexExecutionResult::Value(cause));
+        }
+
         // cite: libcore Throwable.java#getStackTrace
         if method.class_descriptor == "Ljava/lang/Throwable;"
             && method.name == "getStackTrace"
@@ -1989,6 +2011,7 @@ impl DexProgram {
                     | "(Ljava/lang/Runnable;)V"
                     | "(Ljava/lang/String;)V"
                     | "(Ljava/lang/Runnable;Ljava/lang/String;)V"
+                    | "(Ljava/lang/ThreadGroup;Ljava/lang/Runnable;Ljava/lang/String;J)V"
             )
         {
             if let Some(invocation) = invocation {
@@ -2062,6 +2085,61 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        // cite: libcore Thread.java#getPriority
+        if method.class_descriptor == "Ljava/lang/Thread;"
+            && method.name == "getPriority"
+            && method.proto.descriptor_is("()I")
+        {
+            let invocation = invocation?;
+            thread_reference(invocation)?;
+
+            return Some(DexExecutionResult::Int(
+                self.thread_priority(&invocation.arguments[0]),
+            ));
+        }
+
+        // cite: libcore Thread.java#setPriority, MIN_PRIORITY, MAX_PRIORITY
+        if method.class_descriptor == "Ljava/lang/Thread;"
+            && method.name == "setPriority"
+            && method.proto.descriptor_is("(I)V")
+        {
+            let invocation = invocation?;
+            let [thread, DexValue::Int(priority)] = invocation.arguments.as_slice() else {
+                return None;
+            };
+            if !dex_value_is_object_like(thread) {
+                return None;
+            }
+            if !(1..=10).contains(priority) {
+                return Some(DexExecutionResult::Throw(
+                    self.allocate_generated_exception(DexGeneratedException {
+                        class_descriptor: "Ljava/lang/IllegalArgumentException;".to_owned(),
+                        detail_message: Some(format!("Priority out of range: {priority}")),
+                    }),
+                ));
+            }
+            self.write_stored_instance_field(
+                thread,
+                &thread_priority_field(),
+                DexValue::Int(*priority),
+            );
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        // cite: libcore Thread.java#isDaemon
+        if method.class_descriptor == "Ljava/lang/Thread;"
+            && method.name == "isDaemon"
+            && method.proto.descriptor_is("()Z")
+        {
+            let invocation = invocation?;
+            thread_reference(invocation)?;
+
+            return Some(DexExecutionResult::Int(
+                self.thread_is_daemon(&invocation.arguments[0]),
+            ));
+        }
+
         if method.class_descriptor == "Ljava/lang/Thread;"
             && method.name == "setContextClassLoader"
             && method.proto.descriptor_is("(Ljava/lang/ClassLoader;)V")
@@ -2113,7 +2191,11 @@ impl DexProgram {
                 return Some(DexExecutionResult::Value(DexValue::Null));
             }
 
-            return Some(DexExecutionResult::Value(thread_main_group()));
+            let group = self
+                .read_stored_instance_field(&invocation.arguments[0], &thread_group_field())
+                .filter(dex_value_is_object_like)
+                .unwrap_or_else(thread_main_group);
+            return Some(DexExecutionResult::Value(group));
         }
 
         if method.class_descriptor == "Landroid/os/Handler;"
@@ -2373,7 +2455,35 @@ impl DexProgram {
         .then_some(())
     }
 
+    fn thread_is_daemon(&self, thread: &DexValue) -> i32 {
+        match self.read_stored_instance_field(thread, &thread_daemon_field()) {
+            Some(DexValue::Int(1)) => 1,
+            _ => 0,
+        }
+    }
+
+    fn thread_priority(&self, thread: &DexValue) -> i32 {
+        // cite: libcore Thread.java#NORM_PRIORITY
+        match self.read_stored_instance_field(thread, &thread_priority_field()) {
+            Some(DexValue::Int(priority)) => priority,
+            _ => 5,
+        }
+    }
+
     fn initialize_thread(&self, invocation: &DexInvocation, descriptor: &str) -> Option<()> {
+        // cite: libcore Thread.java#Thread, daemon, priority
+        let parent = self.runtime.borrow().current_guest_thread.clone();
+        let thread = invocation.arguments.first()?;
+        if dex_value_is_object_like(thread) {
+            if self.thread_is_daemon(&parent) == 1 {
+                self.write_stored_instance_field(thread, &thread_daemon_field(), DexValue::Int(1));
+            }
+            self.write_stored_instance_field(
+                thread,
+                &thread_priority_field(),
+                DexValue::Int(self.thread_priority(&parent)),
+            );
+        }
         match descriptor {
             "()V" if invocation.arguments.len() == 1 => {
                 self.thread_store_generated_name(invocation)
@@ -2389,6 +2499,29 @@ impl DexProgram {
             "(Ljava/lang/Runnable;Ljava/lang/String;)V" if invocation.arguments.len() == 3 => {
                 self.thread_store_target(invocation)?;
                 self.thread_store_name_from_argument(invocation, 2)?;
+                Some(())
+            }
+            // cite: libcore Thread.java#Thread, getThreadGroup, group
+            "(Ljava/lang/ThreadGroup;Ljava/lang/Runnable;Ljava/lang/String;J)V"
+                if invocation.arguments.len() == 6
+                    && matches!(invocation.arguments[4], DexValue::Long(_)) =>
+            {
+                let group = match &invocation.arguments[1] {
+                    DexValue::Null | DexValue::Int(0) => DexValue::Null,
+                    group if dex_value_is_object_like(group) => group.clone(),
+                    _ => return None,
+                };
+                let mut target = invocation.clone();
+                target.arguments = invocation.arguments[..4].iter().cloned().collect();
+                target.arguments.remove(1);
+                self.initialize_thread(&target, "(Ljava/lang/Runnable;Ljava/lang/String;)V")?;
+                if group != DexValue::Null {
+                    self.write_stored_instance_field(
+                        &invocation.arguments[0],
+                        &thread_group_field(),
+                        group,
+                    );
+                }
                 Some(())
             }
             _ => None,
@@ -3950,6 +4083,22 @@ fn thread_terminated_field() -> DexFieldId {
         class_descriptor: "Ljava/lang/Thread;".to_owned(),
         type_descriptor: "Z".to_owned(),
         name: "terminated".to_owned(),
+    }
+}
+
+fn thread_priority_field() -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Ljava/lang/Thread;".to_owned(),
+        type_descriptor: "I".to_owned(),
+        name: "priority".to_owned(),
+    }
+}
+
+fn thread_group_field() -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Ljava/lang/Thread;".to_owned(),
+        type_descriptor: "Ljava/lang/ThreadGroup;".to_owned(),
+        name: "group".to_owned(),
     }
 }
 

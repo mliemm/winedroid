@@ -32,6 +32,7 @@ enum LibraryState {
 #[derive(Default)]
 pub(super) struct JniState {
     libraries: RefCell<HashMap<PathBuf, LibraryState>>,
+    handles: RefCell<Vec<u64>>,
     bindings: RefCell<HashMap<NativeMethod, usize>>,
     method_ids: RefCell<HashMap<NativeMethod, usize>>,
     methods_by_id: RefCell<HashMap<usize, DexMethodId>>,
@@ -82,6 +83,7 @@ impl DexProgram {
             .to_str()
             .ok_or_else(|| WinedroidError::new("native library path is not UTF-8"))?;
         let handle = loader.dlopen(Some(name), crate::native::module::RTLD_NOW, None)?;
+        self.jni.handles.borrow_mut().push(handle);
         self.jni
             .libraries
             .borrow_mut()
@@ -220,6 +222,21 @@ impl DexProgram {
         }
     }
 
+    fn find_native_method(&self, loader: &Loader, method: &DexMethodId) -> Result<Option<usize>> {
+        // cite: art java_vm_ext.cc#FindNativeMethod, FindNativeMethodInternal
+        let short_name = jni_short_name(&method.class_descriptor, &method.name);
+        let long_name = jni_long_name(&short_name, &method.proto.parameters);
+        let handles = self.jni.handles.borrow().clone();
+        for handle in handles {
+            for name in [&short_name, &long_name] {
+                if let Some(address) = loader.lookup_export(handle, name)? {
+                    return Ok(Some(address));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     pub(super) fn execute_registered_native(
         &self,
         resolved: &ResolvedMethod,
@@ -228,13 +245,22 @@ impl DexProgram {
     ) -> Result<DexExecutionResult> {
         // cite: art art_method.h#GetEntryPointFromJni
         let method = &resolved.method;
-        let key = method.into();
-        let address = self.jni.bindings.borrow().get(&key).copied().ok_or_else(|| {
+        let key: NativeMethod = method.into();
+        let registered = self.jni.bindings.borrow().get(&key).copied();
+        let address = match registered {
+            Some(address) => Some(address),
+            None => match NativeRuntime::current() {
+                Some(runtime) => self.find_native_method(runtime.loader(), method)?,
+                None => None,
+            },
+        }
+        .ok_or_else(|| {
             WinedroidError::new(format!(
                 "JNI method has no registered entry point\nnext missing primitive: JNI binding {}.{}",
                 method.class_descriptor, method.display_signature()
             ))
         })?;
+        self.jni.bindings.borrow_mut().insert(key, address);
         let frame = env::Frame::new(self, depth);
         let is_static = resolved.encoded_method.access_flags & DEX_ACC_STATIC != 0;
         let (receiver, arguments) = if is_static {
@@ -322,6 +348,40 @@ impl DexProgram {
     }
 }
 
+fn jni_short_name(class_descriptor: &str, method: &str) -> String {
+    // cite: art descriptors_names.cc#GetJniShortName
+    let class_name = class_descriptor
+        .strip_prefix('L')
+        .and_then(|name| name.strip_suffix(';'))
+        .unwrap_or(class_descriptor);
+    format!(
+        "Java_{}_{}",
+        mangle_for_jni(class_name),
+        mangle_for_jni(method)
+    )
+}
+
+fn jni_long_name(short_name: &str, parameters: &[String]) -> String {
+    // cite: art art_method.cc#JniLongName
+    format!("{short_name}__{}", mangle_for_jni(&parameters.concat()))
+}
+
+fn mangle_for_jni(text: &str) -> String {
+    // cite: art descriptors_names.cc#MangleForJni
+    let mut result = String::new();
+    for unit in text.encode_utf16() {
+        match unit {
+            0x30..=0x39 | 0x41..=0x5a | 0x61..=0x7a => result.push(char::from(unit as u8)),
+            0x2e | 0x2f => result.push('_'),
+            0x5f => result.push_str("_1"),
+            0x3b => result.push_str("_2"),
+            0x5b => result.push_str("_3"),
+            _ => result.push_str(&format!("_0{unit:04x}")),
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,6 +461,68 @@ mod tests {
             assert!(error.to_string().contains("JNI_OnLoad"));
         }
         assert!(wrong_program.jni.bindings.borrow().is_empty());
+    }
+
+    #[test]
+    fn art_jni_names_match_class_linker_test() {
+        // cite: art class_linker_test.cc#JniShortName_JniLongName
+        let string = "Ljava/lang/String;";
+        let char_at = jni_short_name(string, "charAt");
+        assert_eq!(char_at, "Java_java_lang_String_charAt");
+        assert_eq!(
+            jni_long_name(&char_at, &["I".to_owned()]),
+            "Java_java_lang_String_charAt__I"
+        );
+        let index_of = jni_short_name(string, "indexOf");
+        assert_eq!(
+            jni_long_name(&index_of, &[string.to_owned(), "I".to_owned()]),
+            "Java_java_lang_String_indexOf__Ljava_lang_String_2I"
+        );
+        let copy_value_of = jni_short_name(string, "copyValueOf");
+        assert_eq!(
+            jni_long_name(
+                &copy_value_of,
+                &["[C".to_owned(), "I".to_owned(), "I".to_owned()]
+            ),
+            "Java_java_lang_String_copyValueOf___3CII"
+        );
+        assert_eq!(
+            jni_short_name("La_b/C$D;", "e\u{e9}"),
+            "Java_a_1b_C_00024D_e_000e9"
+        );
+    }
+
+    #[test]
+    fn art_jni_unregistered_native_resolves_by_exported_short_name() {
+        // cite: art java_vm_ext.cc#FindNativeMethod
+        let dex = dex::parse_dex_file("classes.dex", fixture_dex()).unwrap();
+        let program = DexProgram::new(vec![dex]);
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/native_fixtures/bin/16k");
+        let loader =
+            Loader::new(vec![dir.clone()], Box::new(bridge::native_provider())).with_strict(true);
+        let mut method = program
+            .resolve_named_method("Lfx/Native;", "registeredAdd")
+            .unwrap()
+            .method;
+        assert_eq!(program.find_native_method(&loader, &method).unwrap(), None);
+
+        let path = dir.join("libfx_jni.so");
+        program.load_native_image(&loader, &path).unwrap();
+        assert_eq!(program.find_native_method(&loader, &method).unwrap(), None);
+
+        let handle = loader
+            .dlopen(path.to_str(), crate::native::module::RTLD_NOW, None)
+            .unwrap();
+        let exported = loader
+            .lookup_export(handle, "Java_fx_Native_stringLength")
+            .unwrap()
+            .unwrap();
+        method.name = "stringLength".to_owned();
+        method.proto.parameters = vec!["Ljava/lang/String;".to_owned()];
+        assert_eq!(
+            program.find_native_method(&loader, &method).unwrap(),
+            Some(exported)
+        );
     }
 
     fn fixture_dex() -> Vec<u8> {

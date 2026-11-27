@@ -992,3 +992,51 @@ fn builtin_big_decimal_zero_to_string_returns_zero() {
         Some(DexExecutionResult::Int(i32::MIN))
     );
 }
+
+// cite: libcore BigDecimal.java#setScale, ROUND_HALF_UP, ROUND_DOWN
+#[test]
+fn libcore_big_decimal_legacy_set_scale_rounds_with_int_modes() {
+    let program = DexProgram::new(Vec::new());
+    let value = program.allocate_object("Ljava/math/BigDecimal;".to_owned());
+    program
+        .runtime
+        .borrow_mut()
+        .big_decimal_values
+        .insert(map_identity_key(&value), "2.345".to_owned());
+    let set_scale = builtin_method(
+        "Ljava/math/BigDecimal;",
+        "setScale",
+        "Ljava/math/BigDecimal;",
+        &["I", "I"],
+    );
+    let scaled = |mode: i32| match program.invoke_builtin_method(
+        &set_scale,
+        Some(&test_invocation(vec![
+            value.clone(),
+            DexValue::Int(2),
+            DexValue::Int(mode),
+        ])),
+    ) {
+        Some(DexExecutionResult::Value(result)) => program
+            .runtime
+            .borrow()
+            .big_decimal_values
+            .get(&map_identity_key(&result))
+            .cloned(),
+        other => panic!("setScale should return a BigDecimal, got {other:?}"),
+    };
+
+    assert_eq!(scaled(4).as_deref(), Some("2.35"));
+    assert_eq!(scaled(1).as_deref(), Some("2.34"));
+    assert!(matches!(
+        program.invoke_builtin_method(
+            &set_scale,
+            Some(&test_invocation(vec![
+                value,
+                DexValue::Int(2),
+                DexValue::Int(9)
+            ]))
+        ),
+        Some(DexExecutionResult::Throw(_))
+    ));
+}

@@ -1418,6 +1418,78 @@ impl DexProgram {
             ));
         }
 
+        if method.matches_builtin_signature(
+            "Landroid/media/AudioManager;",
+            "getDevices",
+            "(I)[Landroid/media/AudioDeviceInfo;",
+        ) && !self.guest_overrides(method, invocation)
+        {
+            // cite: frameworks-base AudioManager.java#getDevices, getDevicesStatic, listAudioDevicePorts
+            let [receiver, DexValue::Int(_)] = invocation?.arguments.as_slice() else {
+                return None;
+            };
+            if !dex_value_is_object_like(receiver) {
+                return None;
+            }
+            return Some(DexExecutionResult::Value(self.allocate_filled_array(
+                "[Landroid/media/AudioDeviceInfo;".to_owned(),
+                Vec::new(),
+            )));
+        }
+
+        if method.class_descriptor == "Landroid/media/AudioManager;"
+            && matches!(
+                (method.name.as_str(), method.proto.descriptor().as_str()),
+                (
+                    "requestAudioFocus",
+                    "(Landroid/media/AudioManager$OnAudioFocusChangeListener;II)I"
+                ) | (
+                    "abandonAudioFocus",
+                    "(Landroid/media/AudioManager$OnAudioFocusChangeListener;)I"
+                )
+            )
+            && !self.guest_overrides(method, invocation)
+        {
+            // cite: frameworks-base AudioManager.java#requestAudioFocus, abandonAudioFocus, AUDIOFOCUS_REQUEST_GRANTED, AUDIOFOCUS_REQUEST_FAILED, AUDIOFOCUS_GAIN, AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE
+            let invocation = invocation?;
+            let receiver = invocation.arguments.first()?;
+            if !dex_value_is_object_like(receiver) {
+                return None;
+            }
+            let granted = match invocation.arguments.get(3) {
+                Some(DexValue::Int(duration_hint)) => (1..=4).contains(duration_hint),
+                Some(_) => return None,
+                None => true,
+            };
+            return Some(DexExecutionResult::Int(i32::from(granted)));
+        }
+
+        if method.class_descriptor == "Landroid/app/Application$ActivityLifecycleCallbacks;"
+            && matches!(
+                method.name.as_str(),
+                "onActivityPreCreated"
+                    | "onActivityPostCreated"
+                    | "onActivityPreStarted"
+                    | "onActivityPostStarted"
+                    | "onActivityPreResumed"
+                    | "onActivityPostResumed"
+                    | "onActivityPrePaused"
+                    | "onActivityPostPaused"
+                    | "onActivityPreStopped"
+                    | "onActivityPostStopped"
+                    | "onActivityPreSaveInstanceState"
+                    | "onActivityPostSaveInstanceState"
+                    | "onActivityPreDestroyed"
+                    | "onActivityPostDestroyed"
+                    | "onActivityConfigurationChanged"
+            )
+            && method.proto.return_type == "V"
+            && !self.guest_overrides(method, invocation)
+        {
+            // cite: frameworks-base Application.java#onActivityPreCreated, onActivityPostCreated, onActivityPreStarted, onActivityPostStarted, onActivityPreResumed, onActivityPostResumed, onActivityPrePaused, onActivityPostPaused, onActivityPreStopped, onActivityPostStopped, onActivityPreSaveInstanceState, onActivityPostSaveInstanceState, onActivityPreDestroyed, onActivityPostDestroyed, onActivityConfigurationChanged
+            return Some(DexExecutionResult::Void);
+        }
+
         // cite: frameworks-base ActivityManager.java#getAppTasks, AppTask, getTaskInfo
         if method.matches_builtin_signature(
             "Landroid/app/ActivityManager;",

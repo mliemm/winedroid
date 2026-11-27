@@ -3070,21 +3070,33 @@ impl DexProgram {
 
     // cite: libcore FutureTask.java#run
     fn future_task_run(&self, receiver: &DexValue, depth: usize) -> Result<()> {
-        self.future_task_run_as_current(receiver, depth)
+        match self.future_task_run_result(receiver, depth)? {
+            DexExecutionResult::Throw(exception) => Err(WinedroidError::new(format!(
+                "FutureTask.run threw uncaught {}",
+                self.describe_uncaught_throw(&exception)
+            ))),
+            _ => Ok(()),
+        }
     }
 
-    fn future_task_run_as_current(&self, receiver: &DexValue, depth: usize) -> Result<()> {
+    // cite: libcore FutureTask.java#run
+    pub(super) fn future_task_run_result(
+        &self,
+        receiver: &DexValue,
+        depth: usize,
+    ) -> Result<DexExecutionResult> {
         if self.read_stored_instance_field(receiver, &future_task_done_field())
             == Some(DexValue::Int(1))
         {
-            return Ok(());
+            return Ok(DexExecutionResult::Void);
         }
 
         if let Some(callable) =
             self.read_stored_instance_field(receiver, &future_task_callable_field())
         {
             if callable != DexValue::Null {
-                return self.future_task_run_callable(receiver, &callable, depth);
+                let result = self.future_task_run_callable(&callable, depth)?;
+                return self.future_task_complete(receiver, result, depth);
             }
         }
         if let Some(runnable) =
@@ -3103,10 +3115,9 @@ impl DexProgram {
     // cite: libcore FutureTask.java#run
     fn future_task_run_callable(
         &self,
-        receiver: &DexValue,
         callable: &DexValue,
         depth: usize,
-    ) -> Result<()> {
+    ) -> Result<DexExecutionResult> {
         let Some(class_descriptor) = value_class_descriptor(callable).map(str::to_owned) else {
             return Err(WinedroidError::new(
                 "FutureTask.run requires an object-backed Callable",
@@ -3129,8 +3140,7 @@ impl DexProgram {
             )));
         };
 
-        let result = self.execute_method(None, &resolved, Some(&[callable.clone()]), depth + 1)?;
-        self.future_task_store_result(receiver, result)
+        self.execute_method(None, &resolved, Some(&[callable.clone()]), depth + 1)
     }
 
     // cite: libcore Executors.java#callable, RunnableAdapter
@@ -3140,7 +3150,7 @@ impl DexProgram {
         receiver: &DexValue,
         runnable: &DexValue,
         depth: usize,
-    ) -> Result<()> {
+    ) -> Result<DexExecutionResult> {
         let periodic = matches!(
             self.read_stored_instance_field(receiver, &scheduled_future_task_period_field()),
             Some(DexValue::Long(period)) if period != 0
@@ -3149,48 +3159,28 @@ impl DexProgram {
         self.dispatch_runnable(runnable, "FutureTask.run", depth)?;
 
         if periodic {
-            return Ok(());
+            return Ok(DexExecutionResult::Void);
         }
 
         let fixed_result = self
             .read_stored_instance_field(receiver, &future_task_runnable_result_field())
             .unwrap_or(DexValue::Null);
-        self.write_stored_instance_field(receiver, &future_task_outcome_field(), fixed_result);
-        self.write_stored_instance_field(receiver, &future_task_done_field(), DexValue::Int(1));
-
-        Ok(())
+        self.future_task_complete(receiver, DexExecutionResult::Value(fixed_result), depth)
     }
 
-    // cite: libcore FutureTask.java#set, setException
-    fn future_task_store_result(
+    // cite: libcore FutureTask.java#run
+    fn future_task_complete(
         &self,
         receiver: &DexValue,
         result: DexExecutionResult,
-    ) -> Result<()> {
-        match result {
-            DexExecutionResult::Value(value) => {
-                self.write_stored_instance_field(receiver, &future_task_outcome_field(), value);
-            }
-            DexExecutionResult::Int(value) => {
-                self.write_stored_instance_field(
-                    receiver,
-                    &future_task_outcome_field(),
-                    DexValue::Int(value),
-                );
-            }
-            DexExecutionResult::Void => {
-                self.write_stored_instance_field(
-                    receiver,
-                    &future_task_outcome_field(),
-                    DexValue::Null,
-                );
-            }
+        depth: usize,
+    ) -> Result<DexExecutionResult> {
+        let (name, parameter, argument) = match result {
+            DexExecutionResult::Value(value) => ("set", "Ljava/lang/Object;", value),
+            DexExecutionResult::Int(value) => ("set", "Ljava/lang/Object;", DexValue::Int(value)),
+            DexExecutionResult::Void => ("set", "Ljava/lang/Object;", DexValue::Null),
             DexExecutionResult::Throw(exception) => {
-                self.write_stored_instance_field(
-                    receiver,
-                    &future_task_exception_field(),
-                    exception,
-                );
+                ("setException", "Ljava/lang/Throwable;", exception)
             }
             DexExecutionResult::Parked(execution) => {
                 self.discard_parked_execution(&execution);
@@ -3198,10 +3188,79 @@ impl DexProgram {
                     "FutureTask.run Callable.call() did not complete normally",
                 ));
             }
+        };
+        let exceptional = name == "setException";
+        match self.future_task_guest_hook(
+            receiver,
+            name,
+            &[parameter],
+            vec![argument.clone()],
+            depth,
+        )? {
+            Some(result) => Ok(result),
+            None => self.future_task_set_outcome(receiver, argument, exceptional, depth),
         }
+    }
+
+    // cite: libcore FutureTask.java#set, setException, finishCompletion
+    pub(super) fn future_task_set_outcome(
+        &self,
+        receiver: &DexValue,
+        outcome: DexValue,
+        exceptional: bool,
+        depth: usize,
+    ) -> Result<DexExecutionResult> {
+        if self.read_stored_instance_field(receiver, &future_task_done_field())
+            == Some(DexValue::Int(1))
+        {
+            return Ok(DexExecutionResult::Void);
+        }
+        let field = if exceptional {
+            future_task_exception_field()
+        } else {
+            future_task_outcome_field()
+        };
+        self.write_stored_instance_field(receiver, &field, outcome);
         self.write_stored_instance_field(receiver, &future_task_done_field(), DexValue::Int(1));
 
-        Ok(())
+        Ok(self
+            .future_task_guest_hook(receiver, "done", &[], Vec::new(), depth)?
+            .unwrap_or(DexExecutionResult::Void))
+    }
+
+    // cite: libcore FutureTask.java#set, setException, done
+    fn future_task_guest_hook(
+        &self,
+        receiver: &DexValue,
+        name: &str,
+        parameters: &[&str],
+        arguments: Vec<DexValue>,
+        depth: usize,
+    ) -> Result<Option<DexExecutionResult>> {
+        let Some(class_descriptor) = value_class_descriptor(receiver) else {
+            return Ok(None);
+        };
+        let method = DexMethodId {
+            class_descriptor: class_descriptor.to_owned(),
+            name: name.to_owned(),
+            proto: dex::DexProto {
+                shorty: format!("V{}", "L".repeat(parameters.len())),
+                return_type: "V".to_owned(),
+                parameters: parameters
+                    .iter()
+                    .map(|parameter| (*parameter).to_owned())
+                    .collect(),
+            },
+        };
+        let Some(resolved) =
+            self.resolve_exact_method_in_class_hierarchy(class_descriptor, &method)?
+        else {
+            return Ok(None);
+        };
+        let mut initial_arguments = vec![receiver.clone()];
+        initial_arguments.extend(arguments);
+        self.execute_method(None, &resolved, Some(&initial_arguments), depth + 1)
+            .map(Some)
     }
 
     // cite: libcore FutureTask.java#get, report

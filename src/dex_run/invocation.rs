@@ -410,6 +410,13 @@ impl DexRunInvocationHandler<'_> {
             return Ok(invocation_result_from_execution(result));
         }
 
+        if let Some(result) =
+            self.program
+                .future_task_hook_intrinsic(&method, &invocation, self.depth)?
+        {
+            return Ok(invocation_result_from_execution(result));
+        }
+
         if method.class_descriptor == "Ljava/io/File;"
             && method.name == "listFiles"
             && proto_descriptor == "(Ljava/io/FileFilter;)[Ljava/io/File;"
@@ -911,10 +918,11 @@ impl DexProgram {
         invocation: &DexInvocation,
         depth: usize,
     ) -> Result<Option<DexExecutionResult>> {
-        let future_class = matches!(
-            method.class_descriptor.as_str(),
-            "Ljava/util/concurrent/FutureTask;" | "Ljava/util/concurrent/Future;"
-        );
+        let future_class = method.class_descriptor == "Ljava/util/concurrent/Future;"
+            || self.descriptor_matches_type(
+                &method.class_descriptor,
+                "Ljava/util/concurrent/FutureTask;",
+            );
         let descriptor = method.proto.descriptor();
         let timed = descriptor == "(JLjava/util/concurrent/TimeUnit;)Ljava/lang/Object;";
         if !future_class
@@ -928,5 +936,44 @@ impl DexProgram {
         untimed.arguments.truncate(1);
 
         self.future_task_get(&untimed, depth).map(Some)
+    }
+
+    // cite: libcore FutureTask.java#run, set, setException, done
+    pub(super) fn future_task_hook_intrinsic(
+        &self,
+        method: &DexMethodId,
+        invocation: &DexInvocation,
+        depth: usize,
+    ) -> Result<Option<DexExecutionResult>> {
+        if !self.descriptor_matches_type(
+            &method.class_descriptor,
+            "Ljava/util/concurrent/FutureTask;",
+        ) || self.guest_overrides(method, Some(invocation))
+        {
+            return Ok(None);
+        }
+        let Some(receiver) = invocation
+            .arguments
+            .first()
+            .filter(|receiver| dex_value_is_object_like(receiver))
+        else {
+            return Ok(None);
+        };
+        let descriptor = method.proto.descriptor();
+        match (
+            method.name.as_str(),
+            descriptor.as_str(),
+            invocation.arguments.get(1),
+        ) {
+            ("run", "()V", None) => self.future_task_run_result(receiver, depth).map(Some),
+            ("set", "(Ljava/lang/Object;)V", Some(value)) => self
+                .future_task_set_outcome(receiver, value.clone(), false, depth)
+                .map(Some),
+            ("setException", "(Ljava/lang/Throwable;)V", Some(exception)) => self
+                .future_task_set_outcome(receiver, exception.clone(), true, depth)
+                .map(Some),
+            ("done", "()V", None) => Ok(Some(DexExecutionResult::Void)),
+            _ => Ok(None),
+        }
     }
 }

@@ -2088,3 +2088,80 @@ fn builtin_audio_manager_stream_volume_uses_audio_service_defaults() {
     }
     assert_eq!(volume(2), Some(DexExecutionResult::Int(5)));
 }
+
+// cite: frameworks-base AudioManager.java#getDevices, getDevicesStatic
+#[test]
+fn builtin_audio_manager_reports_no_audio_device_ports() {
+    let program = DexProgram::new(Vec::new());
+    let Some(DexExecutionResult::Value(devices)) = program.invoke_builtin_method(
+        &builtin_method(
+            "Landroid/media/AudioManager;",
+            "getDevices",
+            "[Landroid/media/AudioDeviceInfo;",
+            &["I"],
+        ),
+        Some(&test_invocation(vec![
+            DexValue::Reference(std::rc::Rc::from("Landroid/media/AudioManager;:audio")),
+            DexValue::Int(3),
+        ])),
+    ) else {
+        panic!("getDevices should return an array");
+    };
+
+    assert_eq!(program.array_length(&devices), Some(0));
+}
+
+// cite: frameworks-base AudioManager.java#requestAudioFocus, AUDIOFOCUS_REQUEST_GRANTED, AUDIOFOCUS_REQUEST_FAILED
+#[test]
+fn builtin_audio_manager_grants_focus_for_valid_duration_hints() {
+    let program = DexProgram::new(Vec::new());
+    let request = |hint: i32| {
+        program.invoke_builtin_method(
+            &builtin_method(
+                "Landroid/media/AudioManager;",
+                "requestAudioFocus",
+                "I",
+                &[
+                    "Landroid/media/AudioManager$OnAudioFocusChangeListener;",
+                    "I",
+                    "I",
+                ],
+            ),
+            Some(&test_invocation(vec![
+                DexValue::Reference(std::rc::Rc::from("Landroid/media/AudioManager;:audio")),
+                DexValue::Null,
+                DexValue::Int(3),
+                DexValue::Int(hint),
+            ])),
+        )
+    };
+
+    assert_eq!(request(1), Some(DexExecutionResult::Int(1)));
+    assert_eq!(request(9), Some(DexExecutionResult::Int(0)));
+}
+
+// cite: frameworks-base Application.java#onActivityPostResumed, onActivityPreCreated
+#[test]
+fn builtin_activity_lifecycle_callback_defaults_are_empty() {
+    let program = DexProgram::new(Vec::new());
+    let mut super_call = test_invocation(vec![
+        program.allocate_object("Lcom/example/Callbacks;".to_owned()),
+        program.allocate_object("Lcom/example/MainActivity;".to_owned()),
+    ]);
+    super_call.kind = DexInvokeKind::Super;
+
+    for name in ["onActivityPostResumed", "onActivityPreDestroyed"] {
+        assert_eq!(
+            program.invoke_builtin_method(
+                &builtin_method(
+                    "Landroid/app/Application$ActivityLifecycleCallbacks;",
+                    name,
+                    "V",
+                    &["Landroid/app/Activity;"]
+                ),
+                Some(&super_call)
+            ),
+            Some(DexExecutionResult::Void)
+        );
+    }
+}

@@ -1559,6 +1559,16 @@ pub(in crate::dex_run) fn bootstrap_enum_reference_ordinal(value: &DexValue) -> 
 }
 
 pub(in crate::dex_run) fn bootstrap_static_field(field: &DexFieldId) -> Option<DexValue> {
+    // cite: frameworks-base Looper.java#sThreadLocal
+    if field.class_descriptor == "Landroid/os/Looper;"
+        && field.name == "sThreadLocal"
+        && field.type_descriptor == "Ljava/lang/ThreadLocal;"
+    {
+        return Some(DexValue::Reference(std::rc::Rc::from(
+            "Ljava/lang/ThreadLocal;:android.os.Looper.sThreadLocal",
+        )));
+    }
+
     // cite: libcore Collections.java#EMPTY_MAP, EMPTY_LIST, EMPTY_SET
     if field.class_descriptor == "Ljava/util/Collections;" {
         let reference = match (field.name.as_str(), field.type_descriptor.as_str()) {

@@ -147,6 +147,51 @@ impl DexProgram {
         if method.matches_builtin_signature(
             "Ljava/math/BigDecimal;",
             "setScale",
+            "(II)Ljava/math/BigDecimal;",
+        ) {
+            // cite: libcore BigDecimal.java#setScale, ROUND_UP, ROUND_DOWN, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, ROUND_HALF_DOWN, ROUND_HALF_EVEN, ROUND_UNNECESSARY
+            let invocation = invocation?;
+            let [_, _, DexValue::Int(mode)] = invocation.arguments.as_slice() else {
+                return None;
+            };
+            const MODES: [&str; 8] = [
+                "UP",
+                "DOWN",
+                "CEILING",
+                "FLOOR",
+                "HALF_UP",
+                "HALF_DOWN",
+                "HALF_EVEN",
+                "UNNECESSARY",
+            ];
+            let Some(mode) = usize::try_from(*mode)
+                .ok()
+                .and_then(|index| MODES.get(index))
+            else {
+                return Some(DexExecutionResult::Throw(
+                    self.allocate_generated_exception(DexGeneratedException {
+                        class_descriptor: "Ljava/lang/IllegalArgumentException;".to_owned(),
+                        detail_message: Some("Invalid rounding mode".to_owned()),
+                    }),
+                ));
+            };
+            let value = self.big_decimal_value(invocation.arguments.first()?)?;
+            let DexValue::Int(scale) = invocation.arguments[1] else {
+                return None;
+            };
+            let scaled = set_big_decimal_scale(&value, scale, mode)?;
+            let result = self.allocate_object("Ljava/math/BigDecimal;".to_owned());
+            self.runtime
+                .borrow_mut()
+                .big_decimal_values
+                .insert(map_identity_key(&result), scaled);
+
+            return Some(DexExecutionResult::Value(result));
+        }
+
+        if method.matches_builtin_signature(
+            "Ljava/math/BigDecimal;",
+            "setScale",
             "(ILjava/math/RoundingMode;)Ljava/math/BigDecimal;",
         ) {
             let invocation = invocation?;

@@ -4842,3 +4842,166 @@ fn libcore_default_thread_names_follow_thread_and_pool_numbering() {
         );
     }
 }
+
+// cite: libcore Thread.java#Thread, getThreadGroup, getName
+#[test]
+fn builtin_thread_group_constructor_keeps_group_target_and_name() {
+    let program = DexProgram::new(Vec::new());
+    let constructor = builtin_method(
+        "Ljava/lang/Thread;",
+        "<init>",
+        "V",
+        &[
+            "Ljava/lang/ThreadGroup;",
+            "Ljava/lang/Runnable;",
+            "Ljava/lang/String;",
+            "J",
+        ],
+    );
+    let get_group = builtin_method(
+        "Ljava/lang/Thread;",
+        "getThreadGroup",
+        "Ljava/lang/ThreadGroup;",
+        &[],
+    );
+    let thread = program.allocate_object("Ljava/lang/Thread;".to_owned());
+    let unnamed_group_thread = program.allocate_object("Ljava/lang/Thread;".to_owned());
+    let group = program.allocate_object("Ljava/lang/ThreadGroup;".to_owned());
+    let target = program.allocate_object("Ljava/lang/Runnable;".to_owned());
+    let name = DexValue::String("pthread-1".into());
+    let stack_size = DexValue::Long(512 * 1024);
+    let target_field = DexFieldId {
+        class_descriptor: "Ljava/lang/Thread;".to_owned(),
+        type_descriptor: "Ljava/lang/Runnable;".to_owned(),
+        name: "target".to_owned(),
+    };
+    let name_field = DexFieldId {
+        class_descriptor: "Ljava/lang/Thread;".to_owned(),
+        type_descriptor: "Ljava/lang/String;".to_owned(),
+        name: "name".to_owned(),
+    };
+
+    for (receiver, group_argument) in [
+        (thread.clone(), group.clone()),
+        (unnamed_group_thread.clone(), DexValue::Null),
+    ] {
+        assert_eq!(
+            program.invoke_builtin_method(
+                &constructor,
+                Some(&test_invocation(vec![
+                    receiver,
+                    group_argument,
+                    target.clone(),
+                    name.clone(),
+                    stack_size.clone(),
+                    stack_size.clone(),
+                ]))
+            ),
+            Some(DexExecutionResult::Void)
+        );
+    }
+
+    assert_eq!(
+        program.read_stored_instance_field(&thread, &target_field),
+        Some(target)
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&thread, &name_field),
+        Some(name)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&get_group, Some(&test_invocation(vec![thread]))),
+        Some(DexExecutionResult::Value(group))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &get_group,
+            Some(&test_invocation(vec![unnamed_group_thread]))
+        ),
+        Some(DexExecutionResult::Value(DexValue::Reference(
+            std::rc::Rc::from("Ljava/lang/ThreadGroup;:main")
+        )))
+    );
+}
+
+// cite: libcore Thread.java#Thread, isDaemon, setDaemon
+#[test]
+fn builtin_thread_is_daemon_follows_set_daemon_and_the_creating_thread() {
+    let program = DexProgram::new(Vec::new());
+    let constructor = builtin_method("Ljava/lang/Thread;", "<init>", "V", &[]);
+    let is_daemon = builtin_method("Ljava/lang/Thread;", "isDaemon", "Z", &[]);
+    let set_daemon = builtin_method("Ljava/lang/Thread;", "setDaemon", "V", &["Z"]);
+    let daemon_of = |thread: &DexValue| {
+        program.invoke_builtin_method(&is_daemon, Some(&test_invocation(vec![thread.clone()])))
+    };
+    let construct = |thread: &DexValue| {
+        program.invoke_builtin_method(&constructor, Some(&test_invocation(vec![thread.clone()])))
+    };
+    let parent = program.allocate_object("Ljava/lang/Thread;".to_owned());
+    assert_eq!(construct(&parent), Some(DexExecutionResult::Void));
+    assert_eq!(daemon_of(&parent), Some(DexExecutionResult::Int(0)));
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &set_daemon,
+            Some(&test_invocation(vec![parent.clone(), DexValue::Int(1)]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(daemon_of(&parent), Some(DexExecutionResult::Int(1)));
+
+    let previous = std::mem::replace(
+        &mut program.runtime.borrow_mut().current_guest_thread,
+        parent,
+    );
+    let child = program.allocate_object("Ljava/lang/Thread;".to_owned());
+    assert_eq!(construct(&child), Some(DexExecutionResult::Void));
+    program.runtime.borrow_mut().current_guest_thread = previous;
+    assert_eq!(daemon_of(&child), Some(DexExecutionResult::Int(1)));
+
+    let main_child = program.allocate_object("Ljava/lang/Thread;".to_owned());
+    assert_eq!(construct(&main_child), Some(DexExecutionResult::Void));
+    assert_eq!(daemon_of(&main_child), Some(DexExecutionResult::Int(0)));
+}
+
+// cite: libcore Thread.java#Thread, getPriority, setPriority, NORM_PRIORITY
+#[test]
+fn builtin_thread_priority_is_inherited_and_range_checked() {
+    let program = DexProgram::new(Vec::new());
+    let constructor = builtin_method("Ljava/lang/Thread;", "<init>", "V", &[]);
+    let get_priority = builtin_method("Ljava/lang/Thread;", "getPriority", "I", &[]);
+    let set_priority = builtin_method("Ljava/lang/Thread;", "setPriority", "V", &["I"]);
+    let priority_of = |thread: &DexValue| {
+        program.invoke_builtin_method(&get_priority, Some(&test_invocation(vec![thread.clone()])))
+    };
+    let set = |thread: &DexValue, priority: i32| {
+        program.invoke_builtin_method(
+            &set_priority,
+            Some(&test_invocation(vec![
+                thread.clone(),
+                DexValue::Int(priority),
+            ])),
+        )
+    };
+    let parent = program.allocate_object("Ljava/lang/Thread;".to_owned());
+    program.invoke_builtin_method(&constructor, Some(&test_invocation(vec![parent.clone()])));
+    assert_eq!(priority_of(&parent), Some(DexExecutionResult::Int(5)));
+    assert_eq!(set(&parent, 7), Some(DexExecutionResult::Void));
+    assert_eq!(priority_of(&parent), Some(DexExecutionResult::Int(7)));
+    for out_of_range in [0, 11] {
+        let Some(DexExecutionResult::Throw(exception)) = set(&parent, out_of_range) else {
+            panic!("setPriority({out_of_range}) should throw");
+        };
+        assert!(program.value_matches_type(&exception, "Ljava/lang/IllegalArgumentException;"));
+    }
+    assert_eq!(priority_of(&parent), Some(DexExecutionResult::Int(7)));
+
+    let previous = std::mem::replace(
+        &mut program.runtime.borrow_mut().current_guest_thread,
+        parent,
+    );
+    let child = program.allocate_object("Ljava/lang/Thread;".to_owned());
+    program.invoke_builtin_method(&constructor, Some(&test_invocation(vec![child.clone()])));
+    program.runtime.borrow_mut().current_guest_thread = previous;
+    assert_eq!(priority_of(&child), Some(DexExecutionResult::Int(7)));
+}
