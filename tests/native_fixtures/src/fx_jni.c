@@ -117,3 +117,39 @@ void Java_fx_Native_callStaticVoid(JNIEnv *env, jclass type, jint value)
     }
     call_static_void(env, type, record, value + 1);
 }
+
+jbyteArray Java_fx_Native_xorBytes(JNIEnv *env, jclass type, jbyteArray input, jint key)
+{
+    jsize length = (*env)->GetArrayLength(env, input);
+    jbyte *bytes = (*env)->GetByteArrayElements(env, input, NULL);
+    jbyteArray output;
+    jsize index;
+    if (bytes == NULL) {
+        return NULL;
+    }
+    for (index = 0; index < length; index++) {
+        bytes[index] = (jbyte)(bytes[index] ^ key);
+    }
+    output = (*env)->NewByteArray(env, length);
+    if (output != NULL) {
+        (*env)->SetByteArrayRegion(env, output, 0, length, bytes);
+    }
+    (*env)->ReleaseByteArrayElements(env, input, bytes, JNI_ABORT);
+    return output;
+}
+
+void Java_fx_Native_overflowRegion(JNIEnv *env, jclass type, jbyteArray output)
+{
+    jbyte bytes[2] = {1, 2};
+    (*env)->SetByteArrayRegion(env, output, 1, 2, bytes);
+}
+
+void Java_fx_Native_incrementInPlace(JNIEnv *env, jclass type, jbyteArray data)
+{
+    jbyte *bytes = (*env)->GetByteArrayElements(env, data, NULL);
+    if (bytes == NULL) {
+        return;
+    }
+    bytes[0] = (jbyte)(bytes[0] + 1);
+    (*env)->ReleaseByteArrayElements(env, data, bytes, 0);
+}

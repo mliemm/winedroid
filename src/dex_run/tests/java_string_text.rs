@@ -2690,3 +2690,24 @@ fn libcore_string_from_bytes_decodes_with_the_utf8_default_charset() {
     );
     assert_eq!(program.string_text(&receiver).as_deref(), Some("caf\u{e9}"));
 }
+
+// cite: libcore String.java#valueOf
+#[test]
+fn libcore_string_value_of_boolean_spells_true_and_false() {
+    let program = DexProgram::new(Vec::new());
+    let value_of = builtin_method(
+        "Ljava/lang/String;",
+        "valueOf",
+        "Ljava/lang/String;",
+        &["Z"],
+    );
+    for (flag, expected) in [(1, "true"), (0, "false")] {
+        assert_eq!(
+            program.invoke_builtin_method(
+                &value_of,
+                Some(&test_invocation(vec![DexValue::Int(flag)]))
+            ),
+            Some(DexExecutionResult::Value(DexValue::String(expected.into())))
+        );
+    }
+}

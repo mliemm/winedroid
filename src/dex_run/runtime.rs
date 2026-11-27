@@ -98,6 +98,8 @@ pub(super) struct DexRuntimeState {
     pub(super) atomic_long_values: HashMap<String, i64>,
     pub(super) semaphore_permits: HashMap<String, i32>,
     pub(super) condition_waiters: HashMap<String, Vec<DexValue>>,
+    pub(super) lock_states: HashMap<String, LockState>,
+    pub(super) condition_saved_holds: HashMap<String, (String, u32)>,
     pub(super) atomic_reference_values: HashMap<String, DexValue>,
     pub(super) weak_reference_values: HashMap<String, DexValue>,
     pub(super) handler_loopers: HashMap<String, DexValue>,
@@ -459,6 +461,8 @@ impl DexRuntimeState {
             atomic_long_values: HashMap::new(),
             semaphore_permits: HashMap::new(),
             condition_waiters: HashMap::new(),
+            lock_states: HashMap::new(),
+            condition_saved_holds: HashMap::new(),
             atomic_reference_values: HashMap::new(),
             weak_reference_values: HashMap::new(),
             handler_loopers: HashMap::new(),
@@ -2146,6 +2150,21 @@ pub(super) enum ParkedRuntimeAction {
         method: DexMethodId,
         invocation: DexInvocation,
     },
+}
+
+#[derive(Debug, Default)]
+pub(super) struct LockState {
+    pub(super) owner: Option<String>,
+    pub(super) holds: u32,
+    pub(super) readers: HashMap<String, u32>,
+    pub(super) waiters: std::collections::VecDeque<LockWaiter>,
+}
+
+#[derive(Debug)]
+pub(super) struct LockWaiter {
+    pub(super) thread: DexValue,
+    pub(super) shared: bool,
+    pub(super) holds: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]

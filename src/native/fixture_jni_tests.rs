@@ -10,36 +10,44 @@ const LDR_X_UNSIGNED_OFFSET: u32 = 0xF940_0000;
 const LDR_X_MASK: u32 = 0xFFC0_0000;
 const BLR_BR_MASK: u32 = 0xFFDF_FC1F;
 const BLR_BR_OPCODE: u32 = 0xD61F_0000;
-const ENV_CALLS: [&str; 13] = [
+const ENV_CALLS: [&str; 17] = [
     "CallIntMethod",
     "CallStaticLongMethodV",
     "CallStaticVoidMethodV",
     "CallStaticVoidMethod",
     "FindClass",
     "GetArrayLength",
+    "GetByteArrayElements",
     "GetMethodID",
     "GetStaticMethodID",
     "GetStringUTFChars",
+    "NewByteArray",
     "NewStringUTF",
     "RegisterNatives",
+    "ReleaseByteArrayElements",
     "ReleaseStringUTFChars",
+    "SetByteArrayRegion",
     "ThrowNew",
 ];
 const VM_CALLS: [&str; 1] = ["GetEnv"];
 // cite: art jni_internal.cc#gJniNativeInterface
-const ART_ENV_SLOTS: [(&str, u64); 13] = [
+const ART_ENV_SLOTS: [(&str, u64); 17] = [
     ("CallIntMethod", 49),
     ("CallStaticLongMethodV", 133),
     ("CallStaticVoidMethodV", 142),
     ("CallStaticVoidMethod", 141),
     ("FindClass", 6),
     ("GetArrayLength", 171),
+    ("GetByteArrayElements", 184),
     ("GetMethodID", 33),
     ("GetStaticMethodID", 113),
     ("GetStringUTFChars", 169),
+    ("NewByteArray", 176),
     ("NewStringUTF", 167),
     ("RegisterNatives", 215),
+    ("ReleaseByteArrayElements", 192),
     ("ReleaseStringUTFChars", 170),
+    ("SetByteArrayRegion", 208),
     ("ThrowNew", 14),
 ];
 // cite: art java_vm_ext.cc#gJniInvokeInterface
@@ -115,8 +123,8 @@ fn fixture_source_fx_jni_calls_exactly_the_jni_slots_its_source_names() {
 
     assert_eq!(
         expected.len(),
-        13,
-        "thirteen distinct slot offsets are named in the source, FindClass and GetEnv share one"
+        17,
+        "seventeen distinct slot offsets are named in the source, FindClass and GetEnv share one"
     );
     for directory in VARIANT_DIRECTORIES {
         let binary = fs::read(

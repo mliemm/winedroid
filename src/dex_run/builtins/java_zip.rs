@@ -1151,7 +1151,75 @@ impl DexProgram {
         }
     }
 
+    // cite: libcore ByteArrayInputStream.java#buf, count, read
+    fn refresh_byte_array_input_stream(&self, stream: &DexValue) {
+        let Some(array) = self.read_stored_instance_field(stream, &byte_array_input_buffer_field())
+        else {
+            return;
+        };
+        let Some(DexValue::Int(count)) =
+            self.read_stored_instance_field(stream, &byte_array_input_count_field())
+        else {
+            return;
+        };
+        let Some(mut bytes) = self.byte_array_contents(&array) else {
+            return;
+        };
+        bytes.truncate(usize::try_from(count).unwrap_or(0));
+        if let Some(state) = self
+            .runtime
+            .borrow_mut()
+            .input_stream_values
+            .get_mut(&map_identity_key(stream))
+        {
+            state.bytes = bytes;
+        }
+    }
+
+    // cite: libcore ByteArrayInputStream.java#ByteArrayInputStream
+    pub(super) fn initialize_byte_array_input_stream(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        let (stream, array, offset, length) = match invocation.arguments.as_slice() {
+            [stream, array] => (stream, array, 0, None),
+            [stream, array, DexValue::Int(offset), DexValue::Int(length)] => {
+                (stream, array, *offset, Some(*length))
+            }
+            _ => return None,
+        };
+        if !dex_value_is_object_like(stream) {
+            return None;
+        }
+        if is_null(array) {
+            return Some(self.null_pointer_exception_result());
+        }
+        let buffer_length = self.array_length(array)?;
+        let count = match length {
+            None => buffer_length,
+            Some(length) => offset.saturating_add(length).min(buffer_length),
+        };
+        self.write_stored_instance_field(stream, &byte_array_input_buffer_field(), array.clone());
+        self.write_stored_instance_field(
+            stream,
+            &byte_array_input_count_field(),
+            DexValue::Int(count),
+        );
+        self.runtime.borrow_mut().input_stream_values.insert(
+            map_identity_key(stream),
+            InputStreamState {
+                bytes: Vec::new(),
+                position: usize::try_from(offset).unwrap_or(0),
+                pending_low_surrogate: None,
+            },
+        );
+        self.refresh_byte_array_input_stream(stream);
+
+        Some(DexExecutionResult::Void)
+    }
+
     fn stream_remaining(&self, stream: &DexValue) -> usize {
+        self.refresh_byte_array_input_stream(stream);
         self.runtime
             .borrow()
             .input_stream_values
@@ -1193,6 +1261,7 @@ impl DexProgram {
             return Some(read);
         }
 
+        self.refresh_byte_array_input_stream(stream);
         let bytes = self
             .runtime
             .borrow_mut()
@@ -1492,4 +1561,12 @@ mod tests {
         let month_zero_day_zero = 40 << 25;
         assert_eq!(dos_local_seconds(month_zero_day_zero), 1_575_072_000);
     }
+}
+
+fn byte_array_input_buffer_field() -> DexFieldId {
+    zip_field("Ljava/io/ByteArrayInputStream;", "[B", "buf")
+}
+
+fn byte_array_input_count_field() -> DexFieldId {
+    zip_field("Ljava/io/ByteArrayInputStream;", "I", "count")
 }

@@ -660,6 +660,68 @@ mod tests {
         );
     }
 
+    #[test]
+    fn art_jni_byte_array_elements_and_regions_round_trip_through_native_code() {
+        // cite: art jni_internal.cc#GetByteArrayElements, ReleaseByteArrayElements, NewByteArray, SetByteArrayRegion, ThrowAIOOBE
+        let dex = dex::parse_dex_file(
+            "jni_static_long.dex",
+            include_bytes!("tests/fixtures/jni_static_long.dex").to_vec(),
+        )
+        .unwrap();
+        let program = DexProgram::new(vec![dex]);
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/native_fixtures/bin/16k");
+        let runtime = NativeRuntime::initialize(vec![dir.clone()]).unwrap();
+        program
+            .load_native_image(runtime.loader(), &dir.join("libfx_jni.so"))
+            .unwrap();
+        let bytes = |values: &[i32]| {
+            program.allocate_filled_array(
+                "[B".to_owned(),
+                values.iter().map(|value| DexValue::Int(*value)).collect(),
+            )
+        };
+        let contents = |array: &DexValue| {
+            program.runtime.borrow().array_entries[&map_identity_key(array)].clone()
+        };
+        let call = |name: &str, arguments: &[DexValue]| {
+            let method = program.resolve_named_method("Lfx/Native;", name).unwrap();
+            program
+                .execute_method(None, &method, Some(arguments), 0)
+                .unwrap()
+        };
+
+        let input = bytes(&[1, 2, -128]);
+        let DexExecutionResult::Value(output) =
+            call("xorBytes", &[input.clone(), DexValue::Int(0x0f)])
+        else {
+            panic!("xorBytes should return a byte[]");
+        };
+        assert_eq!(
+            contents(&output),
+            [DexValue::Int(14), DexValue::Int(13), DexValue::Int(-113)]
+        );
+        assert_eq!(
+            contents(&input),
+            [DexValue::Int(1), DexValue::Int(2), DexValue::Int(-128)]
+        );
+
+        let data = bytes(&[5]);
+        assert_eq!(
+            call("incrementInPlace", &[data.clone()]),
+            DexExecutionResult::Void
+        );
+        assert_eq!(contents(&data), [DexValue::Int(6)]);
+
+        let short = bytes(&[0, 0]);
+        let DexExecutionResult::Throw(exception) = call("overflowRegion", &[short.clone()]) else {
+            panic!("a region past the end should throw");
+        };
+        assert!(
+            program.value_matches_type(&exception, "Ljava/lang/ArrayIndexOutOfBoundsException;")
+        );
+        assert_eq!(contents(&short), [DexValue::Int(0), DexValue::Int(0)]);
+    }
+
     fn fixture_dex() -> Vec<u8> {
         let strings = ["I", "III", "Lfx/Native;", "registeredAdd"];
         let strings_off = 112;

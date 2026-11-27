@@ -9,6 +9,12 @@ public class Native {
 
     public static native int unbound(String name, int[] values);
 
+    public static native byte[] xorBytes(byte[] input, int key);
+
+    public static native void overflowRegion(byte[] output);
+
+    public static native void incrementInPlace(byte[] data);
+
     public static int recorded;
 
     public static void record(int value) {

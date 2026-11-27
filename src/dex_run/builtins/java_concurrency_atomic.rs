@@ -461,6 +461,30 @@ impl DexProgram {
                 return None;
             }
             let thread = self.runtime.borrow().current_guest_thread.clone();
+            if let Some(lock) =
+                self.read_stored_instance_field(&invocation.arguments[0], &condition_lock_field())
+            {
+                // cite: libcore AbstractQueuedSynchronizer.java#await, enableWait
+                let (sync, _) = self.lock_sync(&lock)?;
+                let thread_key = map_identity_key(&thread);
+                let holds = {
+                    let mut runtime = self.runtime.borrow_mut();
+                    let state = runtime.lock_states.entry(sync.clone()).or_default();
+                    if state.owner.as_deref() != Some(thread_key.as_str()) {
+                        drop(runtime);
+                        return Some(self.illegal_monitor_state());
+                    }
+                    let holds = state.holds;
+                    state.owner = None;
+                    state.holds = 0;
+                    runtime
+                        .condition_saved_holds
+                        .insert(thread_key, (sync.clone(), holds));
+                    holds
+                };
+                let _ = holds;
+                self.lock_grant(&sync);
+            }
             self.runtime
                 .borrow_mut()
                 .condition_waiters
@@ -479,7 +503,15 @@ impl DexProgram {
             && method.proto.descriptor_is("()V")
         {
             // cite: libcore Condition.java#signal, signalAll
+            // cite: libcore AbstractQueuedSynchronizer.java#isHeldExclusively
             let invocation = invocation?;
+            if let Some(lock) = self
+                .read_stored_instance_field(invocation.arguments.first()?, &condition_lock_field())
+            {
+                if !self.lock_held_by_current_thread(&lock)? {
+                    return Some(self.illegal_monitor_state());
+                }
+            }
             self.condition_signal(invocation, method.name == "signalAll")?;
 
             return Some(DexExecutionResult::Void);
@@ -498,22 +530,58 @@ impl DexProgram {
             let condition = self.allocate_object(
                 "Ljava/util/concurrent/locks/ReentrantLock$ConditionObject;".to_owned(),
             );
+            self.write_stored_instance_field(
+                &condition,
+                &condition_lock_field(),
+                invocation.arguments[0].clone(),
+            );
 
             return Some(DexExecutionResult::Value(condition));
         }
 
         if is_builtin_lock_class(&method.class_descriptor)
-            && matches!(method.name.as_str(), "lock" | "unlock")
-            && method.proto.descriptor_is("()V")
+            && matches!(method.name.as_str(), "lock" | "unlock" | "tryLock")
+            && (method.proto.descriptor_is("()V") || method.proto.descriptor_is("()Z"))
+            && !self.guest_overrides(method, invocation)
         {
-            return Some(DexExecutionResult::Void);
+            let lock = invocation?.arguments.first()?;
+            let (sync, shared) = self.lock_sync(lock)?;
+            return Some(
+                match (method.name.as_str(), method.proto.return_type.as_str()) {
+                    ("lock", "V") => self.lock_acquire(&sync, shared, true),
+                    ("tryLock", "Z") => self.lock_acquire(&sync, shared, false),
+                    ("unlock", "V") => self.lock_release(&sync, shared),
+                    _ => return None,
+                },
+            );
         }
 
-        if is_builtin_lock_class(&method.class_descriptor)
-            && method.name == "tryLock"
-            && method.proto.descriptor_is("()Z")
+        // cite: libcore ReentrantReadWriteLock.java#getWriteHoldCount, getReadHoldCount
+        if method.class_descriptor == "Ljava/util/concurrent/locks/ReentrantReadWriteLock;"
+            && matches!(
+                method.name.as_str(),
+                "getWriteHoldCount" | "getReadHoldCount"
+            )
+            && method.proto.descriptor_is("()I")
+            && !self.guest_overrides(method, invocation)
         {
-            return Some(DexExecutionResult::Int(1));
+            let lock = invocation?.arguments.first()?;
+            if !dex_value_is_object_like(lock) {
+                return None;
+            }
+            let thread = map_identity_key(&self.runtime.borrow().current_guest_thread);
+            let runtime = self.runtime.borrow();
+            let state = runtime.lock_states.get(&map_identity_key(lock));
+            let holds = if method.name == "getWriteHoldCount" {
+                state
+                    .filter(|state| state.owner.as_deref() == Some(thread.as_str()))
+                    .map_or(0, |state| state.holds)
+            } else {
+                state
+                    .and_then(|state| state.readers.get(&thread).copied())
+                    .unwrap_or(0)
+            };
+            return Some(DexExecutionResult::Int(i32::try_from(holds).ok()?));
         }
 
         if method.matches_builtin_signature(
@@ -1538,6 +1606,7 @@ impl DexProgram {
         for name in ["readLock", "writeLock"] {
             let (field, class_descriptor) = reentrant_read_write_lock_accessor(name)?;
             let child = self.allocate_object(class_descriptor.to_owned());
+            self.write_stored_instance_field(&child, &read_write_lock_owner_field(), lock.clone());
             if !self.write_stored_instance_field(lock, &field, child) {
                 return None;
             }
@@ -1553,6 +1622,14 @@ impl DexProgram {
             return None;
         }
         let condition_key = map_identity_key(&invocation.arguments[0]);
+        if let Some(lock) =
+            self.read_stored_instance_field(&invocation.arguments[0], &condition_lock_field())
+        {
+            // cite: libcore AbstractQueuedSynchronizer.java#signal, signalAll, doSignal
+            if !self.lock_held_by_current_thread(&lock)? {
+                return None;
+            }
+        }
         let mut runtime = self.runtime.borrow_mut();
         let mut waiters = runtime
             .condition_waiters
@@ -1569,9 +1646,194 @@ impl DexProgram {
             runtime.condition_waiters.insert(condition_key, waiters);
         }
         for thread in wake {
-            runtime.unpark_thread(&thread);
+            match runtime
+                .condition_saved_holds
+                .remove(&map_identity_key(&thread))
+            {
+                Some((sync, holds)) => runtime
+                    .lock_states
+                    .entry(sync)
+                    .or_default()
+                    .waiters
+                    .push_back(LockWaiter {
+                        thread,
+                        shared: false,
+                        holds,
+                    }),
+                None => {
+                    runtime.unpark_thread(&thread);
+                }
+            }
         }
 
         Some(())
+    }
+
+    // cite: libcore ReentrantReadWriteLock.java#ReadLock, WriteLock, sync
+    // cite: libcore ReentrantLock.java#sync
+    fn lock_sync(&self, lock: &DexValue) -> Option<(String, bool)> {
+        if !dex_value_is_object_like(lock) {
+            return None;
+        }
+        let shared = value_class_descriptor(lock)
+            == Some("Ljava/util/concurrent/locks/ReentrantReadWriteLock$ReadLock;");
+        let owner = self
+            .read_stored_instance_field(lock, &read_write_lock_owner_field())
+            .filter(dex_value_is_object_like);
+        Some((map_identity_key(owner.as_ref().unwrap_or(lock)), shared))
+    }
+
+    // cite: libcore ReentrantLock.java#lock, tryLock
+    // cite: libcore ReentrantReadWriteLock.java#tryAcquire, tryAcquireShared, readerShouldBlock
+    fn lock_acquire(&self, sync: &str, shared: bool, wait: bool) -> DexExecutionResult {
+        let thread = self.runtime.borrow().current_guest_thread.clone();
+        let thread_key = map_identity_key(&thread);
+        let mut runtime = self.runtime.borrow_mut();
+        let state = runtime.lock_states.entry(sync.to_owned()).or_default();
+        let owned_by_me = state.owner.as_deref() == Some(thread_key.as_str());
+        let acquired = if shared {
+            let writer_free = state.owner.is_none() || owned_by_me;
+            let writer_queued = state.waiters.front().is_some_and(|waiter| !waiter.shared);
+            let reentrant_read = state.readers.contains_key(&thread_key);
+            if writer_free && (owned_by_me || reentrant_read || !writer_queued) {
+                *state.readers.entry(thread_key).or_default() += 1;
+                true
+            } else {
+                false
+            }
+        } else if owned_by_me {
+            state.holds += 1;
+            true
+        } else if state.owner.is_none() && state.readers.is_empty() {
+            state.owner = Some(thread_key);
+            state.holds = 1;
+            true
+        } else {
+            false
+        };
+        if acquired {
+            return if wait {
+                DexExecutionResult::Void
+            } else {
+                DexExecutionResult::Int(1)
+            };
+        }
+        if !wait {
+            return DexExecutionResult::Int(0);
+        }
+        state.waiters.push_back(LockWaiter {
+            thread,
+            shared,
+            holds: 1,
+        });
+        DexExecutionResult::Parked(DexParkedExecution::empty())
+    }
+
+    // cite: libcore ReentrantLock.java#unlock
+    // cite: libcore ReentrantReadWriteLock.java#tryRelease, tryReleaseShared
+    fn lock_release(&self, sync: &str, shared: bool) -> DexExecutionResult {
+        let thread_key = map_identity_key(&self.runtime.borrow().current_guest_thread);
+        let released = {
+            let mut runtime = self.runtime.borrow_mut();
+            let state = runtime.lock_states.entry(sync.to_owned()).or_default();
+            if shared {
+                match state.readers.get_mut(&thread_key) {
+                    Some(count) => {
+                        *count -= 1;
+                        if *count == 0 {
+                            state.readers.remove(&thread_key);
+                        }
+                        Some(state.readers.is_empty())
+                    }
+                    None => None,
+                }
+            } else if state.owner.as_deref() == Some(thread_key.as_str()) {
+                state.holds -= 1;
+                if state.holds == 0 {
+                    state.owner = None;
+                }
+                Some(state.holds == 0)
+            } else {
+                None
+            }
+        };
+        match released {
+            None => self.illegal_monitor_state(),
+            Some(free) => {
+                if free {
+                    self.lock_grant(sync);
+                }
+                DexExecutionResult::Void
+            }
+        }
+    }
+
+    // cite: libcore AbstractQueuedSynchronizer.java#release, releaseShared, signalNext
+    fn lock_grant(&self, sync: &str) {
+        let mut runtime = self.runtime.borrow_mut();
+        let mut wake = Vec::new();
+        if let Some(state) = runtime.lock_states.get_mut(sync) {
+            while let Some(waiter) = state.waiters.front() {
+                if waiter.shared {
+                    if state.owner.is_some() {
+                        break;
+                    }
+                    let waiter = state.waiters.pop_front().expect("front waiter exists");
+                    *state
+                        .readers
+                        .entry(map_identity_key(&waiter.thread))
+                        .or_default() += 1;
+                    wake.push(waiter.thread);
+                    continue;
+                }
+                if state.owner.is_some() || !state.readers.is_empty() {
+                    break;
+                }
+                let waiter = state.waiters.pop_front().expect("front waiter exists");
+                state.owner = Some(map_identity_key(&waiter.thread));
+                state.holds = waiter.holds;
+                wake.push(waiter.thread);
+                break;
+            }
+        }
+        for thread in wake {
+            runtime.unpark_thread(&thread);
+        }
+    }
+
+    fn lock_held_by_current_thread(&self, lock: &DexValue) -> Option<bool> {
+        let (sync, _) = self.lock_sync(lock)?;
+        let thread = map_identity_key(&self.runtime.borrow().current_guest_thread);
+        Some(
+            self.runtime
+                .borrow()
+                .lock_states
+                .get(&sync)
+                .and_then(|state| state.owner.as_deref())
+                == Some(thread.as_str()),
+        )
+    }
+
+    fn illegal_monitor_state(&self) -> DexExecutionResult {
+        DexExecutionResult::Throw(self.allocate_generated_exception(DexGeneratedException {
+            class_descriptor: "Ljava/lang/IllegalMonitorStateException;".to_owned(),
+            detail_message: None,
+        }))
+    }
+}
+
+fn condition_lock_field() -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Ljava/util/concurrent/locks/ReentrantLock$ConditionObject;".to_owned(),
+        type_descriptor: "Ljava/util/concurrent/locks/Lock;".to_owned(),
+        name: "lock".to_owned(),
+    }
+}
+
+fn read_write_lock_owner_field() -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Ljava/util/concurrent/locks/Lock;".to_owned(),
+        type_descriptor: "Ljava/util/concurrent/locks/ReentrantReadWriteLock;".to_owned(),
+        name: "sync".to_owned(),
     }
 }

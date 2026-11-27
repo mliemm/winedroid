@@ -284,6 +284,13 @@ impl DexProgram {
             return self.file_create_temp_file(invocation?);
         }
 
+        if method.class_descriptor == "Ljava/io/ByteArrayInputStream;"
+            && method.name == "<init>"
+            && matches!(method.proto.descriptor().as_str(), "([B)V" | "([BII)V")
+        {
+            return self.initialize_byte_array_input_stream(invocation?);
+        }
+
         if method.class_descriptor == "Ljava/io/FileOutputStream;"
             && method.name == "<init>"
             && matches!(

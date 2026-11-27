@@ -3626,3 +3626,52 @@ fn libcore_file_get_canonical_path_collapses_paths_outside_the_app_mounts() {
         DexExecutionResult::Value(DexValue::String(std::rc::Rc::from("/system/lib64/libc.so")))
     );
 }
+
+#[test]
+fn libcore_byte_array_input_stream_reads_its_live_buffer_within_bounds() {
+    // cite: libcore ByteArrayInputStream.java#ByteArrayInputStream, read, available
+    let program = DexProgram::new(Vec::new());
+    let full = java_io_method("Ljava/io/ByteArrayInputStream;", "<init>", "V", &["[B"]);
+    let ranged = java_io_method(
+        "Ljava/io/ByteArrayInputStream;",
+        "<init>",
+        "V",
+        &["[B", "I", "I"],
+    );
+    let read = java_io_method("Ljava/io/InputStream;", "read", "I", &[]);
+    let available = java_io_method("Ljava/io/InputStream;", "available", "I", &[]);
+    let buffer = program.allocate_filled_array(
+        "[B".to_owned(),
+        [10, 20, 30, -1]
+            .iter()
+            .map(|byte| DexValue::Int(*byte))
+            .collect(),
+    );
+    let read_all = |stream: &DexValue| {
+        let mut values = Vec::new();
+        loop {
+            match invoke_value(&program, &read, vec![stream.clone()]) {
+                DexExecutionResult::Int(-1) => break values,
+                DexExecutionResult::Int(value) => values.push(value),
+                other => panic!("read returned {other}"),
+            }
+        }
+    };
+
+    let stream = program.allocate_object("Ljava/io/ByteArrayInputStream;".to_owned());
+    invoke_value(&program, &full, vec![stream.clone(), buffer.clone()]);
+    program.write_array_value(&buffer, 1, DexValue::Int(21));
+    assert_eq!(
+        invoke_value(&program, &available, vec![stream.clone()]),
+        DexExecutionResult::Int(4)
+    );
+    assert_eq!(read_all(&stream), [10, 21, 30, 255]);
+
+    let window = program.allocate_object("Ljava/io/ByteArrayInputStream;".to_owned());
+    invoke_value(
+        &program,
+        &ranged,
+        vec![window.clone(), buffer, DexValue::Int(1), DexValue::Int(9)],
+    );
+    assert_eq!(read_all(&window), [21, 30, 255]);
+}

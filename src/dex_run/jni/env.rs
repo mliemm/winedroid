@@ -38,6 +38,7 @@ pub(super) struct Frame<'a> {
     refs: RefCell<HashMap<usize, DexValue>>,
     bindings: RefCell<HashMap<NativeMethod, usize>>,
     strings: RefCell<HashMap<usize, (usize, Vec<u8>)>>,
+    byte_arrays: RefCell<HashMap<usize, (usize, Vec<u8>)>>,
     exception: RefCell<Option<DexValue>>,
 }
 
@@ -49,6 +50,7 @@ impl<'a> Frame<'a> {
             refs: RefCell::new(HashMap::new()),
             bindings: RefCell::new(HashMap::new()),
             strings: RefCell::new(HashMap::new()),
+            byte_arrays: RefCell::new(HashMap::new()),
             exception: RefCell::new(None),
         }
     }
@@ -246,6 +248,10 @@ fn env_table() -> &'static [usize; 233] {
             (169, "GetStringUTFChars", get_string_utf_chars),
             (170, "ReleaseStringUTFChars", release_string_utf_chars),
             (171, "GetArrayLength", get_array_length),
+            (176, "NewByteArray", new_byte_array),
+            (184, "GetByteArrayElements", get_byte_array_elements),
+            (192, "ReleaseByteArrayElements", release_byte_array_elements),
+            (208, "SetByteArrayRegion", set_byte_array_region),
             (173, "GetObjectArrayElement", get_object_array_element),
             (215, "RegisterNatives", register_natives),
             (219, "GetJavaVM", get_java_vm),
@@ -334,6 +340,137 @@ fn get_array_length(context: &mut CallContext) {
             .array_length(&array)
             .ok_or_else(|| WinedroidError::new("GetArrayLength: reference is not an array"))?;
         context.ret_i32(length);
+        Ok(())
+    });
+}
+
+fn byte_array_value(frame: &Frame<'_>, handle: usize, function: &str) -> Result<DexValue> {
+    let array = frame.value(handle)?;
+    if is_android_null_value(&array) {
+        return Err(WinedroidError::new(format!(
+            "{function}: java_array == null"
+        )));
+    }
+    if value_class_descriptor(&array) != Some("[B") {
+        return Err(WinedroidError::new(format!(
+            "{function}: reference is not a byte[]"
+        )));
+    }
+    Ok(array)
+}
+
+fn new_byte_array(context: &mut CallContext) {
+    // cite: art jni_internal.cc#NewByteArray, NewPrimitiveArray
+    with_env(context, |frame, context| {
+        let length = context.arg_ptr(1) as u32 as i32;
+        if length < 0 {
+            return Err(WinedroidError::new(format!(
+                "NewByteArray: negative array length: {length}"
+            )));
+        }
+        let array = frame
+            .program
+            .allocate_filled_array("[B".to_owned(), vec![DexValue::Int(0); length as usize]);
+        context.ret_ptr(frame.reference(array));
+        Ok(())
+    });
+}
+
+fn get_byte_array_elements(context: &mut CallContext) {
+    // cite: art jni_internal.cc#GetByteArrayElements, GetPrimitiveArray
+    with_env(context, |frame, context| {
+        let handle = context.arg_ptr(1);
+        let array = byte_array_value(frame, handle, "GetByteArrayElements")?;
+        let mut bytes = frame
+            .program
+            .byte_array_contents(&array)
+            .ok_or_else(|| WinedroidError::new("GetByteArrayElements: unreadable byte[]"))?;
+        bytes.push(0);
+        let address = bytes.as_ptr() as usize;
+        frame
+            .byte_arrays
+            .borrow_mut()
+            .insert(address, (handle, bytes));
+        let is_copy = context.arg_ptr(2);
+        if is_copy != 0 {
+            write_value(is_copy, 1u8);
+        }
+        context.ret_ptr(address);
+        Ok(())
+    });
+}
+
+fn release_byte_array_elements(context: &mut CallContext) {
+    // cite: art jni_internal.cc#ReleaseByteArrayElements, ReleasePrimitiveArray
+    const JNI_COMMIT: i32 = 1;
+    const JNI_ABORT: i32 = 2;
+    with_env(context, |frame, context| {
+        let handle = context.arg_ptr(1);
+        let address = context.arg_ptr(2);
+        let mode = context.arg_ptr(3) as u32 as i32;
+        let array = byte_array_value(frame, handle, "ReleaseByteArrayElements")?;
+        let length = {
+            let buffers = frame.byte_arrays.borrow();
+            let Some((owner, bytes)) = buffers.get(&address) else {
+                return Err(WinedroidError::new("unknown JNI byte array buffer"));
+            };
+            if frame.value(*owner)? != array {
+                return Err(WinedroidError::new(
+                    "JNI byte array buffer belongs to another array",
+                ));
+            }
+            bytes.len() - 1
+        };
+        if mode != JNI_ABORT {
+            let written = unsafe { std::slice::from_raw_parts(address as *const u8, length) };
+            for (index, byte) in written.iter().enumerate() {
+                frame.program.write_array_value(
+                    &array,
+                    index as i32,
+                    DexValue::Int(i32::from(*byte as i8)),
+                );
+            }
+        }
+        if mode != JNI_COMMIT {
+            frame.byte_arrays.borrow_mut().remove(&address);
+        }
+        Ok(())
+    });
+}
+
+fn set_byte_array_region(context: &mut CallContext) {
+    // cite: art jni_internal.cc#SetByteArrayRegion, SetPrimitiveArrayRegion, ThrowAIOOBE
+    with_env(context, |frame, context| {
+        let array = byte_array_value(frame, context.arg_ptr(1), "SetByteArrayRegion")?;
+        let start = context.arg_ptr(2) as u32 as i32;
+        let length = context.arg_ptr(3) as u32 as i32;
+        let array_length = frame
+            .program
+            .array_length(&array)
+            .ok_or_else(|| WinedroidError::new("SetByteArrayRegion: unreadable byte[]"))?;
+        if start < 0 || length < 0 || i64::from(start) + i64::from(length) > i64::from(array_length)
+        {
+            frame.throw(
+                "Ljava/lang/ArrayIndexOutOfBoundsException;",
+                format!("byte[] offset={start} length={length} dst.length={array_length}"),
+            );
+            return Ok(());
+        }
+        if length == 0 {
+            return Ok(());
+        }
+        let source = context.arg_ptr(4);
+        if source == 0 {
+            return Err(WinedroidError::new("SetByteArrayRegion: buf == null"));
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(source as *const u8, length as usize) };
+        for (index, byte) in bytes.iter().enumerate() {
+            frame.program.write_array_value(
+                &array,
+                start + index as i32,
+                DexValue::Int(i32::from(*byte as i8)),
+            );
+        }
         Ok(())
     });
 }

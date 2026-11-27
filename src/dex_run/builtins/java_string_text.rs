@@ -128,6 +128,22 @@ impl DexProgram {
             )));
         }
 
+        // cite: libcore String.java#valueOf
+        if method.matches_builtin_signature(
+            "Ljava/lang/String;",
+            "valueOf",
+            "(Z)Ljava/lang/String;",
+        ) {
+            let [DexValue::Int(value)] = invocation?.arguments.as_slice() else {
+                return None;
+            };
+            let text = if *value != 0 { "true" } else { "false" };
+
+            return Some(DexExecutionResult::Value(DexValue::String(
+                std::rc::Rc::from(text),
+            )));
+        }
+
         if method.class_descriptor == "Ljava/lang/String;"
             && method.name == "valueOf"
             && method.proto.descriptor_is("(I)Ljava/lang/String;")

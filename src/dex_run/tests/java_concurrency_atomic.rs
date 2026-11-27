@@ -3856,3 +3856,224 @@ fn libcore_future_task_subclass_without_run_override_runs_when_dispatched() {
         DexExecutionResult::Value(DexValue::String("call;done;".into()))
     );
 }
+
+fn as_thread<T>(program: &DexProgram, thread: &DexValue, action: impl FnOnce() -> T) -> T {
+    let previous = std::mem::replace(
+        &mut program.runtime.borrow_mut().current_guest_thread,
+        thread.clone(),
+    );
+    let result = action();
+    program.runtime.borrow_mut().current_guest_thread = previous;
+    result
+}
+
+// cite: libcore ReentrantReadWriteLock.java#tryAcquire, tryAcquireShared, tryRelease, getWriteHoldCount
+#[test]
+fn libcore_read_write_lock_counts_write_holds_and_excludes_other_threads() {
+    let program = DexProgram::new(Vec::new());
+    let rw =
+        program.allocate_object("Ljava/util/concurrent/locks/ReentrantReadWriteLock;".to_owned());
+    let init = builtin_method(
+        "Ljava/util/concurrent/locks/ReentrantReadWriteLock;",
+        "<init>",
+        "V",
+        &[],
+    );
+    program.invoke_builtin_method(&init, Some(&test_invocation(vec![rw.clone()])));
+    let child = |name: &str, class: &str| {
+        let method = builtin_method(
+            "Ljava/util/concurrent/locks/ReentrantReadWriteLock;",
+            name,
+            class,
+            &[],
+        );
+        let Some(DexExecutionResult::Value(lock)) =
+            program.invoke_builtin_method(&method, Some(&test_invocation(vec![rw.clone()])))
+        else {
+            panic!("{name} should return a lock");
+        };
+        lock
+    };
+    let write = child(
+        "writeLock",
+        "Ljava/util/concurrent/locks/ReentrantReadWriteLock$WriteLock;",
+    );
+    let read = child(
+        "readLock",
+        "Ljava/util/concurrent/locks/ReentrantReadWriteLock$ReadLock;",
+    );
+    let call = |lock: &DexValue, class: &str, name: &str, return_type: &str| {
+        let method = builtin_method(class, name, return_type, &[]);
+        program.invoke_builtin_method(&method, Some(&test_invocation(vec![lock.clone()])))
+    };
+    let write_class = "Ljava/util/concurrent/locks/ReentrantReadWriteLock$WriteLock;";
+    let read_class = "Ljava/util/concurrent/locks/ReentrantReadWriteLock$ReadLock;";
+    let holds = || {
+        call(
+            &rw,
+            "Ljava/util/concurrent/locks/ReentrantReadWriteLock;",
+            "getWriteHoldCount",
+            "I",
+        )
+    };
+    let other = program.allocate_object("Ljava/lang/Thread;".to_owned());
+
+    assert_eq!(
+        call(&write, write_class, "lock", "V"),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        call(&write, write_class, "lock", "V"),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(holds(), Some(DexExecutionResult::Int(2)));
+    assert_eq!(
+        as_thread(&program, &other, holds),
+        Some(DexExecutionResult::Int(0))
+    );
+    assert_eq!(
+        as_thread(&program, &other, || call(
+            &write,
+            write_class,
+            "tryLock",
+            "Z"
+        )),
+        Some(DexExecutionResult::Int(0))
+    );
+    assert_eq!(
+        as_thread(&program, &other, || call(&read, read_class, "tryLock", "Z")),
+        Some(DexExecutionResult::Int(0))
+    );
+    call(&write, write_class, "unlock", "V");
+    assert_eq!(holds(), Some(DexExecutionResult::Int(1)));
+    call(&write, write_class, "unlock", "V");
+    assert_eq!(holds(), Some(DexExecutionResult::Int(0)));
+
+    assert_eq!(
+        as_thread(&program, &other, || call(&read, read_class, "tryLock", "Z")),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(
+        call(&read, read_class, "tryLock", "Z"),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(
+        call(&write, write_class, "tryLock", "Z"),
+        Some(DexExecutionResult::Int(0))
+    );
+
+    let Some(DexExecutionResult::Throw(exception)) = call(&write, write_class, "unlock", "V")
+    else {
+        panic!("unlocking an unheld write lock should throw");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/lang/IllegalMonitorStateException;"));
+}
+
+// cite: libcore ReentrantLock.java#lock, unlock, newCondition
+// cite: libcore AbstractQueuedSynchronizer.java#await, signal, release, signalNext
+#[test]
+fn libcore_reentrant_lock_parks_contenders_and_condition_waiters_until_hand_off() {
+    let program = DexProgram::new(Vec::new());
+    let lock = program.allocate_object("Ljava/util/concurrent/locks/ReentrantLock;".to_owned());
+    let lock_class = "Ljava/util/concurrent/locks/ReentrantLock;";
+    let call = |target: &DexValue, class: &str, name: &str, return_type: &str| {
+        let method = builtin_method(class, name, return_type, &[]);
+        program.invoke_builtin_method(&method, Some(&test_invocation(vec![target.clone()])))
+    };
+    let Some(DexExecutionResult::Value(condition)) = call(
+        &lock,
+        lock_class,
+        "newCondition",
+        "Ljava/util/concurrent/locks/Condition;",
+    ) else {
+        panic!("newCondition should return a condition");
+    };
+    let condition_class = "Ljava/util/concurrent/locks/Condition;";
+    let worker = program.allocate_object("Ljava/lang/Thread;".to_owned());
+    let main = program.runtime.borrow().current_guest_thread.clone();
+    let owner = || {
+        program
+            .runtime
+            .borrow()
+            .lock_states
+            .get(&map_identity_key(&lock))
+            .and_then(|state| state.owner.clone())
+    };
+
+    assert_eq!(
+        call(&lock, lock_class, "lock", "V"),
+        Some(DexExecutionResult::Void)
+    );
+    assert!(matches!(
+        as_thread(&program, &worker, || call(&lock, lock_class, "lock", "V")),
+        Some(DexExecutionResult::Parked(_))
+    ));
+    assert_eq!(
+        call(&lock, lock_class, "unlock", "V"),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(owner(), Some(map_identity_key(&worker)));
+
+    let Some(DexExecutionResult::Throw(exception)) =
+        call(&condition, condition_class, "signal", "V")
+    else {
+        panic!("signal without the lock should throw");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/lang/IllegalMonitorStateException;"));
+
+    assert!(matches!(
+        as_thread(&program, &worker, || call(
+            &condition,
+            condition_class,
+            "await",
+            "V"
+        )),
+        Some(DexExecutionResult::Parked(_))
+    ));
+    assert_eq!(owner(), None);
+    assert_eq!(
+        call(&lock, lock_class, "lock", "V"),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        call(&condition, condition_class, "signal", "V"),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(owner(), Some(map_identity_key(&main)));
+    call(&lock, lock_class, "unlock", "V");
+    assert_eq!(owner(), Some(map_identity_key(&worker)));
+}
+
+// cite: libcore ReentrantReadWriteLock.java#getReadHoldCount, tryAcquireShared, tryReleaseShared
+#[test]
+fn libcore_read_write_lock_counts_read_holds_per_thread() {
+    let program = DexProgram::new(Vec::new());
+    let rw_class = "Ljava/util/concurrent/locks/ReentrantReadWriteLock;";
+    let read_class = "Ljava/util/concurrent/locks/ReentrantReadWriteLock$ReadLock;";
+    let rw = program.allocate_object(rw_class.to_owned());
+    let init = builtin_method(rw_class, "<init>", "V", &[]);
+    program.invoke_builtin_method(&init, Some(&test_invocation(vec![rw.clone()])));
+    let read_lock = builtin_method(rw_class, "readLock", read_class, &[]);
+    let Some(DexExecutionResult::Value(read)) =
+        program.invoke_builtin_method(&read_lock, Some(&test_invocation(vec![rw.clone()])))
+    else {
+        panic!("readLock should return a lock");
+    };
+    let call = |target: &DexValue, class: &str, name: &str, return_type: &str| {
+        let method = builtin_method(class, name, return_type, &[]);
+        program.invoke_builtin_method(&method, Some(&test_invocation(vec![target.clone()])))
+    };
+    let read_holds = || call(&rw, rw_class, "getReadHoldCount", "I");
+    let other = program.allocate_object("Ljava/lang/Thread;".to_owned());
+
+    call(&read, read_class, "lock", "V");
+    call(&read, read_class, "lock", "V");
+    as_thread(&program, &other, || call(&read, read_class, "lock", "V"));
+    assert_eq!(read_holds(), Some(DexExecutionResult::Int(2)));
+    assert_eq!(
+        as_thread(&program, &other, read_holds),
+        Some(DexExecutionResult::Int(1))
+    );
+    call(&read, read_class, "unlock", "V");
+    assert_eq!(read_holds(), Some(DexExecutionResult::Int(1)));
+}
