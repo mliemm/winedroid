@@ -59,11 +59,27 @@ pub fn make_directory(dirfd: i32, path: &[u8], mode: u32) -> i64 {
             {
                 from_host()
             } else {
-                0
+                report_created(&reference, true)
             }
         }
         Resolved::Virtual(_) | Resolved::Synthetic(..) | Resolved::Device(_) => error(EEXIST),
     }
+}
+
+fn report_created(reference: &HostRef, is_directory: bool) -> i64 {
+    crate::fs_notify::created(reference.dir.as_fd(), reference.name(), is_directory);
+    0
+}
+
+fn watched_directory(reference: &HostRef) -> Option<crate::fs_notify::InodeKey> {
+    crate::fs_notify::directory_key(reference.dir.as_fd(), reference.name())
+}
+
+fn report_removed(watched: Option<crate::fs_notify::InodeKey>) -> i64 {
+    if let Some(key) = watched {
+        crate::fs_notify::removed_directory(key);
+    }
+    0
 }
 
 fn is_directory(reference: &HostRef) -> bool {
@@ -94,10 +110,11 @@ pub fn unlink_at(dirfd: i32, path: &[u8], flags: i32) -> i64 {
     } else {
         0
     };
+    let watched = watched_directory(&reference);
     if unsafe { libc::unlinkat(reference.dir_fd(), reference.name().as_ptr(), host_flags) } < 0 {
         from_host()
     } else {
-        0
+        report_removed(watched)
     }
 }
 
@@ -124,6 +141,13 @@ pub fn rename_at(old_dirfd: i32, old: &[u8], new_dirfd: i32, new: &[u8], flags: 
         at::RENAME_EXCHANGE => libc::RENAME_SWAP,
         _ => return error(EINVAL),
     };
+    let rename = crate::fs_notify::Rename::prepare(
+        source.dir.as_fd(),
+        source.name(),
+        destination.dir.as_fd(),
+        destination.name(),
+        flags == at::RENAME_EXCHANGE,
+    );
     let status = unsafe {
         libc::renameatx_np(
             source.dir_fd(),
@@ -136,6 +160,7 @@ pub fn rename_at(old_dirfd: i32, old: &[u8], new_dirfd: i32, new: &[u8], flags: 
     if status < 0 {
         from_host()
     } else {
+        rename.finish();
         0
     }
 }
@@ -160,7 +185,7 @@ fn symlink_at(target: &[u8], dirfd: i32, path: &[u8]) -> i64 {
             {
                 from_host()
             } else {
-                0
+                report_created(&reference, false)
             }
         }
         Ok(_) => error(EEXIST),
@@ -200,7 +225,7 @@ fn link_at(old_dirfd: i32, old: &[u8], new_dirfd: i32, new: &[u8], flags: i32) -
     {
         from_host()
     } else {
-        0
+        report_created(&destination, false)
     }
 }
 
@@ -399,7 +424,7 @@ fn make_fifo(dirfd: i32, path: &[u8], mode: u32) -> i64 {
             {
                 from_host()
             } else {
-                0
+                report_created(&reference, false)
             }
         }
         Err(errno) => error(errno),
@@ -413,7 +438,7 @@ fn make_node(dirfd: i32, path: &[u8], mode: u32) -> i64 {
             let result = super::fs_open::open_at(
                 dirfd,
                 path,
-                super::linux_abi::open::WRONLY
+                super::linux_abi::open::RDONLY
                     | super::linux_abi::open::CREAT
                     | super::linux_abi::open::EXCL,
                 mode & 0o7777,

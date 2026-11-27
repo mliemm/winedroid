@@ -560,7 +560,7 @@ impl DexProgram {
             runtime.shared_preferences_entries.clone()
         };
 
-        Some(self.persist_shared_preferences_entries(&entries))
+        self.persist_shared_preferences_entries(&entries)
     }
 
     fn take_shared_preferences_editor_state(
@@ -580,7 +580,7 @@ impl DexProgram {
     fn persist_shared_preferences_entries(
         &self,
         entries: &HashMap<(String, String), DexValue>,
-    ) -> bool {
+    ) -> Option<bool> {
         let storage_kinds = self
             .runtime
             .borrow()
@@ -590,7 +590,7 @@ impl DexProgram {
             .keys()
             .any(|(preferences, _)| !storage_kinds.contains_key(preferences))
         {
-            return false;
+            return Some(false);
         }
         let credential_entries = entries
             .iter()
@@ -612,7 +612,7 @@ impl DexProgram {
         let credential_persisted = self.persist_shared_preferences_store(
             crate::guest_filesystem::PrivateStorageKind::CredentialProtected,
             &credential_entries,
-        );
+        )?;
         let device_storage_available = self.guest_filesystem.is_some();
         #[cfg(test)]
         let device_storage_available =
@@ -621,29 +621,34 @@ impl DexProgram {
             self.persist_shared_preferences_store(
                 crate::guest_filesystem::PrivateStorageKind::DeviceProtected,
                 &device_entries,
-            )
+            )?
         } else {
             device_entries.is_empty()
         };
 
-        credential_persisted && device_persisted
+        Some(credential_persisted && device_persisted)
     }
 
     fn persist_shared_preferences_store(
         &self,
         storage: crate::guest_filesystem::PrivateStorageKind,
         entries: &HashMap<(String, String), DexValue>,
-    ) -> bool {
+    ) -> Option<bool> {
         let Ok(Some(store)) = self.shared_preferences_store(storage) else {
-            return false;
+            return Some(false);
         };
         let contents = serialize_shared_preferences_store(entries);
         match store {
-            SharedPreferencesStore::Guest(path) => path.atomic_replace(contents.as_bytes()).is_ok(),
+            SharedPreferencesStore::Guest(path) => match path.atomic_replace(contents.as_bytes()) {
+                Ok(()) => Some(true),
+                Err(error) if error.kind() == std::io::ErrorKind::Unsupported => None,
+                Err(_) => Some(false),
+            },
             #[cfg(test)]
-            SharedPreferencesStore::Host(path) => {
-                persist_host_shared_preferences_store(&path, contents.as_bytes())
-            }
+            SharedPreferencesStore::Host(path) => Some(persist_host_shared_preferences_store(
+                &path,
+                contents.as_bytes(),
+            )),
         }
     }
 

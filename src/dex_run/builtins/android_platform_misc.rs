@@ -191,19 +191,27 @@ impl DexProgram {
             ) else {
                 return None;
             };
-            let exists = self.guest_filesystem.as_ref().is_some_and(|filesystem| {
-                filesystem
-                    .resolve(
-                        &path,
-                        crate::external_storage::ExternalStorageAccess::Read,
-                        &self.external_storage_policy,
-                    )
-                    .is_ok_and(|resolved| resolved.metadata().is_ok())
-            });
-            if exists {
+            let Some(DexValue::Int(mask)) =
+                self.read_stored_instance_field(observer, &file_observer_field("I", "mMask"))
+            else {
+                return None;
+            };
+            let mask = mask as u32;
+            if mask & !crate::fs_notify::WIRED_EVENTS != 0 {
                 return None;
             }
-            let descriptors = self.allocate_filled_array("[I".to_owned(), vec![DexValue::Int(-1)]);
+            let target = self.file_observer_watch_target(&path)?;
+            let instance = self.file_observer_instance();
+            let wd = target
+                .and_then(|key| instance.add_watch(key, mask))
+                .unwrap_or(-1);
+            if wd >= 0 {
+                self.runtime
+                    .borrow_mut()
+                    .file_observers
+                    .insert(wd, observer.clone());
+            }
+            let descriptors = self.allocate_filled_array("[I".to_owned(), vec![DexValue::Int(wd)]);
             self.write_stored_instance_field(
                 observer,
                 &file_observer_field("[I", "mDescriptors"),
@@ -219,14 +227,20 @@ impl DexProgram {
         {
             let observer = invocation?.arguments.first()?;
             if let Some(descriptors) = self.file_observer_descriptors(observer) {
-                let active = self
+                let entries = self
                     .runtime
                     .borrow()
                     .array_entries
                     .get(&map_identity_key(&descriptors))
-                    .is_some_and(|entries| entries.iter().any(|entry| *entry != DexValue::Int(-1)));
-                if active {
-                    return None;
+                    .cloned()
+                    .unwrap_or_default();
+                let instance = self.runtime.borrow().file_observer_instance.clone();
+                if let Some(instance) = instance {
+                    for entry in entries {
+                        if let DexValue::Int(wd) = entry {
+                            instance.rm_watch(wd);
+                        }
+                    }
                 }
                 self.write_stored_instance_field(
                     observer,
@@ -4315,6 +4329,53 @@ impl DexProgram {
     fn file_observer_descriptors(&self, observer: &DexValue) -> Option<DexValue> {
         self.read_stored_instance_field(observer, &file_observer_field("[I", "mDescriptors"))
             .filter(dex_value_is_object_like)
+    }
+
+    fn file_observer_watch_target(&self, path: &str) -> Option<Option<crate::fs_notify::InodeKey>> {
+        let filesystem = self.guest_filesystem.as_ref()?;
+        let resolved = match filesystem.resolve_typed(
+            path,
+            crate::external_storage::ExternalStorageAccess::Read,
+            &self.external_storage_policy,
+        ) {
+            Ok(resolved) => resolved,
+            Err(failure)
+                if failure.kind == crate::guest_filesystem::GuestPathError::OutsideMounts =>
+            {
+                return None;
+            }
+            Err(_) => return Some(None),
+        };
+        match resolved.metadata() {
+            Ok(metadata) if metadata.kind == crate::capability_fs::MetadataKind::Directory => {
+                Some(resolved.directory_key().ok())
+            }
+            Ok(_) => None,
+            Err(_) => Some(None),
+        }
+    }
+
+    // cite: frameworks-base FileObserver.java#ObserverThread, s_observerThread
+    // cite: frameworks-base android_util_FileObserver.cpp#android_os_fileobserver_init
+    fn file_observer_instance(&self) -> std::sync::Arc<crate::fs_notify::Instance> {
+        if let Some(instance) = self.runtime.borrow().file_observer_instance.clone() {
+            return instance;
+        }
+        let thread = self.allocate_object("Ljava/lang/Thread;".to_owned());
+        self.write_stored_instance_field(
+            &thread,
+            &DexFieldId {
+                class_descriptor: "Ljava/lang/Thread;".to_owned(),
+                type_descriptor: "Ljava/lang/String;".to_owned(),
+                name: "name".to_owned(),
+            },
+            DexValue::String(std::rc::Rc::from("FileObserver")),
+        );
+        let instance = crate::fs_notify::Instance::new();
+        let mut runtime = self.runtime.borrow_mut();
+        runtime.file_observer_thread = Some(thread);
+        runtime.file_observer_instance = Some(instance.clone());
+        instance
     }
 }
 

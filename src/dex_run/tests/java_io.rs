@@ -1551,22 +1551,71 @@ fn builtin_byte_array_output_stream_to_byte_array_returns_empty_byte_array() {
 }
 
 #[test]
-fn builtin_closeable_close_returns_void() {
-    let program = DexProgram::new(Vec::new());
-    let method = DexMethodId {
-        class_descriptor: "Ljava/io/Closeable;".to_owned(),
-        name: "close".to_owned(),
-        proto: crate::dex::DexProto {
-            shorty: "V".to_owned(),
-            return_type: "V".to_owned(),
-            parameters: Vec::new(),
-        },
+fn libcore_closeable_close_dispatches_to_the_receiver_class_and_releases_the_writer() {
+    let fixture = GuestIoFixture::new("closeable_close");
+    let program = fixture.program();
+    let directory = fixture.private.join("files");
+    fs::create_dir_all(&directory).expect("files directory should exist");
+    let instance = crate::fs_notify::Instance::new();
+    let watched = crate::capability_fs::Directory::open_ambient(&directory).unwrap();
+    let wd = instance
+        .add_watch(
+            crate::fs_notify::InodeKey::of(watched.as_fd()).unwrap(),
+            crate::fs_notify::WIRED_EVENTS,
+        )
+        .unwrap();
+    let event = |mask: u32, name: &str| crate::fs_notify::Event {
+        wd,
+        mask,
+        name: Some(std::ffi::CString::new(name).unwrap()),
     };
-    let invocation = test_invocation(vec![DexValue::Reference(std::rc::Rc::from("stream"))]);
+    let close = builtin_method("Ljava/io/Closeable;", "close", "V", &[]);
+    let construct = |class: &str, name: &str| {
+        let receiver = program.allocate_object(class.to_owned());
+        let constructor = builtin_method(class, "<init>", "V", &["Ljava/io/File;"]);
+        assert_eq!(
+            program.invoke_builtin_method(
+                &constructor,
+                Some(&test_invocation(vec![
+                    receiver.clone(),
+                    file_value(&format!("/data/user/0/com.example/files/{name}")),
+                ]))
+            ),
+            Some(DexExecutionResult::Void)
+        );
+        receiver
+    };
+
+    for (class, name) in [
+        ("Ljava/io/FileOutputStream;", "stream.bin"),
+        ("Ljava/io/FileWriter;", "writer.txt"),
+    ] {
+        let receiver = construct(class, name);
+        assert_eq!(
+            instance.take_events(),
+            vec![event(crate::fs_notify::IN_CREATE, name)]
+        );
+        assert_eq!(
+            program.invoke_builtin_method(&close, Some(&test_invocation(vec![receiver]))),
+            Some(DexExecutionResult::Void),
+            "{class}"
+        );
+        assert_eq!(
+            instance.take_events(),
+            vec![event(crate::fs_notify::IN_CLOSE_WRITE, name)],
+            "Closeable.java close on a {class} receiver runs that class's close, which releases the writable descriptor"
+        );
+    }
 
     assert_eq!(
-        program.invoke_builtin_method(&method, Some(&invocation)),
-        Some(DexExecutionResult::Void)
+        program.invoke_builtin_method(
+            &close,
+            Some(&test_invocation(vec![DexValue::Reference(
+                std::rc::Rc::from("stream")
+            )]))
+        ),
+        None,
+        "a receiver class with no close implementation stays a visible missing method"
     );
 }
 
@@ -3802,12 +3851,13 @@ fn libcore_object_input_stream_reads_the_openjdk_wire_bytes() {
 }
 
 #[test]
-fn file_observer_watch_on_a_missing_path_gets_a_failed_descriptor() {
+fn file_observer_missing_path_fails_the_descriptor_and_unwired_watches_are_missing() {
     // cite: frameworks-base FileObserver.java#startWatching, stopWatching
     // cite: frameworks-base android_util_FileObserver.cpp#android_os_fileobserver_startWatching
     let fixture = GuestIoFixture::new("file_observer");
     let program = fixture.program();
     fs::create_dir_all(fixture.private.join("files/present")).expect("present directory");
+    fs::write(fixture.private.join("files/plain"), b"x").expect("plain file");
     let constructor = java_io_method(
         "Landroid/os/FileObserver;",
         "<init>",
@@ -3816,7 +3866,7 @@ fn file_observer_watch_on_a_missing_path_gets_a_failed_descriptor() {
     );
     let start = java_io_method("Landroid/os/FileObserver;", "startWatching", "V", &[]);
     let stop = java_io_method("Landroid/os/FileObserver;", "stopWatching", "V", &[]);
-    let observer_for = |path: &str| {
+    let observer_with_mask = |path: &str, mask: i32| {
         let observer = program.allocate_object("Landroid/os/FileObserver;".to_owned());
         invoke_value(
             &program,
@@ -3824,11 +3874,12 @@ fn file_observer_watch_on_a_missing_path_gets_a_failed_descriptor() {
             vec![
                 observer.clone(),
                 DexValue::String(std::rc::Rc::from(path)),
-                DexValue::Int(0x108),
+                DexValue::Int(mask),
             ],
         );
         observer
     };
+    let observer_for = |path: &str| observer_with_mask(path, 0x108);
     let descriptors_field = DexFieldId {
         class_descriptor: "Landroid/os/FileObserver;".to_owned(),
         type_descriptor: "[I".to_owned(),
@@ -3857,11 +3908,31 @@ fn file_observer_watch_on_a_missing_path_gets_a_failed_descriptor() {
     );
 
     let present = observer_for("/data/user/0/com.example/files/present");
-    let start_method = java_io_method("Landroid/os/FileObserver;", "startWatching", "V", &[]);
     assert_eq!(
-        program.invoke_builtin_method(&start_method, Some(&test_invocation(vec![present]))),
-        None
+        invoke_value(&program, &start, vec![present.clone()]),
+        DexExecutionResult::Void
     );
+    let descriptors = program
+        .read_stored_instance_field(&present, &descriptors_field)
+        .expect("startWatching should record descriptors");
+    assert_eq!(
+        program.runtime.borrow().array_entries[&map_identity_key(&descriptors)],
+        [DexValue::Int(1)],
+        "inotify_add_watch(2) returns the first watch descriptor of the ObserverThread m_fd"
+    );
+
+    for (path, mask) in [
+        ("/data/user/0/com.example/files/present", 0x102),
+        ("/data/user/0/com.example/files/plain", 0x108),
+        ("/proc/self", 0x108),
+    ] {
+        let observer = observer_with_mask(path, mask);
+        assert_eq!(
+            program.invoke_builtin_method(&start, Some(&test_invocation(vec![observer]))),
+            None,
+            "{path} with mask {mask:#x} needs an unwired inotify producer and must stay visible"
+        );
+    }
 }
 
 #[test]

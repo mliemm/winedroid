@@ -29,6 +29,7 @@ mod elf;
 mod error;
 mod external_storage;
 mod frame_clock;
+mod fs_notify;
 mod fxhash;
 mod guest_app_paths;
 mod guest_filesystem;

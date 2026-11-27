@@ -10,6 +10,8 @@ use std::sync::Arc;
 use rustix::fs::RenameFlags;
 use rustix::fs::{self, AtFlags, Dir, FileType, Mode, OFlags, Stat};
 
+use crate::fs_notify::{self, NotifiedFile};
+
 static TEMPORARY_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 const DIRECTORY_FLAGS: OFlags = OFlags::RDONLY
@@ -183,21 +185,23 @@ impl Directory {
         Ok(bytes)
     }
 
-    pub fn open_truncate(&self, components: &[CString]) -> io::Result<File> {
+    pub fn open_truncate(&self, components: &[CString]) -> io::Result<NotifiedFile> {
         self.open_write(components, OFlags::WRONLY | OFlags::CREATE | OFlags::TRUNC)
     }
 
-    pub fn open_append(&self, components: &[CString]) -> io::Result<File> {
+    pub fn open_append(&self, components: &[CString]) -> io::Result<NotifiedFile> {
         self.open_write(components, OFlags::WRONLY | OFlags::CREATE | OFlags::APPEND)
     }
 
-    pub fn create_new(&self, components: &[CString]) -> io::Result<File> {
+    pub fn create_new(&self, components: &[CString]) -> io::Result<NotifiedFile> {
         self.open_write(components, OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL)
     }
 
     pub fn mkdir(&self, components: &[CString]) -> io::Result<()> {
         let parent = self.parent(components)?;
-        fs::mkdirat(&parent.directory, &parent.leaf, DIRECTORY_MODE).map_err(io::Error::from)
+        fs::mkdirat(&parent.directory, &parent.leaf, DIRECTORY_MODE).map_err(io::Error::from)?;
+        fs_notify::created(parent.directory.as_fd(), &parent.leaf, true);
+        Ok(())
     }
 
     pub fn mkdir_all(&self, components: &[CString]) -> io::Result<bool> {
@@ -218,7 +222,10 @@ impl Directory {
                 Ok(child) => child,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
                     match fs::mkdirat(parent, component, DIRECTORY_MODE) {
-                        Ok(()) => created = true,
+                        Ok(()) => {
+                            created = true;
+                            fs_notify::created(parent.as_fd(), component, true);
+                        }
                         Err(rustix::io::Errno::EXIST) => {}
                         Err(error) => return Err(io::Error::from(error)),
                     }
@@ -261,7 +268,12 @@ impl Directory {
         } else {
             AtFlags::empty()
         };
-        fs::unlinkat(&parent.directory, &parent.leaf, flags).map_err(io::Error::from)
+        let watched = fs_notify::directory_key(parent.directory.as_fd(), &parent.leaf);
+        fs::unlinkat(&parent.directory, &parent.leaf, flags).map_err(io::Error::from)?;
+        if let Some(key) = watched {
+            fs_notify::removed_directory(key);
+        }
+        Ok(())
     }
 
     pub fn rename(
@@ -272,7 +284,17 @@ impl Directory {
     ) -> io::Result<()> {
         let from = self.parent(from_components)?;
         let to = to.parent(to_components)?;
-        fs::renameat(&from.directory, &from.leaf, &to.directory, &to.leaf).map_err(io::Error::from)
+        let rename = fs_notify::Rename::prepare(
+            from.directory.as_fd(),
+            &from.leaf,
+            to.directory.as_fd(),
+            &to.leaf,
+            false,
+        );
+        fs::renameat(&from.directory, &from.leaf, &to.directory, &to.leaf)
+            .map_err(io::Error::from)?;
+        rename.finish();
+        Ok(())
     }
 
     pub fn rename_noreplace(
@@ -283,28 +305,33 @@ impl Directory {
     ) -> io::Result<()> {
         let from = self.parent(from_components)?;
         let to = to.parent(to_components)?;
+        let rename = fs_notify::Rename::prepare(
+            from.directory.as_fd(),
+            &from.leaf,
+            to.directory.as_fd(),
+            &to.leaf,
+            false,
+        );
         #[cfg(not(target_os = "emscripten"))]
-        {
-            fs::renameat_with(
-                &from.directory,
-                &from.leaf,
-                &to.directory,
-                &to.leaf,
-                RenameFlags::NOREPLACE,
-            )
-            .map_err(io::Error::from)
-        }
+        fs::renameat_with(
+            &from.directory,
+            &from.leaf,
+            &to.directory,
+            &to.leaf,
+            RenameFlags::NOREPLACE,
+        )
+        .map_err(io::Error::from)?;
         #[cfg(target_os = "emscripten")]
-        {
-            match fs::statat(&to.directory, &to.leaf, AtFlags::SYMLINK_NOFOLLOW) {
-                Ok(_) => Err(io::Error::from(io::ErrorKind::AlreadyExists)),
-                Err(rustix::io::Errno::NOENT) => {
-                    fs::renameat(&from.directory, &from.leaf, &to.directory, &to.leaf)
-                        .map_err(io::Error::from)
-                }
-                Err(error) => Err(io::Error::from(error)),
+        match fs::statat(&to.directory, &to.leaf, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(_) => return Err(io::Error::from(io::ErrorKind::AlreadyExists)),
+            Err(rustix::io::Errno::NOENT) => {
+                fs::renameat(&from.directory, &from.leaf, &to.directory, &to.leaf)
+                    .map_err(io::Error::from)?
             }
+            Err(error) => return Err(io::Error::from(error)),
         }
+        rename.finish();
+        Ok(())
     }
 
     pub fn read_dir_names(&self, components: &[CString]) -> io::Result<Vec<String>> {
@@ -330,6 +357,9 @@ impl Directory {
 
     pub fn atomic_replace(&self, components: &[CString], bytes: &[u8]) -> io::Result<()> {
         let parent = self.parent(components)?;
+        if let Some(error) = fs_notify::unsynthesized(parent.directory.as_fd(), "atomic_replace") {
+            return Err(error);
+        }
         let temporary = create_temporary(&parent.directory, &parent.leaf)?;
         let temporary_name = temporary.0;
         let mut file = temporary.1;
@@ -375,6 +405,16 @@ impl Directory {
         fs::openat(self.fd.as_ref(), name, flags, mode).map_err(io::Error::from)
     }
 
+    pub fn open_leaf_reporting_creation(
+        &self,
+        name: &CStr,
+        flags: OFlags,
+        mode: Mode,
+    ) -> io::Result<(OwnedFd, bool)> {
+        validate_leaf_component(name)?;
+        open_reporting_creation(self.fd.as_ref(), name, flags, mode)
+    }
+
     pub fn unlink_leaf(&self, name: &CStr) -> io::Result<()> {
         validate_leaf_component(name)?;
         fs::unlinkat(self.fd.as_ref(), name, AtFlags::empty()).map_err(io::Error::from)
@@ -402,16 +442,23 @@ impl Directory {
         ))
     }
 
-    fn open_write(&self, components: &[CString], flags: OFlags) -> io::Result<File> {
+    fn open_write(&self, components: &[CString], flags: OFlags) -> io::Result<NotifiedFile> {
         let parent = self.parent(components)?;
-        let fd = fs::openat(
+        let (fd, created) = open_reporting_creation(
             &parent.directory,
             &parent.leaf,
             flags | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             FILE_MODE,
-        )
-        .map_err(io::Error::from)?;
-        Ok(File::from(fd))
+        )?;
+        if created {
+            fs_notify::created(parent.directory.as_fd(), &parent.leaf, false);
+        }
+        let close = fs_notify::close_note(parent.directory.as_fd(), &parent.leaf, fd.as_fd());
+        Ok(NotifiedFile::new(File::from(fd), close))
+    }
+
+    pub fn directory_key(&self, components: &[CString]) -> io::Result<fs_notify::InodeKey> {
+        fs_notify::InodeKey::of(self.open_directory_path(components)?)
     }
 
     fn open_directory_path(&self, components: &[CString]) -> io::Result<OwnedFd> {
@@ -473,6 +520,32 @@ impl Directory {
 enum Target {
     Directory(OwnedFd),
     Leaf(Parent),
+}
+
+fn open_reporting_creation(
+    parent: impl AsFd,
+    name: &CStr,
+    flags: OFlags,
+    mode: Mode,
+) -> io::Result<(OwnedFd, bool)> {
+    if !flags.contains(OFlags::CREATE) || flags.contains(OFlags::EXCL) {
+        let fd = fs::openat(&parent, name, flags, mode).map_err(io::Error::from)?;
+        return Ok((fd, flags.contains(OFlags::CREATE)));
+    }
+    let existing_flags = flags.difference(OFlags::CREATE);
+    loop {
+        match fs::openat(&parent, name, flags | OFlags::EXCL, mode) {
+            Ok(fd) => return Ok((fd, true)),
+            Err(rustix::io::Errno::EXIST) => {
+                match fs::openat(&parent, name, existing_flags, mode) {
+                    Ok(fd) => return Ok((fd, false)),
+                    Err(rustix::io::Errno::NOENT) => continue,
+                    Err(error) => return Err(io::Error::from(error)),
+                }
+            }
+            Err(error) => return Err(io::Error::from(error)),
+        }
+    }
 }
 
 fn open_directory(parent: impl AsFd, name: &CStr) -> io::Result<OwnedFd> {

@@ -115,26 +115,6 @@ pub fn absolute(dirfd: i32, path: &[u8]) -> Result<String, i32> {
     Ok(normalize(&format!("{base}/{text}")))
 }
 
-fn rewrite_alias(path: &str) -> String {
-    // cite: frameworks-base StrictMode.java#onCredentialProtectedPathAccess
-    for (alias, target) in [
-        ("/data/data", "/data/user/0"),
-        ("/storage/self/primary", "/storage/emulated/0"),
-        ("/mnt/sdcard", "/storage/emulated/0"),
-    ] {
-        if path == alias {
-            return target.to_string();
-        }
-        if let Some(rest) = path
-            .strip_prefix(alias)
-            .and_then(|rest| rest.strip_prefix('/'))
-        {
-            return format!("{target}/{rest}");
-        }
-    }
-    path.to_string()
-}
-
 fn directory_entries(names: &[&str]) -> Vec<(String, u8)> {
     names
         .iter()
@@ -298,7 +278,7 @@ pub fn resolve_absolute(path: &str, access: Access) -> Result<Resolved, i32> {
         host_log::line("FIXME: guest filesystem is not installed; next missing primitive: guest context install before native file calls");
         ENOENT
     })?;
-    let path = rewrite_alias(path);
+    let path = crate::guest_filesystem::rewrite_guest_alias(path);
     if let Some((entries, mode, owner)) = skeleton(&path, &context) {
         return Ok(Resolved::Virtual(VirtualDir {
             guest_path: path,

@@ -108,19 +108,23 @@ impl ResolvedGuestPath {
         self.root.read(&self.components)
     }
 
-    pub fn open_truncate(&self) -> io::Result<File> {
+    pub fn open_truncate(&self) -> io::Result<crate::fs_notify::NotifiedFile> {
         self.require_writable_mount()?;
         self.root.open_truncate(&self.components)
     }
 
-    pub fn open_append(&self) -> io::Result<File> {
+    pub fn open_append(&self) -> io::Result<crate::fs_notify::NotifiedFile> {
         self.require_writable_mount()?;
         self.root.open_append(&self.components)
     }
 
-    pub fn create_new(&self) -> io::Result<File> {
+    pub fn create_new(&self) -> io::Result<crate::fs_notify::NotifiedFile> {
         self.require_writable_mount()?;
         self.root.create_new(&self.components)
+    }
+
+    pub fn directory_key(&self) -> io::Result<crate::fs_notify::InodeKey> {
+        self.root.directory_key(&self.components)
     }
 
     pub fn mkdir(&self) -> io::Result<()> {
@@ -326,7 +330,7 @@ impl GuestFilesystem {
         access: ExternalStorageAccess,
         external_storage_policy: &ExternalStoragePolicy,
     ) -> std::result::Result<ResolvedGuestPath, GuestPathFailure> {
-        let normalized = mount_match_path(guest_path)?;
+        let normalized = rewrite_guest_alias(&mount_match_path(guest_path)?);
         if let Some(relative) = self.app_code_relative_path(&normalized) {
             if access == ExternalStorageAccess::Write {
                 return Err(failure(
@@ -597,6 +601,26 @@ pub fn canonical_guest_path(path: &str) -> Result<String> {
     }
 
     Ok(format!("/{}", components.join("/")))
+}
+
+pub fn rewrite_guest_alias(path: &str) -> String {
+    // cite: frameworks-base StrictMode.java#onCredentialProtectedPathAccess
+    for (alias, target) in [
+        ("/data/data", "/data/user/0"),
+        ("/storage/self/primary", "/storage/emulated/0"),
+        ("/mnt/sdcard", "/storage/emulated/0"),
+    ] {
+        if path == alias {
+            return target.to_string();
+        }
+        if let Some(rest) = path
+            .strip_prefix(alias)
+            .and_then(|rest| rest.strip_prefix('/'))
+        {
+            return format!("{target}/{rest}");
+        }
+    }
+    path.to_string()
 }
 
 fn mount_match_path(path: &str) -> std::result::Result<String, GuestPathFailure> {

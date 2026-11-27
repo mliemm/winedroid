@@ -678,17 +678,32 @@ impl DexProgram {
         {
             let invocation = invocation?;
             // cite: libcore Writer.java#write
-            self.file_writer_write_string(invocation)?;
-
-            return Some(DexExecutionResult::Void);
+            return self.file_writer_write_string(invocation);
         }
 
         if matches!(
             method.class_descriptor.as_str(),
             "Ljava/io/BufferedWriter;" | "Ljava/io/FileWriter;"
-        ) && matches!(method.name.as_str(), "close" | "flush")
+        ) && method.name == "flush"
             && method.proto.descriptor_is("()V")
         {
+            return Some(DexExecutionResult::Void);
+        }
+
+        // cite: libcore BufferedWriter.java#close
+        // cite: libcore StreamEncoder.java#close, implClose
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/io/BufferedWriter;" | "Ljava/io/FileWriter;"
+        ) && method.name == "close"
+            && method.proto.descriptor_is("()V")
+        {
+            if let Some(writer) = self.resolve_file_writer(invocation?.arguments.first()?) {
+                self.runtime
+                    .borrow_mut()
+                    .output_streams
+                    .remove(&map_identity_key(&writer));
+            }
             return Some(DexExecutionResult::Void);
         }
 
@@ -1058,7 +1073,7 @@ impl DexProgram {
             && method.name == "close"
             && method.proto.descriptor_is("()V")
         {
-            return Some(DexExecutionResult::Void);
+            return self.closeable_close(method, invocation?);
         }
 
         None
@@ -1498,16 +1513,20 @@ impl DexProgram {
             ));
         };
         if read_write {
-            let created = self
+            let opened = self
                 .resolved_guest_path_result(&name, ExternalStorageAccess::Write)
-                .and_then(|path| {
-                    path.open_append()
-                        .map(drop)
-                        .map_err(|error| error.to_string())
-                });
-            if let Err(detail) = created {
-                let exception = self.file_not_found_exception_for_path(&name, &detail);
-                return Some(DexExecutionResult::Throw(exception));
+                .and_then(|path| path.open_append().map_err(|error| error.to_string()));
+            match opened {
+                Ok(file) => {
+                    self.runtime
+                        .borrow_mut()
+                        .output_streams
+                        .insert(map_identity_key(&invocation.arguments[0]), file);
+                }
+                Err(detail) => {
+                    let exception = self.file_not_found_exception_for_path(&name, &detail);
+                    return Some(DexExecutionResult::Throw(exception));
+                }
             }
         } else if let Err(exception) = self.open_guest_file_for_read(&name) {
             return Some(DexExecutionResult::Throw(exception));
@@ -1606,6 +1625,10 @@ impl DexProgram {
                 self.close_file_channel(&channel);
             }
         }
+        self.runtime
+            .borrow_mut()
+            .output_streams
+            .remove(&map_identity_key(file));
 
         self.write_stored_instance_field(
             file,
@@ -1683,6 +1706,36 @@ impl DexProgram {
                 }),
             )),
         }
+    }
+
+    // cite: art interpreter_common.h#DoInvoke, FindMethodToCall
+    // cite: libcore Closeable.java#close
+    fn closeable_close(
+        &self,
+        method: &DexMethodId,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        if self.guest_overrides(method, Some(invocation)) {
+            return None;
+        }
+        let receiver = invocation.arguments.first()?;
+        if self.value_matches_type(receiver, "Ljava/io/FileOutputStream;")
+            && self.file_output_stream_is_open_by_path(receiver)
+        {
+            return self.file_output_stream_close(receiver);
+        }
+        let mut current = value_class_descriptor(receiver).map(str::to_owned);
+        while let Some(class_descriptor) = current {
+            let candidate = DexMethodId {
+                class_descriptor,
+                ..method.clone()
+            };
+            if let Some(result) = self.invoke_builtin_method(&candidate, Some(invocation)) {
+                return Some(result);
+            }
+            current = self.superclass_descriptor(&candidate.class_descriptor);
+        }
+        None
     }
 
     // cite: libcore FileOutputStream.java#close, closed
@@ -1930,10 +1983,18 @@ impl DexProgram {
             }
         };
         // cite: libcore FileWriter.java#FileWriter
-        if let Err(error) = path.open_truncate() {
-            let exception = self.file_not_found_exception_for_path(&guest_path, &error.to_string());
-            return Some(DexExecutionResult::Throw(exception));
-        }
+        let file = match path.open_truncate() {
+            Ok(file) => file,
+            Err(error) => {
+                let exception =
+                    self.file_not_found_exception_for_path(&guest_path, &error.to_string());
+                return Some(DexExecutionResult::Throw(exception));
+            }
+        };
+        self.runtime
+            .borrow_mut()
+            .output_streams
+            .insert(map_identity_key(&invocation.arguments[0]), file);
 
         self.write_stored_instance_field(
             &invocation.arguments[0],
@@ -1943,30 +2004,44 @@ impl DexProgram {
         .then_some(DexExecutionResult::Void)
     }
 
-    fn resolve_file_writer_path(&self, value: &DexValue) -> Option<String> {
-        if let Some(DexValue::String(path)) =
+    fn resolve_file_writer(&self, value: &DexValue) -> Option<DexValue> {
+        if let Some(DexValue::String(_)) =
             self.read_stored_instance_field(value, &file_writer_path_field())
         {
-            return Some(path.to_string());
+            return Some(value.clone());
         }
 
         let delegate = self.read_stored_instance_field(value, &reader_delegate_field())?;
-        self.resolve_file_writer_path(&delegate)
+        self.resolve_file_writer(&delegate)
     }
 
-    fn file_writer_write_string(&self, invocation: &DexInvocation) -> Option<()> {
-        let writer = invocation.arguments.first()?;
+    // cite: libcore BufferedWriter.java#ensureOpen
+    // cite: libcore StreamEncoder.java#ensureOpen
+    fn file_writer_write_string(&self, invocation: &DexInvocation) -> Option<DexExecutionResult> {
+        let writer = self.resolve_file_writer(invocation.arguments.first()?)?;
         let DexValue::String(text) = invocation.arguments.get(1)? else {
             return None;
         };
-        let guest_path = self.resolve_file_writer_path(writer)?;
-        let path = self.resolved_guest_path(&guest_path, ExternalStorageAccess::Write)?;
 
         use std::io::Write;
-        let mut file = path.open_append().ok()?;
-        file.write_all(text.as_bytes()).ok()?;
-
-        Some(())
+        let written = {
+            let mut runtime = self.runtime.borrow_mut();
+            runtime
+                .output_streams
+                .get_mut(&map_identity_key(&writer))
+                .map(|file| file.write_all(text.as_bytes()))
+        };
+        let detail = match written {
+            Some(Ok(())) => return Some(DexExecutionResult::Void),
+            Some(Err(error)) => error.to_string(),
+            None => "Stream closed".to_owned(),
+        };
+        Some(DexExecutionResult::Throw(
+            self.allocate_generated_exception(DexGeneratedException {
+                class_descriptor: "Ljava/io/IOException;".to_owned(),
+                detail_message: Some(detail),
+            }),
+        ))
     }
 
     // cite: libcore FileReader.java#FileReader

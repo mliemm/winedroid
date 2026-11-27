@@ -1,6 +1,6 @@
 use std::ffi::{CStr, CString};
 use std::mem;
-use std::os::fd::{IntoRawFd, OwnedFd, RawFd};
+use std::os::fd::{IntoRawFd, RawFd};
 use std::os::raw::{c_char, c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{fence, AtomicU64, Ordering};
@@ -52,6 +52,7 @@ struct CapabilityFile {
     base: ffi::sqlite3_file,
     state: *const VfsState,
     fd: RawFd,
+    writable: bool,
     name: CString,
     device: u64,
     inode: u64,
@@ -227,12 +228,19 @@ unsafe extern "C" fn vfs_open(
     if flags & ffi::SQLITE_OPEN_EXCLUSIVE != 0 || temporary {
         open_flags |= OFlags::EXCL;
     }
+    if open_flags.intersects(OFlags::RDWR | OFlags::CREATE)
+        && crate::fs_notify::unsynthesized(state.directory.as_fd(), "SQLite VFS xOpen").is_some()
+    {
+        return ffi::SQLITE_CANTOPEN;
+    }
     let track_creation = flags & ffi::SQLITE_OPEN_MAIN_JOURNAL != 0
         && flags & ffi::SQLITE_OPEN_CREATE != 0
         && flags & ffi::SQLITE_OPEN_EXCLUSIVE == 0
         && !temporary;
     let opened = if track_creation {
-        open_leaf_with_creation_status(&state.directory, &leaf, open_flags, FILE_MODE)
+        state
+            .directory
+            .open_leaf_reporting_creation(&leaf, open_flags, FILE_MODE)
     } else {
         state
             .directory
@@ -278,6 +286,7 @@ unsafe extern "C" fn vfs_open(
             },
             state: state as *const VfsState,
             fd,
+            writable: actual_flags & ffi::SQLITE_OPEN_READWRITE != 0,
             name: leaf,
             device: stat.st_dev as u64,
             inode: stat.st_ino as u64,
@@ -290,29 +299,6 @@ unsafe extern "C" fn vfs_open(
         },
     );
     ffi::SQLITE_OK
-}
-
-fn open_leaf_with_creation_status(
-    directory: &Directory,
-    leaf: &CStr,
-    flags: OFlags,
-    mode: Mode,
-) -> std::io::Result<(OwnedFd, bool)> {
-    let exclusive_flags = flags | OFlags::CREATE | OFlags::EXCL;
-    let existing_flags = flags.difference(OFlags::CREATE | OFlags::EXCL);
-    loop {
-        match directory.open_leaf(leaf, exclusive_flags, mode) {
-            Ok(fd) => return Ok((fd, true)),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                match directory.open_leaf(leaf, existing_flags, mode) {
-                    Ok(fd) => return Ok((fd, false)),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                    Err(error) => return Err(error),
-                }
-            }
-            Err(error) => return Err(error),
-        }
-    }
 }
 
 unsafe extern "C" fn vfs_delete(
@@ -423,12 +409,15 @@ unsafe extern "C" fn file_close(file: *mut ffi::sqlite3_file) -> c_int {
     if file.shm_fd >= 0 {
         libc::close(file.shm_fd);
     }
-    let result = if libc::close(file.fd) == 0 {
+    let closed = libc::close(file.fd) == 0;
+    let unreported = file.writable
+        && crate::fs_notify::unsynthesized((*file.state).directory.as_fd(), "SQLite VFS xClose")
+            .is_some();
+    if closed && !unreported {
         ffi::SQLITE_OK
     } else {
         ffi::SQLITE_IOERR_CLOSE
-    };
-    result
+    }
 }
 
 unsafe extern "C" fn file_read(
@@ -1162,6 +1151,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn capability_vfs_open_in_a_watched_directory_is_a_missing_primitive() {
+        let fixture = Fixture::new("watched");
+        let directory = Directory::open_ambient(&fixture.database_directory).unwrap();
+        let instance = crate::fs_notify::Instance::new();
+        instance
+            .add_watch(
+                crate::fs_notify::InodeKey::of(directory.as_fd()).unwrap(),
+                crate::fs_notify::IN_CREATE,
+            )
+            .unwrap();
+
+        assert!(
+            CapabilityConnection::open(directory, CString::new("main.db").unwrap()).is_err(),
+            "the winedroid VFS opens host artifacts real sqlite never opens, so a watched directory is unsupported"
+        );
+        assert!(instance.take_events().is_empty());
+        assert!(!fixture.database_directory.join("main.db").exists());
+    }
+
+    #[test]
+    fn capability_vfs_close_of_a_file_opened_before_the_watch_is_a_missing_primitive() {
+        let fixture = Fixture::new("watched_close");
+        let directory = Directory::open_ambient(&fixture.database_directory).unwrap();
+        let key = crate::fs_notify::InodeKey::of(directory.as_fd()).unwrap();
+        let connection =
+            CapabilityConnection::open(directory, CString::new("main.db").unwrap()).unwrap();
+        connection
+            .connection()
+            .execute_batch("CREATE TABLE values_table(value INTEGER);")
+            .unwrap();
+        let instance = crate::fs_notify::Instance::new();
+        instance
+            .add_watch(key, crate::fs_notify::IN_CLOSE_WRITE)
+            .unwrap();
+        drop(connection);
+
+        assert!(
+            crate::missing::recorded_entries()
+                .iter()
+                .any(|entry| entry.primitive == "inotify events for SQLite VFS xClose"),
+            "inotify(7) IN_CLOSE_WRITE follows the close of the writable database descriptor, so a silent close is a missed event"
+        );
+        assert!(instance.take_events().is_empty());
+    }
+
+    #[test]
     fn capability_vfs_persists_rollback_journal_transactions() {
         let fixture = Fixture::new("rollback");
         let directory = Directory::open_ambient(&fixture.database_directory).unwrap();
@@ -1579,6 +1614,7 @@ mod tests {
             },
             state,
             fd: -1,
+            writable: false,
             name: CString::new(name).unwrap(),
             device: 0,
             inode: 0,

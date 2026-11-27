@@ -40,7 +40,12 @@ pub(super) struct DexRuntimeState {
     pub(super) class_initialization_waiters: HashMap<String, Vec<ClassInitializationWaiter>>,
     pub(super) erroneous_classes: HashMap<String, DexValue>,
     pub(super) file_locks: HashMap<String, Vec<DexValue>>,
-    pub(super) output_streams: HashMap<String, std::fs::File>,
+    pub(super) output_streams: HashMap<String, crate::fs_notify::NotifiedFile>,
+    // cite: frameworks-base FileObserver.java#ObserverThread, m_fd, mRealObservers
+    pub(super) file_observer_instance: Option<std::sync::Arc<crate::fs_notify::Instance>>,
+    pub(super) file_observer_thread: Option<DexValue>,
+    pub(super) file_observers: HashMap<i32, DexValue>,
+    pub(super) file_observer_dispatching: bool,
     pub(super) object_output_handles: HashMap<String, Vec<String>>,
     pub(super) object_input_handles: HashMap<String, super::java_serialization::ReadState>,
     pub(super) lru_caches: HashMap<String, super::android::lru_cache::LruCacheState>,
@@ -403,6 +408,10 @@ impl DexRuntimeState {
             erroneous_classes: HashMap::new(),
             file_locks: HashMap::new(),
             output_streams: HashMap::new(),
+            file_observer_instance: None,
+            file_observer_thread: None,
+            file_observers: HashMap::new(),
+            file_observer_dispatching: false,
             object_output_handles: HashMap::new(),
             object_input_handles: HashMap::new(),
             lru_caches: HashMap::new(),
@@ -1150,6 +1159,12 @@ impl DexRuntimeState {
         self.has_traversal_request() && !self.traversal_dispatched_since_drive
     }
 
+    pub(super) fn file_observer_events_pending(&self) -> bool {
+        self.file_observer_instance
+            .as_ref()
+            .is_some_and(|instance| instance.has_events())
+    }
+
     // cite: frameworks-base ViewRootImpl.java#scheduleTraversals
     // cite: androidx AndroidUiDispatcher.android.kt#postFrameCallback
     pub(super) fn next_wake_delay_millis(&self) -> Option<i64> {
@@ -1158,6 +1173,7 @@ impl DexRuntimeState {
             || !self.thread_resumes.is_empty()
             || !self.choreographer_frame_callbacks.is_empty()
             || self.has_due_choreographer_frame_work()
+            || self.file_observer_events_pending()
         {
             return Some(0);
         }

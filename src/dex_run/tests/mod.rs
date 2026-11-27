@@ -24,6 +24,7 @@ mod bootstrap_fields;
 mod class_new_instance_contract;
 mod content_storage_smoke;
 mod coroutine_contract;
+mod file_observer_contract;
 mod generic_signature_contract;
 mod input;
 mod java_box_locale;

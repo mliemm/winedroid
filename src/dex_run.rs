@@ -2588,6 +2588,7 @@ impl DexProgram {
             let has_frame_callbacks =
                 !work.choreographer_callbacks.is_empty() || !work.frame_callbacks.is_empty();
             let traversal_pending = self.runtime.borrow().has_dispatchable_traversal_request();
+            let file_observer_events = self.runtime.borrow().file_observer_events_pending();
 
             if work.tasks.is_empty()
                 && work.handler_posts.is_empty()
@@ -2595,6 +2596,7 @@ impl DexProgram {
                 && work.frame_callbacks.is_empty()
                 && work.thread_resumes.is_empty()
                 && !traversal_pending
+                && !file_observer_events
             {
                 let run_idle =
                     !std::mem::replace(&mut self.runtime.borrow_mut().idle_handlers_ran, true);
@@ -2750,6 +2752,8 @@ impl DexProgram {
                 }
                 dispatched += 1;
             }
+
+            dispatched += self.deliver_file_observer_events(depth + 1)?;
 
             if self.runtime.borrow().has_dispatchable_traversal_request() {
                 trace::event(
@@ -3014,7 +3018,100 @@ impl DexProgram {
             ran += 1;
         }
 
+        ran += self.deliver_file_observer_events(depth)?;
+
         Ok(ran)
+    }
+
+    // cite: frameworks-base FileObserver.java#ObserverThread, run, onEvent, mRealObservers
+    // cite: frameworks-base android_util_FileObserver.cpp#android_os_fileobserver_observe
+    fn deliver_file_observer_events(&self, depth: usize) -> Result<usize> {
+        let (instance, thread) = {
+            let mut runtime = self.runtime.borrow_mut();
+            let (Some(instance), Some(thread)) = (
+                runtime.file_observer_instance.clone(),
+                runtime.file_observer_thread.clone(),
+            ) else {
+                return Ok(0);
+            };
+            if runtime.file_observer_dispatching || !instance.has_events() {
+                return Ok(0);
+            }
+            runtime.file_observer_dispatching = true;
+            (instance, thread)
+        };
+        let delivered = self.with_current_guest_thread(thread, || {
+            let mut delivered = 0;
+            for event in instance.take_events() {
+                let observer = self.runtime.borrow().file_observers.get(&event.wd).cloned();
+                let Some(observer) = observer else {
+                    continue;
+                };
+                let path = match event.name {
+                    Some(name) => DexValue::String(std::rc::Rc::from(name.to_string_lossy())),
+                    None => DexValue::Null,
+                };
+                self.dispatch_file_observer_event(&observer, event.mask as i32, path, depth)?;
+                delivered += 1;
+            }
+            Ok(delivered)
+        });
+        self.runtime.borrow_mut().file_observer_dispatching = false;
+        delivered
+    }
+
+    fn dispatch_file_observer_event(
+        &self,
+        observer: &DexValue,
+        mask: i32,
+        path: DexValue,
+        depth: usize,
+    ) -> Result<()> {
+        let Some(class_descriptor) = value_class_descriptor(observer) else {
+            return Err(WinedroidError::new(format!(
+                "FileObserver.onEvent requires an object receiver\nreceiver: {observer}\nnext missing primitive: FileObserver.onEvent dispatch"
+            )));
+        };
+        let method = DexMethodId {
+            class_descriptor: class_descriptor.to_owned(),
+            name: "onEvent".to_owned(),
+            proto: dex::DexProto {
+                shorty: "VIL".to_owned(),
+                return_type: "V".to_owned(),
+                parameters: vec!["I".to_owned(), "Ljava/lang/String;".to_owned()],
+            },
+        };
+        let Some(resolved) =
+            self.resolve_exact_method_in_class_hierarchy(class_descriptor, &method)?
+        else {
+            return Err(WinedroidError::new(format!(
+                "FileObserver.onEvent has no implementation\nobserver class: {class_descriptor}\nnext missing primitive: FileObserver.onEvent dispatch"
+            )));
+        };
+        let arguments = [observer.clone(), DexValue::Int(mask), path];
+        match self.execute_method(None, &resolved, Some(&arguments), depth + 1)? {
+            DexExecutionResult::Void => Ok(()),
+            DexExecutionResult::Throw(exception) => {
+                let message = format!(
+                    "Unhandled exception in FileObserver {observer}: {}",
+                    self.describe_uncaught_throw(&exception)
+                );
+                eprintln!("FileObserver: {message}");
+                trace::event("runtime", message);
+                Ok(())
+            }
+            DexExecutionResult::Parked(execution) => {
+                self.discard_parked_execution(&execution);
+                Err(WinedroidError::new(format!(
+                    "FileObserver.onEvent parked on the observer thread\nobserver class: {class_descriptor}\nnext missing primitive: FileObserver.onEvent that parks"
+                )))
+            }
+            DexExecutionResult::Int(_) | DexExecutionResult::Value(_) => {
+                Err(WinedroidError::new(format!(
+                    "FileObserver.onEvent did not complete normally\nobserver class: {class_descriptor}"
+                )))
+            }
+        }
     }
 
     // cite: libcore ScheduledThreadPoolExecutor.java#ScheduledFutureTask, isPeriodic, setNextRunTime

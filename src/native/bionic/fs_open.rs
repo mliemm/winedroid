@@ -1,12 +1,16 @@
 use std::ffi::CString;
+use std::os::fd::IntoRawFd;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
+
+use rustix::fs::{Mode, OFlags};
 
 use super::super::bridge::CallContext;
 use super::abi_types::{EFAULT, EINVAL};
 use super::export::in_libc;
 use super::fatal::fortify_fatal;
 use super::fd_table::{self, FdEntry, FdKind, SyntheticStat, SEALING_ALLOWED};
-use super::fs_result::{finish_int, from_host};
+use super::fs_result::{finish_int, from_host, linux_errno_of};
 use super::guest_mem::{cstr_bytes, write_bytes};
 use super::guest_paths::{self, Access, Device, HostRef, Resolved, VirtualDir};
 use super::guest_process;
@@ -74,8 +78,18 @@ fn open_host_file(reference: &HostRef, flags: i32, mode: u32) -> i64 {
         host_flags =
             libc::O_RDONLY | libc::O_NOFOLLOW | (open_flags_to_host(flags) & libc::O_CLOEXEC);
     }
-    let created = guest_process::apply_umask(mode);
-    let fd = reference.open(host_flags, created);
+    let mode = guest_process::apply_umask(mode);
+    let (fd, created) = match (&reference.leaf, path_only) {
+        (Some(leaf), false) => match reference.dir.open_leaf_reporting_creation(
+            leaf,
+            OFlags::from_bits_retain(host_flags as _),
+            Mode::from_raw_mode(mode as _),
+        ) {
+            Ok((fd, created)) => (i64::from(fd.into_raw_fd()), created),
+            Err(error) => return -i64::from(io_errno(&error)),
+        },
+        _ => (reference.open(host_flags, mode), false),
+    };
     if fd < 0 {
         return fd;
     }
@@ -92,7 +106,23 @@ fn open_host_file(reference: &HostRef, flags: i32, mode: u32) -> i64 {
     } else {
         FdKind::Host
     };
-    adopt_host(fd, kind, &reference.guest_path, flags, None)
+    let mut entry = FdEntry::new(kind, &reference.guest_path, recorded_flags(flags));
+    if let (FdKind::Host, Some(leaf)) = (kind, &reference.leaf) {
+        let parent = reference.dir.as_fd();
+        if created {
+            crate::fs_notify::created(parent, leaf, false);
+        }
+        if flags & open::ACCMODE != open::RDONLY {
+            let file = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd as i32) };
+            entry.close_note = crate::fs_notify::close_note(parent, leaf, file).map(Arc::new);
+        }
+    }
+    fd_table::adopt(fd as i32, entry);
+    fd
+}
+
+fn io_errno(error: &std::io::Error) -> i32 {
+    error.raw_os_error().map(linux_errno_of).unwrap_or(EINVAL)
 }
 
 fn open_unnamed(reference: &HostRef, flags: i32, mode: u32) -> i64 {

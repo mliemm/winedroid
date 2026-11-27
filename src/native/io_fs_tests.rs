@@ -156,3 +156,145 @@ bounded_test! {
         assert_eq!(guest_errno(), 22, "packet mode pipes are refused");
     }
 }
+
+fn watch_host_directory(
+    path: &std::path::Path,
+) -> (std::sync::Arc<crate::fs_notify::Instance>, i32) {
+    let instance = crate::fs_notify::Instance::new();
+    let directory = crate::capability_fs::Directory::open_ambient(path).unwrap();
+    let wd = instance
+        .add_watch(
+            crate::fs_notify::InodeKey::of(directory.as_fd()).unwrap(),
+            crate::fs_notify::WIRED_EVENTS,
+        )
+        .unwrap();
+    (instance, wd)
+}
+
+fn notify_event(wd: i32, mask: u32, name: Option<&str>) -> crate::fs_notify::Event {
+    crate::fs_notify::Event {
+        wd,
+        mask,
+        name: name.map(|name| std::ffi::CString::new(name).unwrap()),
+    }
+}
+
+bounded_test! {
+    fn bionic_close_write_is_reported_on_the_last_close_of_a_duplicated_descriptor() {
+        // cite: bionic inotify.h#IN_CREATE, IN_CLOSE_WRITE
+        let guest = IoGuest::new("notify-dup");
+        let (instance, wd) = watch_host_directory(&guest.host(""));
+        let fd = open(&guest.guest("dup.bin"), o::WRONLY | o::CREAT, 0o600);
+        assert!(fd >= 3, "errno {}", guest_errno());
+        let copy = call("dup").i32(fd).invoke().unwrap().i32();
+        assert!(copy >= 3);
+        assert_eq!(write_all(fd, b"d"), 1);
+        assert_eq!(close(fd), 0);
+        assert_eq!(instance.take_events(), vec![notify_event(wd, crate::fs_notify::IN_CREATE, Some("dup.bin"))], "inotify(7) IN_CLOSE_WRITE waits for the last close of the open file description");
+        assert_eq!(close(copy), 0);
+        assert_eq!(instance.take_events(), vec![notify_event(wd, crate::fs_notify::IN_CLOSE_WRITE, Some("dup.bin"))]);
+
+        let read_only = open(&guest.guest("dup.bin"), o::RDONLY, 0);
+        assert_eq!(close(read_only), 0);
+        let existing = open(&guest.guest("dup.bin"), o::WRONLY | o::CREAT | o::TRUNC, 0o600);
+        assert_eq!(close(existing), 0);
+        assert_eq!(instance.take_events(), vec![notify_event(wd, crate::fs_notify::IN_CLOSE_WRITE, Some("dup.bin"))], "inotify(7): a read only close is IN_CLOSE_NOWRITE and O_CREAT of an existing file is no IN_CREATE");
+    }
+}
+
+bounded_test! {
+    fn bionic_mkdir_mknod_and_rmdir_report_create_is_dir_and_ignored() {
+        // cite: bionic inotify.h#IN_CREATE, IN_ISDIR, IN_IGNORED
+        let guest = IoGuest::new("notify-dirs");
+        let (instance, wd) = watch_host_directory(&guest.host(""));
+        let dir = Text::new(&guest.guest("made"));
+        assert_eq!(call("mkdir").ptr(dir.ptr()).u32(0o777).invoke().unwrap().i32(), 0);
+        let node = Text::new(&guest.guest("node"));
+        assert_eq!(call("mknod").ptr(node.ptr()).u32(0o100600).int(0).invoke().unwrap().i32(), 0, "errno {}", guest_errno());
+        assert_eq!(
+            instance.take_events(),
+            vec![
+                notify_event(wd, crate::fs_notify::IN_CREATE | crate::fs_notify::IN_ISDIR, Some("made")),
+                notify_event(wd, crate::fs_notify::IN_CREATE, Some("node")),
+            ],
+            "inotify(7): mkdir is IN_CREATE|IN_ISDIR and mknod creates without a writable open"
+        );
+
+        let link = Text::new(&guest.guest("link"));
+        assert_eq!(call("symlink").ptr(node.ptr()).ptr(link.ptr()).invoke().unwrap().i32(), 0);
+        let hard = Text::new(&guest.guest("hard"));
+        assert_eq!(call("link").ptr(node.ptr()).ptr(hard.ptr()).invoke().unwrap().i32(), 0);
+        let fifo = Text::new(&guest.guest("fifo"));
+        assert_eq!(call("mkfifo").ptr(fifo.ptr()).u32(0o600).invoke().unwrap().i32(), 0);
+        assert_eq!(
+            instance.take_events(),
+            vec![
+                notify_event(wd, crate::fs_notify::IN_CREATE, Some("link")),
+                notify_event(wd, crate::fs_notify::IN_CREATE, Some("hard")),
+                notify_event(wd, crate::fs_notify::IN_CREATE, Some("fifo")),
+            ],
+            "inotify(7) IN_CREATE covers symlink, link and mkfifo"
+        );
+
+        let (inner, inner_wd) = watch_host_directory(&guest.host("made"));
+        assert_eq!(call("rmdir").ptr(dir.ptr()).invoke().unwrap().i32(), 0);
+        assert_eq!(inner.take_events(), vec![notify_event(inner_wd, crate::fs_notify::IN_IGNORED, None)], "inotify.h IN_IGNORED follows removal of the watched directory");
+        assert!(instance.take_events().is_empty(), "IN_DELETE is not a wired event");
+
+        assert_eq!(call("mkdir").ptr(dir.ptr()).u32(0o777).invoke().unwrap().i32(), 0);
+        let replacement = Text::new(&guest.guest("replacement"));
+        assert_eq!(call("mkdir").ptr(replacement.ptr()).u32(0o777).invoke().unwrap().i32(), 0);
+        let (target, target_wd) = watch_host_directory(&guest.host("made"));
+        assert_eq!(call("rename").ptr(replacement.ptr()).ptr(dir.ptr()).invoke().unwrap().i32(), 0);
+        assert_eq!(target.take_events(), vec![notify_event(target_wd, crate::fs_notify::IN_IGNORED, None)], "inotify.h IN_IGNORED follows rename over the watched directory");
+    }
+}
+
+bounded_test! {
+    fn bionic_close_write_of_a_mapped_file_waits_for_munmap() {
+        // cite: bionic mman.h#munmap
+        let guest = IoGuest::new("notify-mmap");
+        let (instance, wd) = watch_host_directory(&guest.host(""));
+        let fd = open(&guest.guest("mapped"), o::RDWR | o::CREAT, 0o600);
+        assert!(fd >= 3, "errno {}", guest_errno());
+        assert_eq!(call("ftruncate").i32(fd).int(16384).invoke().unwrap().i32(), 0);
+        let address = call("mmap").ptr(0).int(16384).i32(3).i32(1).i32(fd).int(0).invoke().unwrap().u64() as usize;
+        assert!(address != usize::MAX && address != 0, "errno {}", guest_errno());
+        assert_eq!(close(fd), 0);
+        assert_eq!(instance.take_events(), vec![notify_event(wd, crate::fs_notify::IN_CREATE, Some("mapped"))], "inotify(7) IN_CLOSE_WRITE waits while a mapping still references the open file");
+        unsafe { *(address as *mut u8) = 7 };
+        assert_eq!(call("munmap").ptr(address).int(16384).invoke().unwrap().i32(), 0, "errno {}", guest_errno());
+        assert_eq!(instance.take_events(), vec![notify_event(wd, crate::fs_notify::IN_CLOSE_WRITE, Some("mapped"))], "inotify(7) IN_CLOSE_WRITE follows the release of the last reference, here munmap");
+        assert_eq!(std::fs::read(guest.host("mapped")).unwrap()[0], 7);
+    }
+}
+
+bounded_test! {
+    fn bionic_close_write_follows_rename_of_the_open_file_and_self_rename_keeps_the_watch() {
+        // cite: bionic stdio.h#rename
+        let guest = IoGuest::new("notify-rename");
+        std::fs::create_dir(guest.host("tmp")).unwrap();
+        std::fs::create_dir(guest.host("anr")).unwrap();
+        let (instance, wd) = watch_host_directory(&guest.host("anr"));
+        let fd = open(&guest.guest("tmp/x"), o::WRONLY | o::CREAT, 0o600);
+        assert!(fd >= 3, "errno {}", guest_errno());
+        let from = Text::new(&guest.guest("tmp/x"));
+        let to = Text::new(&guest.guest("anr/x"));
+        assert_eq!(call("rename").ptr(from.ptr()).ptr(to.ptr()).invoke().unwrap().i32(), 0);
+        assert_eq!(close(fd), 0);
+        assert_eq!(instance.take_events(), vec![notify_event(wd, crate::fs_notify::IN_CLOSE_WRITE, Some("x"))], "inotify(7) reports the close in the directory that holds the file at close time");
+
+        let anr = Text::new(&guest.guest("anr"));
+        assert_eq!(call("rename").ptr(anr.ptr()).ptr(anr.ptr()).invoke().unwrap().i32(), 0);
+        let kept = open(&guest.guest("anr/kept"), o::WRONLY | o::CREAT, 0o600);
+        assert_eq!(close(kept), 0);
+        assert_eq!(
+            instance.take_events(),
+            vec![
+                notify_event(wd, crate::fs_notify::IN_CREATE, Some("kept")),
+                notify_event(wd, crate::fs_notify::IN_CLOSE_WRITE, Some("kept")),
+            ],
+            "rename(2): when both names are the same file, rename does nothing and succeeds"
+        );
+    }
+}

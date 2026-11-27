@@ -3434,3 +3434,52 @@ fn builtin_context_register_receiver_leaves_the_sticky_battery_intent_unclaimed(
         None
     );
 }
+
+#[test]
+fn shared_preferences_commit_into_a_watched_directory_is_a_missing_primitive() {
+    // cite: frameworks-base SharedPreferencesImpl.java#writeToFile
+    let app_dir = test_app_data_dir("watched_preferences");
+    let data_dir = app_dir.join("apps/com.example/data");
+    let shared_dir = app_dir.join("storage");
+    fs::create_dir_all(&data_dir).expect("credential data dir should be created");
+    fs::create_dir_all(&shared_dir).expect("shared dir should be created");
+    let program =
+        DexProgram::with_guest_filesystem(Vec::new(), "com.example", data_dir.clone(), shared_dir)
+            .expect("program should load guest filesystem");
+    let context = DexValue::Reference(std::rc::Rc::from("Landroid/content/Context;.bootstrap"));
+    let preferences = context_shared_preferences(&program, context, "prefs");
+    let commit = |value: i32| {
+        let editor = shared_preferences_editor(&program, preferences.clone());
+        program.invoke_builtin_method(
+            &shared_preferences_editor_put_int_method(),
+            Some(&test_invocation(vec![
+                editor.clone(),
+                DexValue::String(std::rc::Rc::from("answer")),
+                DexValue::Int(value),
+            ])),
+        );
+        program.invoke_builtin_method(
+            &shared_preferences_editor_commit_method(),
+            Some(&test_invocation(vec![editor])),
+        )
+    };
+    assert_eq!(commit(1), Some(DexExecutionResult::Int(1)));
+
+    let instance = crate::fs_notify::Instance::new();
+    let shared_prefs =
+        crate::capability_fs::Directory::open_ambient(&data_dir.join("shared_prefs")).unwrap();
+    instance
+        .add_watch(
+            crate::fs_notify::InodeKey::of(shared_prefs.as_fd()).unwrap(),
+            crate::fs_notify::IN_CLOSE_WRITE,
+        )
+        .unwrap();
+    assert_eq!(
+        commit(2),
+        None,
+        "SharedPreferencesImpl.java writeToFile names differ from the winedroid store, so a watched directory cannot be given real events"
+    );
+    assert!(instance.take_events().is_empty());
+
+    fs::remove_dir_all(app_dir).ok();
+}
