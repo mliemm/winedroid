@@ -461,12 +461,18 @@ impl DexRunInvocationHandler<'_> {
 
         if method.class_descriptor == "Ljava/io/File;"
             && method.name == "listFiles"
-            && proto_descriptor == "(Ljava/io/FileFilter;)[Ljava/io/File;"
+            && matches!(
+                proto_descriptor,
+                "(Ljava/io/FileFilter;)[Ljava/io/File;"
+                    | "(Ljava/io/FilenameFilter;)[Ljava/io/File;"
+            )
         {
-            let value = self
-                .program
-                .file_list_files_with_filter(&invocation, self.depth)?;
-            return Ok(DexInvocationResult::Value(value));
+            let result = self.program.file_list_files_with_filter(
+                &invocation,
+                proto_descriptor.contains("FilenameFilter"),
+                self.depth,
+            )?;
+            return Ok(invocation_result_from_execution(result));
         }
 
         if method.class_descriptor == "Landroid/view/LayoutInflater;"

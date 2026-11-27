@@ -1827,97 +1827,104 @@ impl DexProgram {
     pub(in crate::dex_run) fn file_list_files_with_filter(
         &self,
         invocation: &DexInvocation,
+        filename_filter: bool,
         depth: usize,
-    ) -> Result<DexValue> {
-        if invocation.arguments.len() != 2 {
+    ) -> Result<DexExecutionResult> {
+        let filter_name = if filename_filter {
+            "FilenameFilter"
+        } else {
+            "FileFilter"
+        };
+        let [directory, filter] = invocation.arguments.as_slice() else {
             return Err(WinedroidError::new(format!(
-                "File.listFiles(FileFilter) expected 2 arguments, got {}",
+                "File.listFiles({filter_name}) expected 2 arguments, got {}",
                 invocation.arguments.len()
             )));
-        }
-
-        let unfiltered_invocation = DexInvocation {
-            arguments: smallvec::smallvec![invocation.arguments[0].clone()],
-            ..invocation.clone()
         };
-        let Some(unfiltered) = self.file_list_files(&unfiltered_invocation) else {
-            return Err(WinedroidError::new(
-                "File.listFiles(FileFilter) could not resolve the receiver's directory",
-            ));
+        let Some(guest_path) = file_path_from_value(self, directory) else {
+            return Err(WinedroidError::new(format!(
+                "File.listFiles({filter_name}) could not resolve the receiver's directory"
+            )));
         };
-        if unfiltered == DexValue::Null {
-            return Ok(DexValue::Null);
-        }
-
-        let filter = invocation.arguments[1].clone();
-        if filter == DexValue::Null {
-            return Ok(unfiltered);
-        }
-
-        let candidates = self
-            .runtime
-            .borrow()
-            .array_entries
-            .get(&map_identity_key(&unfiltered))
-            .cloned()
-            .unwrap_or_default();
-
-        let Some(filter_class) = value_class_descriptor(&filter).map(str::to_owned) else {
-            return Err(WinedroidError::new(
-                "File.listFiles(FileFilter) requires an object-backed filter",
+        let names = self
+            .resolved_guest_path(&guest_path, ExternalStorageAccess::Read)
+            .and_then(|path| path.read_dir_names().ok());
+        let Some(names) = names else {
+            return Ok(DexExecutionResult::Value(DexValue::Null));
+        };
+        let child = |name: &str| {
+            DexValue::Reference(std::rc::Rc::from(format!(
+                "Ljava/io/File;:{}",
+                resolve_file_parent_and_child(Some(&guest_path), name)
+            )))
+        };
+        if matches!(filter, DexValue::Null | DexValue::Int(0)) {
+            let files = names.iter().map(|name| child(name)).collect();
+            return Ok(DexExecutionResult::Value(
+                self.allocate_filled_array("[Ljava/io/File;".to_owned(), files),
             ));
+        }
+
+        let Some(filter_class) = value_class_descriptor(filter).map(str::to_owned) else {
+            return Err(WinedroidError::new(format!(
+                "File.listFiles({filter_name}) requires an object-backed filter"
+            )));
+        };
+        let parameters = if filename_filter {
+            vec!["Ljava/io/File;".to_owned(), "Ljava/lang/String;".to_owned()]
+        } else {
+            vec!["Ljava/io/File;".to_owned()]
         };
         let accept_method = DexMethodId {
             class_descriptor: filter_class.clone(),
             name: "accept".to_owned(),
             proto: crate::dex::DexProto {
-                shorty: "ZL".to_owned(),
+                shorty: format!("Z{}", "L".repeat(parameters.len())),
                 return_type: "Z".to_owned(),
-                parameters: vec!["Ljava/io/File;".to_owned()],
+                parameters,
             },
         };
         let Some(resolved) =
             self.resolve_exact_method_in_class_hierarchy(&filter_class, &accept_method)?
         else {
             return Err(WinedroidError::new(format!(
-                "File.listFiles(FileFilter) accept() was not found\nfilter class: {filter_class}"
+                "File.listFiles({filter_name}) accept() was not found\nfilter class: {filter_class}"
             )));
         };
 
         let mut kept = Vec::new();
-        for candidate in candidates {
-            let result = self.execute_method(
-                None,
-                &resolved,
-                Some(&[filter.clone(), candidate.clone()]),
-                depth + 1,
-            )?;
-            let accepted = match result {
-                DexExecutionResult::Int(value) => value != 0,
-                DexExecutionResult::Throw(exception) => {
-                    return Err(WinedroidError::new(format!(
-                        "File.listFiles(FileFilter) accept() threw uncaught {}",
-                        self.describe_uncaught_throw(&exception)
-                    )));
-                }
+        for name in names {
+            let file = child(&name);
+            let arguments = if filename_filter {
+                vec![
+                    filter.clone(),
+                    directory.clone(),
+                    DexValue::String(std::rc::Rc::from(name.as_str())),
+                ]
+            } else {
+                vec![filter.clone(), file.clone()]
+            };
+            match self.execute_method(None, &resolved, Some(&arguments), depth + 1)? {
+                DexExecutionResult::Int(0) => {}
+                DexExecutionResult::Int(_) => kept.push(file),
+                throw @ DexExecutionResult::Throw(_) => return Ok(throw),
                 DexExecutionResult::Value(_) | DexExecutionResult::Void => {
-                    return Err(WinedroidError::new(
-                        "File.listFiles(FileFilter) accept() did not return a boolean",
-                    ));
+                    return Err(WinedroidError::new(format!(
+                        "File.listFiles({filter_name}) accept() did not return a boolean"
+                    )));
                 }
                 DexExecutionResult::Parked(execution) => {
                     self.discard_parked_execution(&execution);
-                    return Err(WinedroidError::new(
-                        "File.listFiles(FileFilter) accept() did not complete normally",
-                    ));
+                    return Err(WinedroidError::new(format!(
+                        "File.listFiles({filter_name}) accept() did not complete normally"
+                    )));
                 }
-            };
-            if accepted {
-                kept.push(candidate);
             }
         }
 
-        Ok(self.allocate_filled_array("[Ljava/io/File;".to_owned(), kept))
+        Ok(DexExecutionResult::Value(
+            self.allocate_filled_array("[Ljava/io/File;".to_owned(), kept),
+        ))
     }
 
     // cite: libcore File.java#createTempFile, generateFile

@@ -4141,3 +4141,49 @@ fn libcore_object_input_stream_huge_string_length_ends_in_eof_without_allocating
     };
     assert!(program.value_matches_type(&exception, "Ljava/io/EOFException;"));
 }
+
+#[test]
+fn libcore_file_list_files_applies_filename_and_file_filters() {
+    // cite: libcore File.java#listFiles, list
+    let fixture = GuestIoFixture::new("list_files_contract");
+    let dex_file = crate::dex::parse_dex_file(
+        "list_files_contract.dex",
+        include_bytes!("fixtures/list_files_contract.dex").to_vec(),
+    )
+    .expect("listFiles contract DEX should parse");
+    let program = DexProgram::with_guest_filesystem(
+        vec![dex_file],
+        "com.example",
+        fixture.private.clone(),
+        fixture.shared.clone(),
+    )
+    .expect("program should load guest filesystem");
+    let method = DexMethodId {
+        class_descriptor: "Lwinedroid/tests/ListFilesContract;".to_owned(),
+        name: "run".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "LL".to_owned(),
+            return_type: "Ljava/lang/String;".to_owned(),
+            parameters: vec!["Ljava/lang/String;".to_owned()],
+        },
+    };
+    let resolved = program.resolve_exact_method(&method).unwrap().unwrap();
+    let result = program
+        .execute_method(
+            None,
+            &resolved,
+            Some(&[DexValue::String(std::rc::Rc::from(
+                "/data/user/0/com.example/files/listed",
+            ))]),
+            0,
+        )
+        .unwrap();
+
+    assert_eq!(
+        result,
+        DexExecutionResult::Value(DexValue::String(std::rc::Rc::from(
+            "a.txt+c.txt/2;===;b.log/1;a.txt+b.log+c.txt/3;null;no 5"
+        ))),
+        "OpenJDK runs ListFilesContract.run to this string"
+    );
+}
