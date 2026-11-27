@@ -221,6 +221,8 @@ fn env_table() -> &'static [usize; 233] {
             (62, "CallVoidMethodV", call_void_method_v),
             (33, "GetMethodID", get_method_id),
             (113, "GetStaticMethodID", get_static_method_id),
+            (133, "CallStaticLongMethodV", call_static_method_v::<b'J'>),
+            (142, "CallStaticVoidMethodV", call_static_method_v::<b'V'>),
             (144, "GetStaticFieldID", get_static_field_id),
             (145, "GetStaticObjectField", get_static_field::<b'L'>),
             (146, "GetStaticBooleanField", get_static_field::<b'Z'>),
@@ -621,6 +623,71 @@ fn call_void_method_v(context: &mut CallContext) {
             DexExecutionResult::Void
             | DexExecutionResult::Int(_)
             | DexExecutionResult::Value(_) => {}
+        }
+        Ok(())
+    });
+}
+
+fn call_static_method_v<const RETURN: u8>(context: &mut CallContext) {
+    // cite: art jni_internal.cc#CallStaticLongMethodV, CallStaticVoidMethodV
+    // cite: art reflection.cc#InvokeWithVarArgs, BuildArgArrayFromVarArgs
+    with_env(context, |frame, context| {
+        let method = frame
+            .program
+            .jni
+            .methods_by_id
+            .borrow()
+            .get(&context.arg_ptr(2))
+            .cloned()
+            .ok_or_else(|| WinedroidError::new("unknown JNI method ID"))?;
+        if method.proto.return_type.as_bytes() != [RETURN] {
+            return Err(WinedroidError::new(format!(
+                "CallStatic{}MethodV on {}",
+                char::from(RETURN),
+                method.display_signature()
+            )));
+        }
+        let mut va_list = context.va_list_arg(3)?;
+        let mut arguments = decode_va_arguments(
+            frame,
+            DexValue::Null,
+            &method.proto.parameters,
+            &mut va_list,
+        )?;
+        arguments.remove(0);
+        let Some(resolved) = frame.program.resolve_exact_method(&method)? else {
+            return Err(WinedroidError::new(format!(
+                "next missing primitive: JNI static upcall target {}.{}",
+                method.class_descriptor,
+                method.display_signature()
+            )));
+        };
+        match frame
+            .program
+            .execute_method(None, &resolved, Some(&arguments), frame.depth + 1)?
+        {
+            DexExecutionResult::Value(DexValue::Long(value)) if RETURN == b'J' => {
+                context.ret_i64(value)
+            }
+            DexExecutionResult::Void if RETURN == b'V' => {}
+            DexExecutionResult::Throw(exception) => {
+                *frame.exception.borrow_mut() = Some(exception);
+                if RETURN == b'J' {
+                    context.ret_i64(0);
+                }
+            }
+            DexExecutionResult::Parked(execution) => {
+                frame.program.discard_parked_execution(&execution);
+                return Err(WinedroidError::new(
+                    "next missing primitive: JNI upcall that parks",
+                ));
+            }
+            other => {
+                return Err(WinedroidError::new(format!(
+                    "JNI static upcall {} returned {other}",
+                    method.display_signature()
+                )));
+            }
         }
         Ok(())
     });

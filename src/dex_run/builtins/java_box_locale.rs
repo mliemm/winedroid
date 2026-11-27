@@ -187,6 +187,22 @@ impl DexProgram {
         if method.matches_builtin_signature(
             "Ljava/lang/Integer;",
             "toString",
+            "(I)Ljava/lang/String;",
+        ) {
+            let invocation = invocation?;
+            let [DexValue::Int(value)] = invocation.arguments.as_slice() else {
+                return None;
+            };
+
+            return Some(DexExecutionResult::Value(DexValue::String(
+                std::rc::Rc::from(value.to_string()),
+            )));
+        }
+
+        // cite: libcore Integer.java#toString
+        if method.matches_builtin_signature(
+            "Ljava/lang/Integer;",
+            "toString",
             "(II)Ljava/lang/String;",
         ) {
             let invocation = invocation?;
@@ -798,7 +814,11 @@ enum BoxedNumber {
 
 impl DexProgram {
     // cite: libcore Number.java#intValue, longValue, floatValue, doubleValue
-    fn number_value(&self, name: &str, invocation: &DexInvocation) -> Option<DexExecutionResult> {
+    pub(super) fn number_value(
+        &self,
+        name: &str,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
         let number = if let Some(value) = self.long_long_value(invocation) {
             BoxedNumber::Long(value)
         } else if let Some(bits) = self.double_double_value(invocation) {

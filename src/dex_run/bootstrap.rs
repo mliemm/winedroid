@@ -284,6 +284,16 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         // cite: frameworks-base AbstractCursor.java#AbstractCursor
         "Landroid/database/AbstractCursor;" => Some("Ljava/lang/Object;"),
         "Ljava/util/concurrent/CancellationException;" => Some("Ljava/lang/IllegalStateException;"),
+        // cite: libcore FileChannelImpl.java#FileChannelImpl
+        "Lsun/nio/ch/FileChannelImpl;" => Some("Ljava/nio/channels/FileChannel;"),
+        // cite: libcore FileLockImpl.java#FileLockImpl
+        "Lsun/nio/ch/FileLockImpl;" => Some("Ljava/nio/channels/FileLock;"),
+        // cite: libcore NonWritableChannelException.java#NonWritableChannelException
+        "Ljava/nio/channels/NonWritableChannelException;" => {
+            Some("Ljava/lang/IllegalStateException;")
+        }
+        // cite: libcore CloneNotSupportedException.java#CloneNotSupportedException
+        "Ljava/lang/CloneNotSupportedException;" => Some("Ljava/lang/Exception;"),
         // cite: libcore ExecutionException.java#ExecutionException
         "Ljava/util/concurrent/ExecutionException;" => Some("Ljava/lang/Exception;"),
         "Ljava/io/IOException;" => Some("Ljava/lang/Exception;"),

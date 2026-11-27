@@ -1040,3 +1040,29 @@ fn libcore_big_decimal_legacy_set_scale_rounds_with_int_modes() {
         Some(DexExecutionResult::Throw(_))
     ));
 }
+
+// cite: libcore Integer.java#toString, MIN_VALUE
+#[test]
+fn libcore_integer_to_string_formats_signed_decimal() {
+    let program = DexProgram::new(Vec::new());
+    let to_string = builtin_method(
+        "Ljava/lang/Integer;",
+        "toString",
+        "Ljava/lang/String;",
+        &["I"],
+    );
+    for (value, expected) in [
+        (0, "0"),
+        (-42, "-42"),
+        (i32::MIN, "-2147483648"),
+        (i32::MAX, "2147483647"),
+    ] {
+        assert_eq!(
+            program.invoke_builtin_method(
+                &to_string,
+                Some(&test_invocation(vec![DexValue::Int(value)]))
+            ),
+            Some(DexExecutionResult::Value(DexValue::String(expected.into())))
+        );
+    }
+}

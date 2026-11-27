@@ -499,6 +499,18 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(value));
         }
 
+        // cite: frameworks-base ContextImpl.java#getExternalCacheDir, getExternalCacheDirs
+        if method.matches_builtin_signature(
+            "Landroid/content/Context;",
+            "getExternalCacheDir",
+            "()Ljava/io/File;",
+        ) {
+            context_receiver(invocation?)?;
+            let value = self.build_external_app_dir("cache", None)?;
+
+            return Some(DexExecutionResult::Value(value));
+        }
+
         if method.class_descriptor == "Landroid/content/Context;"
             && method.name == "getExternalFilesDirs"
             && method
@@ -652,8 +664,11 @@ impl DexProgram {
 
         if method.class_descriptor == "Landroid/content/Context;"
             && method.name == "registerReceiver"
-            && method.proto.descriptor()
-                == "(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;)Landroid/content/Intent;"
+            && matches!(
+                method.proto.descriptor().as_str(),
+                "(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;)Landroid/content/Intent;"
+                    | "(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;I)Landroid/content/Intent;"
+            )
         {
             return Some(DexExecutionResult::Value(DexValue::Null));
         }
@@ -929,9 +944,15 @@ impl DexProgram {
     }
 
     fn build_external_files_dir(&self, type_name: Option<&str>) -> Option<DexValue> {
+        self.build_external_app_dir("files", type_name)
+    }
+
+    // cite: frameworks-base ContextImpl.java#getExternalFilesDirs, getExternalCacheDirs, ensureExternalDirsExistOrFilter
+    // cite: frameworks-base Environment.java#buildExternalStorageAppFilesDirs, buildExternalStorageAppCacheDirs
+    fn build_external_app_dir(&self, leaf: &str, type_name: Option<&str>) -> Option<DexValue> {
         let package_name = self.package_name.as_deref()?;
         let mut guest_path = format!(
-            "{}/Android/data/{package_name}/files",
+            "{}/Android/data/{package_name}/{leaf}",
             crate::external_storage::GUEST_PRIMARY_EXTERNAL_ROOT
         );
         if let Some(type_name) = type_name {

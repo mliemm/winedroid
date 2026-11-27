@@ -188,7 +188,7 @@ impl Directory {
     }
 
     pub fn open_append(&self, components: &[CString]) -> io::Result<File> {
-        self.open_write(components, OFlags::WRONLY | OFlags::APPEND)
+        self.open_write(components, OFlags::WRONLY | OFlags::CREATE | OFlags::APPEND)
     }
 
     pub fn create_new(&self, components: &[CString]) -> io::Result<File> {
@@ -230,6 +230,32 @@ impl Directory {
         }
 
         Ok(created)
+    }
+
+    pub fn clear_write_permission(&self, components: &[CString]) -> io::Result<()> {
+        let without_write = |stat: Stat| {
+            Mode::from_raw_mode(stat.st_mode as _) & !(Mode::WUSR | Mode::WGRP | Mode::WOTH)
+        };
+        match self.target(components)? {
+            Target::Directory(fd) => {
+                let stat = fs::fstat(&fd).map_err(io::Error::from)?;
+                fs::fchmod(&fd, without_write(stat)).map_err(io::Error::from)
+            }
+            Target::Leaf(parent) => {
+                let stat = fs::statat(&parent.directory, &parent.leaf, AtFlags::SYMLINK_NOFOLLOW)
+                    .map_err(io::Error::from)?;
+                if FileType::from_raw_mode(stat.st_mode as _) == FileType::Symlink {
+                    return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+                }
+                fs::chmodat(
+                    &parent.directory,
+                    &parent.leaf,
+                    without_write(stat),
+                    AtFlags::empty(),
+                )
+                .map_err(io::Error::from)
+            }
+        }
     }
 
     pub fn remove(&self, components: &[CString]) -> io::Result<()> {

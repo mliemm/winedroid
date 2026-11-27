@@ -3961,6 +3961,32 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(value));
         }
 
+        // cite: frameworks-base WindowInsets.java#consumeDisplayCutout, consumeSystemWindowInsets, consumeStableInsets
+        if method.class_descriptor == "Landroid/view/WindowInsets;"
+            && matches!(
+                method.name.as_str(),
+                "consumeDisplayCutout" | "consumeSystemWindowInsets" | "consumeStableInsets"
+            )
+            && method.proto.descriptor_is("()Landroid/view/WindowInsets;")
+        {
+            let [insets] = invocation?.arguments.as_slice() else {
+                return None;
+            };
+            if !dex_value_is_object_like(insets) {
+                return None;
+            }
+            if method.name == "consumeStableInsets" {
+                return Some(DexExecutionResult::Value(insets.clone()));
+            }
+            return Some(DexExecutionResult::Value(DexValue::Reference(
+                std::rc::Rc::from(format!(
+                    "Landroid/view/WindowInsets;:{}:{}",
+                    method.name,
+                    map_identity_key(insets)
+                )),
+            )));
+        }
+
         if method.class_descriptor == "Landroid/view/WindowInsets;"
             && method.name == "isVisible"
             && method.proto.descriptor_is("(I)Z")

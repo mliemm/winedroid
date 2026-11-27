@@ -133,6 +133,11 @@ impl ResolvedGuestPath {
         self.root.mkdir_all(&self.components)
     }
 
+    pub fn clear_write_permission(&self) -> io::Result<()> {
+        self.require_writable_mount()?;
+        self.root.clear_write_permission(&self.components)
+    }
+
     pub fn remove(&self) -> io::Result<()> {
         self.require_writable_mount()?;
         self.root.remove(&self.components)

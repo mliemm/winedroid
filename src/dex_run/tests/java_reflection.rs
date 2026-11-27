@@ -2774,3 +2774,35 @@ fn builtin_constructor_get_modifiers_masks_dex_constructor_flags() {
     );
     assert_eq!(modifiers(&["J"]), Some(DexExecutionResult::Int(0x0004)));
 }
+
+// cite: libcore Class.java#getDeclaredMethod
+#[test]
+fn builtin_class_get_declared_method_accepts_a_runtime_built_name() {
+    let program = DexProgram::new(Vec::new());
+    let method = builtin_method(
+        "Ljava/lang/Class;",
+        "getDeclaredMethod",
+        "Ljava/lang/reflect/Method;",
+        &["Ljava/lang/String;", "[Ljava/lang/Class;"],
+    );
+    let name = program.allocate_object("Ljava/lang/String;".to_owned());
+    program
+        .runtime
+        .borrow_mut()
+        .string_values
+        .insert(map_identity_key(&name), "getVolumePaths".to_owned());
+    let invocation = test_invocation(vec![
+        DexValue::Reference(std::rc::Rc::from(
+            "Ljava/lang/Class;:Landroid/os/storage/StorageManager;",
+        )),
+        name,
+        DexValue::Reference(std::rc::Rc::from("[Ljava/lang/Class;:params")),
+    ]);
+
+    assert_eq!(
+        program.invoke_builtin_method(&method, Some(&invocation)),
+        Some(DexExecutionResult::Value(DexValue::Reference(std::rc::Rc::from(
+            "Ljava/lang/reflect/Method;:Landroid/os/storage/StorageManager;:getVolumePaths:reference:[Ljava/lang/Class;:params"
+        ))))
+    );
+}

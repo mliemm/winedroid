@@ -3320,3 +3320,65 @@ fn builtin_intent_filter_actions_are_unique_and_indexed() {
         Some(DexExecutionResult::Int(0))
     );
 }
+
+// cite: frameworks-base ContextImpl.java#registerReceiver, registerReceiverInternal
+#[test]
+fn builtin_context_register_receiver_with_flags_returns_no_sticky_intent() {
+    let program = DexProgram::new(Vec::new());
+    let register = builtin_method(
+        "Landroid/content/Context;",
+        "registerReceiver",
+        "Landroid/content/Intent;",
+        &[
+            "Landroid/content/BroadcastReceiver;",
+            "Landroid/content/IntentFilter;",
+            "I",
+        ],
+    );
+    let invocation = test_invocation(vec![
+        DexValue::Reference(std::rc::Rc::from("context")),
+        DexValue::Reference(std::rc::Rc::from("receiver")),
+        DexValue::Reference(std::rc::Rc::from("filter")),
+        DexValue::Int(4),
+    ]);
+
+    assert_eq!(
+        program.invoke_builtin_method(&register, Some(&invocation)),
+        Some(DexExecutionResult::Value(DexValue::Null))
+    );
+}
+
+#[test]
+fn context_impl_get_external_cache_dir_creates_the_primary_volume_cache_dir() {
+    // cite: frameworks-base ContextImpl.java#getExternalCacheDir, getExternalCacheDirs
+    // cite: frameworks-base Environment.java#buildExternalStorageAppCacheDirs
+    let app_dir = test_app_data_dir("context_external_cache_dir");
+    let data_dir = app_dir.join("apps/com.example/data");
+    let shared_dir = app_dir.join("storage");
+    fs::create_dir_all(&data_dir).expect("data dir should be created");
+    fs::create_dir_all(&shared_dir).expect("shared dir should be created");
+    let program =
+        DexProgram::with_guest_filesystem(Vec::new(), "com.example", data_dir, shared_dir)
+            .expect("program should load guest filesystem");
+    let method = builtin_method(
+        "Landroid/content/Context;",
+        "getExternalCacheDir",
+        "Ljava/io/File;",
+        &[],
+    );
+    let invocation = test_invocation(vec![DexValue::Reference(std::rc::Rc::from(
+        "Landroid/content/Context;.bootstrap",
+    ))]);
+
+    assert_eq!(
+        program.invoke_builtin_method(&method, Some(&invocation)),
+        Some(DexExecutionResult::Value(DexValue::Reference(
+            std::rc::Rc::from("Ljava/io/File;:/storage/emulated/0/Android/data/com.example/cache")
+        )))
+    );
+    assert!(app_dir
+        .join("storage/Android/data/com.example/cache")
+        .is_dir());
+
+    fs::remove_dir_all(app_dir).ok();
+}

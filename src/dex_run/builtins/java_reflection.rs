@@ -303,7 +303,8 @@ impl DexProgram {
                 == "(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;"
         {
             let invocation = invocation?;
-            let value = class_get_method(invocation)?;
+            let method_name = self.string_text(invocation.arguments.get(1)?)?;
+            let value = class_get_method(invocation, &method_name)?;
 
             return Some(DexExecutionResult::Value(value));
         }
@@ -314,7 +315,8 @@ impl DexProgram {
                 == "(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;"
         {
             let invocation = invocation?;
-            let value = class_get_method(invocation)?;
+            let method_name = self.string_text(invocation.arguments.get(1)?)?;
+            let value = class_get_method(invocation, &method_name)?;
 
             return Some(DexExecutionResult::Value(value));
         }

@@ -8591,3 +8591,31 @@ fn builtin_view_fits_system_windows_comes_from_xml_and_setter() {
     call(&set, &plain, vec![DexValue::Int(1)]);
     assert_eq!(call(&get, &plain, vec![]), Some(DexExecutionResult::Int(1)));
 }
+
+// cite: frameworks-base WindowInsets.java#consumeDisplayCutout, consumeSystemWindowInsets, consumeStableInsets
+#[test]
+fn window_insets_consume_returns_new_insets_except_stable_which_returns_itself() {
+    let program = DexProgram::new(Vec::new());
+    let insets = DexValue::Reference(std::rc::Rc::from("Landroid/view/WindowInsets;:builder:b"));
+    let consume = |name: &str| {
+        let method = builtin_method(
+            "Landroid/view/WindowInsets;",
+            name,
+            "Landroid/view/WindowInsets;",
+            &[],
+        );
+        let Some(DexExecutionResult::Value(value)) =
+            program.invoke_builtin_method(&method, Some(&test_invocation(vec![insets.clone()])))
+        else {
+            panic!("{name} should return insets");
+        };
+        value
+    };
+
+    assert_eq!(consume("consumeStableInsets"), insets);
+    let without_cutout = consume("consumeDisplayCutout");
+    let without_system = consume("consumeSystemWindowInsets");
+    assert_ne!(without_cutout, insets);
+    assert_ne!(without_system, insets);
+    assert_ne!(without_cutout, without_system);
+}

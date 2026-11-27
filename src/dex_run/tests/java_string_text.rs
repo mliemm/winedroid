@@ -2664,3 +2664,29 @@ fn libcore_string_get_bytes_encodes_with_the_named_charset() {
     };
     assert!(program.value_matches_type(&error, "Ljava/io/IOException;"));
 }
+
+// cite: libcore String.java#String
+// cite: libcore Charset.java#defaultCharset
+#[test]
+fn libcore_string_from_bytes_decodes_with_the_utf8_default_charset() {
+    let program = DexProgram::new(Vec::new());
+    let constructor = builtin_method("Ljava/lang/String;", "<init>", "V", &["[B"]);
+    let receiver = program.allocate_object("Ljava/lang/String;".to_owned());
+    let bytes = program.allocate_filled_array(
+        "[B".to_owned(),
+        "caf\u{e9}"
+            .as_bytes()
+            .iter()
+            .map(|byte| DexValue::Int(i32::from(*byte as i8)))
+            .collect(),
+    );
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![receiver.clone(), bytes]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(program.string_text(&receiver).as_deref(), Some("caf\u{e9}"));
+}

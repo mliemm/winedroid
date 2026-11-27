@@ -1623,7 +1623,7 @@ pub(super) fn class_get_declared_constructor(invocation: &DexInvocation) -> Opti
     ))))
 }
 
-pub(super) fn class_get_method(invocation: &DexInvocation) -> Option<DexValue> {
+pub(super) fn class_get_method(invocation: &DexInvocation, method_name: &str) -> Option<DexValue> {
     if invocation.arguments.len() != 3 {
         return None;
     }
@@ -1633,9 +1633,6 @@ pub(super) fn class_get_method(invocation: &DexInvocation) -> Option<DexValue> {
     }
 
     let descriptor = class_reference_descriptor_from_value(&invocation.arguments[0])?;
-    let DexValue::String(method_name) = &invocation.arguments[1] else {
-        return None;
-    };
     let parameter_key = map_identity_key(&invocation.arguments[2]);
 
     Some(DexValue::Reference(std::rc::Rc::from(format!(

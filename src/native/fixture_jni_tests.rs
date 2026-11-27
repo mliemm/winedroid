@@ -10,8 +10,10 @@ const LDR_X_UNSIGNED_OFFSET: u32 = 0xF940_0000;
 const LDR_X_MASK: u32 = 0xFFC0_0000;
 const BLR_BR_MASK: u32 = 0xFFDF_FC1F;
 const BLR_BR_OPCODE: u32 = 0xD61F_0000;
-const ENV_CALLS: [&str; 11] = [
+const ENV_CALLS: [&str; 13] = [
     "CallIntMethod",
+    "CallStaticLongMethodV",
+    "CallStaticVoidMethodV",
     "CallStaticVoidMethod",
     "FindClass",
     "GetArrayLength",
@@ -25,8 +27,10 @@ const ENV_CALLS: [&str; 11] = [
 ];
 const VM_CALLS: [&str; 1] = ["GetEnv"];
 // cite: art jni_internal.cc#gJniNativeInterface
-const ART_ENV_SLOTS: [(&str, u64); 11] = [
+const ART_ENV_SLOTS: [(&str, u64); 13] = [
     ("CallIntMethod", 49),
+    ("CallStaticLongMethodV", 133),
+    ("CallStaticVoidMethodV", 142),
     ("CallStaticVoidMethod", 141),
     ("FindClass", 6),
     ("GetArrayLength", 171),
@@ -111,8 +115,8 @@ fn fixture_source_fx_jni_calls_exactly_the_jni_slots_its_source_names() {
 
     assert_eq!(
         expected.len(),
-        11,
-        "eleven distinct slot offsets are named in the source, FindClass and GetEnv share one"
+        13,
+        "thirteen distinct slot offsets are named in the source, FindClass and GetEnv share one"
     );
     for directory in VARIANT_DIRECTORIES {
         let binary = fs::read(

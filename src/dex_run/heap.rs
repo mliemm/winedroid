@@ -118,6 +118,38 @@ impl DexProgram {
         Some(self.allocate_filled_array(descriptor.to_owned(), values))
     }
 
+    pub(super) fn clone_instance_object(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        // cite: libcore Object.java#clone, internalClone
+        let [receiver @ DexValue::Object(object)] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        if !self.value_matches_type(receiver, "Ljava/lang/Cloneable;") {
+            let name = object
+                .class_descriptor
+                .trim_start_matches('L')
+                .trim_end_matches(';')
+                .replace('/', ".");
+            return Some(DexExecutionResult::Throw(
+                self.allocate_generated_exception(DexGeneratedException {
+                    class_descriptor: "Ljava/lang/CloneNotSupportedException;".to_owned(),
+                    detail_message: Some(format!("Class {name} doesn't implement Cloneable")),
+                }),
+            ));
+        }
+        let copy = self.allocate_object(object.class_descriptor.to_string());
+        let DexValue::Object(copy_object) = &copy else {
+            return None;
+        };
+        self.runtime
+            .borrow_mut()
+            .instance_fields
+            .copy_object_fields(object.id, copy_object.id)
+            .then_some(DexExecutionResult::Value(copy))
+    }
+
     pub(super) fn store_constructor_argument_in_field(
         &self,
         invocation: &DexInvocation,

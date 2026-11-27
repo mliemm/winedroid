@@ -29,9 +29,13 @@ impl DexProgram {
                 || method.class_descriptor.starts_with('['))
         {
             let invocation = invocation?;
-            let value = self.clone_array_object(invocation)?;
-
-            return Some(DexExecutionResult::Value(value));
+            if let Some(value) = self.clone_array_object(invocation) {
+                return Some(DexExecutionResult::Value(value));
+            }
+            if self.guest_overrides(method, Some(invocation)) {
+                return None;
+            }
+            return self.clone_instance_object(invocation);
         }
 
         if method.class_descriptor == "Ljava/lang/Object;"
@@ -255,6 +259,15 @@ impl DexProgram {
         {
             // cite: libcore Observable.java#Observable
             return Some(DexExecutionResult::Void);
+        }
+
+        if method.class_descriptor == "Ljava/util/Observable;"
+            && method.name != "<init>"
+            && !self.guest_overrides(method, invocation)
+        {
+            if let Some(result) = self.observable_method(method, invocation?) {
+                return Some(result);
+            }
         }
 
         if method.class_descriptor == "Ljava/lang/System;"
@@ -1815,24 +1828,22 @@ impl DexProgram {
         ) {
             // cite: frameworks-base Looper.java#getQueue, mQueue
             let looper = invocation?.arguments.first()?;
-            if !dex_value_is_object_like(looper) {
-                return None;
-            }
-            let field = DexFieldId {
-                class_descriptor: "Landroid/os/Looper;".to_owned(),
-                type_descriptor: "Landroid/os/MessageQueue;".to_owned(),
-                name: "mQueue".to_owned(),
-            };
-            if let Some(queue @ (DexValue::Object(_) | DexValue::Reference(_))) =
-                self.read_stored_instance_field(looper, &field)
-            {
-                return Some(DexExecutionResult::Value(queue));
-            }
-            let queue = self.allocate_object("Landroid/os/MessageQueue;".to_owned());
-            self.write_stored_instance_field(looper, &field, queue.clone())
-                .then_some(())?;
+            return Some(DexExecutionResult::Value(self.looper_queue(looper)?));
+        }
 
-            return Some(DexExecutionResult::Value(queue));
+        if method.matches_builtin_signature(
+            "Landroid/os/Looper;",
+            "myQueue",
+            "()Landroid/os/MessageQueue;",
+        ) {
+            // cite: frameworks-base Looper.java#myQueue, myLooper, mQueue
+            let looper = self.current_thread_looper();
+            if !dex_value_is_object_like(&looper) {
+                return Some(DexExecutionResult::Throw(
+                    self.allocate_object("Ljava/lang/NullPointerException;".to_owned()),
+                ));
+            }
+            return Some(DexExecutionResult::Value(self.looper_queue(&looper)?));
         }
 
         if method.class_descriptor == "Landroid/os/Looper;"
@@ -2453,6 +2464,112 @@ impl DexProgram {
             priority,
         )
         .then_some(())
+    }
+
+    fn looper_queue(&self, looper: &DexValue) -> Option<DexValue> {
+        if !dex_value_is_object_like(looper) {
+            return None;
+        }
+        let field = DexFieldId {
+            class_descriptor: "Landroid/os/Looper;".to_owned(),
+            type_descriptor: "Landroid/os/MessageQueue;".to_owned(),
+            name: "mQueue".to_owned(),
+        };
+        if let Some(queue @ (DexValue::Object(_) | DexValue::Reference(_))) =
+            self.read_stored_instance_field(looper, &field)
+        {
+            return Some(queue);
+        }
+        let queue = self.allocate_object("Landroid/os/MessageQueue;".to_owned());
+        self.write_stored_instance_field(looper, &field, queue.clone())
+            .then_some(queue)
+    }
+
+    // cite: libcore Observable.java#addObserver, deleteObserver, deleteObservers, countObservers, setChanged, clearChanged, hasChanged
+    fn observable_method(
+        &self,
+        method: &DexMethodId,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        let observable = invocation.arguments.first()?;
+        if !dex_value_is_object_like(observable) {
+            return None;
+        }
+        let observers_field = DexFieldId {
+            class_descriptor: "Ljava/util/Observable;".to_owned(),
+            type_descriptor: "[Ljava/util/Observer;".to_owned(),
+            name: "obs".to_owned(),
+        };
+        let changed_field = DexFieldId {
+            class_descriptor: "Ljava/util/Observable;".to_owned(),
+            type_descriptor: "Z".to_owned(),
+            name: "changed".to_owned(),
+        };
+        let observers = match self.read_stored_instance_field(observable, &observers_field) {
+            Some(array @ DexValue::Object(_)) => self
+                .runtime
+                .borrow()
+                .array_entries
+                .get(&map_identity_key(&array))
+                .cloned()
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let store_observers = |observers: Vec<DexValue>| {
+            let array = self.allocate_filled_array("[Ljava/util/Observer;".to_owned(), observers);
+            self.write_stored_instance_field(observable, &observers_field, array);
+            Some(DexExecutionResult::Void)
+        };
+        let same_observer =
+            |left: &DexValue, right: &DexValue| map_identity_key(left) == map_identity_key(right);
+        match (
+            method.name.as_str(),
+            method.proto.descriptor().as_str(),
+            &invocation.arguments[1..],
+        ) {
+            ("addObserver", "(Ljava/util/Observer;)V", [observer]) => {
+                if !dex_value_is_object_like(observer) {
+                    return Some(self.null_pointer_exception_result());
+                }
+                if observers
+                    .iter()
+                    .any(|existing| same_observer(existing, observer))
+                {
+                    return Some(DexExecutionResult::Void);
+                }
+                let mut observers = observers;
+                observers.push(observer.clone());
+                store_observers(observers)
+            }
+            ("deleteObserver", "(Ljava/util/Observer;)V", [observer]) => {
+                let mut observers = observers;
+                if let Some(index) = observers
+                    .iter()
+                    .position(|existing| same_observer(existing, observer))
+                {
+                    observers.remove(index);
+                }
+                store_observers(observers)
+            }
+            ("deleteObservers", "()V", []) => store_observers(Vec::new()),
+            ("countObservers", "()I", []) => Some(DexExecutionResult::Int(
+                i32::try_from(observers.len()).ok()?,
+            )),
+            ("setChanged" | "clearChanged", "()V", []) => {
+                let changed = i32::from(method.name == "setChanged");
+                self.write_stored_instance_field(
+                    observable,
+                    &changed_field,
+                    DexValue::Int(changed),
+                );
+                Some(DexExecutionResult::Void)
+            }
+            ("hasChanged", "()Z", []) => Some(DexExecutionResult::Int(i32::from(
+                self.read_stored_instance_field(observable, &changed_field)
+                    == Some(DexValue::Int(1)),
+            ))),
+            _ => None,
+        }
     }
 
     fn thread_is_daemon(&self, thread: &DexValue) -> i32 {

@@ -525,6 +525,62 @@ mod tests {
         );
     }
 
+    #[test]
+    fn art_jni_call_static_method_v_upcalls_guest_static_methods() {
+        // cite: art jni_internal.cc#CallStaticLongMethodV, CallStaticVoidMethodV, GetStaticMethodID
+        // cite: art java_vm_ext.cc#FindNativeMethod
+        let dex = dex::parse_dex_file(
+            "jni_static_long.dex",
+            include_bytes!("tests/fixtures/jni_static_long.dex").to_vec(),
+        )
+        .unwrap();
+        let program = DexProgram::new(vec![dex]);
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/native_fixtures/bin/16k");
+        let runtime = NativeRuntime::initialize(vec![dir.clone()]).unwrap();
+        program
+            .load_native_image(runtime.loader(), &dir.join("libfx_jni.so"))
+            .unwrap();
+        let method = program
+            .resolve_named_method("Lfx/Native;", "callStaticLong")
+            .unwrap();
+
+        assert_eq!(
+            program
+                .execute_method(
+                    None,
+                    &method,
+                    Some(&[DexValue::Long(14), DexValue::Long(14)]),
+                    0
+                )
+                .unwrap(),
+            DexExecutionResult::Value(DexValue::Long(43)),
+        );
+
+        let call_void = program
+            .resolve_named_method("Lfx/Native;", "callStaticVoid")
+            .unwrap();
+        assert_eq!(
+            program
+                .execute_method(None, &call_void, Some(&[DexValue::Int(41)]), 0)
+                .unwrap(),
+            DexExecutionResult::Void,
+        );
+        let recorded = DexFieldId {
+            class_descriptor: "Lfx/Native;".to_owned(),
+            type_descriptor: "I".to_owned(),
+            name: "recorded".to_owned(),
+        };
+        assert_eq!(
+            program
+                .runtime
+                .borrow()
+                .static_fields
+                .get(&recorded)
+                .cloned(),
+            Some(DexValue::Int(42))
+        );
+    }
+
     fn fixture_dex() -> Vec<u8> {
         let strings = ["I", "III", "Lfx/Native;", "registeredAdd"];
         let strings_off = 112;

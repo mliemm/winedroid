@@ -35,7 +35,7 @@ impl DexProgram {
         if let Some(package) = self.package_name.as_deref() {
             if let Some(soname) = crate::guest_app_paths::native_library_name(package, filename) {
                 if let Some(result) = self.load_jni_library(soname) {
-                    return Some(self.native_load_result(soname, result));
+                    return self.native_load_result(soname, result);
                 }
             }
         }
@@ -77,7 +77,7 @@ impl DexProgram {
         let soname = map_library_name(library_name);
         #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
         if let Some(result) = self.load_jni_library(&soname) {
-            return Some(self.native_load_result(&soname, result));
+            return self.native_load_result(&soname, result);
         }
         if self.installed_native_library_exists(&soname) {
             return None;
@@ -99,12 +99,17 @@ impl DexProgram {
     }
 
     #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-    fn native_load_result(&self, soname: &str, result: Result<()>) -> DexExecutionResult {
+    fn native_load_result(&self, soname: &str, result: Result<()>) -> Option<DexExecutionResult> {
         match result {
-            Ok(()) => DexExecutionResult::Void,
+            Ok(()) => Some(DexExecutionResult::Void),
             Err(error) => {
                 trace::event("jni", format!("failed to load {soname}: {error}"));
-                self.throw_library_error(error.to_string())
+                let message = error.to_string();
+                if crate::missing::primitive_from_message(&message).is_some() {
+                    crate::missing::record_from_error_message(&message);
+                    return None;
+                }
+                Some(self.throw_library_error(message))
             }
         }
     }

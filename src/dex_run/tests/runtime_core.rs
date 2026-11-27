@@ -3934,3 +3934,37 @@ fn defaults_only_unstored_primitive_instance_fields() {
         Some(DexValue::Long(0))
     );
 }
+
+fn static_init_contract_result(method: &str) -> Result<DexExecutionResult> {
+    let dex_file = crate::dex::parse_dex_file(
+        "static_init_contract.dex",
+        include_bytes!("fixtures/static_init_contract.dex").to_vec(),
+    )
+    .expect("static init contract DEX should parse");
+    let program = DexProgram::new(vec![dex_file]);
+    let method = DexMethodId {
+        class_descriptor: "Lwinedroid/tests/StaticInitContract;".to_owned(),
+        name: method.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "L".to_owned(),
+            return_type: "Ljava/lang/String;".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let resolved = program
+        .resolve_exact_method(&method)
+        .expect("static init contract method should resolve")
+        .expect("static init contract method should exist");
+
+    program.execute_method(None, &resolved, None, 0)
+}
+
+// cite: art class_linker.cc#ClassLinker::InitializeClass
+// cite: art interpreter_common.h#DoInvoke
+#[test]
+fn art_invoke_static_initializes_the_declaring_class_before_the_call() {
+    assert_eq!(
+        static_init_contract_result("staticCodeCallInitializesFirst").unwrap(),
+        DexExecutionResult::Value(DexValue::String("clinit;7".into()))
+    );
+}

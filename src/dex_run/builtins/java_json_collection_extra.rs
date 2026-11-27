@@ -196,6 +196,39 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(value));
         }
 
+        // cite: libcore JSONObject.java#optInt, optLong
+        if method.class_descriptor == "Lorg/json/JSONObject;"
+            && matches!(
+                (method.name.as_str(), method.proto.descriptor().as_str()),
+                ("optInt", "(Ljava/lang/String;)I" | "(Ljava/lang/String;I)I")
+                    | (
+                        "optLong",
+                        "(Ljava/lang/String;)J" | "(Ljava/lang/String;J)J"
+                    )
+            )
+        {
+            let invocation = invocation?;
+            let long = method.name == "optLong";
+            let fallback = match invocation.arguments.get(2) {
+                None => 0,
+                Some(DexValue::Int(fallback)) if !long => i64::from(*fallback),
+                Some(DexValue::Long(fallback)) if long => *fallback,
+                Some(_) => return None,
+            };
+            let mut lookup = invocation.clone();
+            lookup.arguments.truncate(2);
+            let value = self.json_object_opt(&lookup)?;
+            let number = self
+                .json_to_number(invocation, &value, long)
+                .unwrap_or(fallback);
+
+            return Some(if long {
+                DexExecutionResult::Value(DexValue::Long(number))
+            } else {
+                DexExecutionResult::Int(number as i32)
+            });
+        }
+
         if method.class_descriptor == "Lorg/json/JSONObject;"
             && method.name == "opt"
             && method
@@ -1044,4 +1077,45 @@ pub(in crate::dex_run) fn looper_thread_local_reference() -> DexValue {
     DexValue::Reference(std::rc::Rc::from(
         "Ljava/lang/ThreadLocal;:android.os.Looper.sThreadLocal",
     ))
+}
+
+impl DexProgram {
+    // cite: libcore JSON.java#toInteger, toLong
+    fn json_to_number(
+        &self,
+        invocation: &DexInvocation,
+        value: &DexValue,
+        long: bool,
+    ) -> Option<i64> {
+        let from_double = |value: f64| {
+            if long {
+                value as i64
+            } else {
+                i64::from(value as i32)
+            }
+        };
+        match value {
+            DexValue::Int(value) => return Some(i64::from(*value)),
+            DexValue::Long(value) if long => return Some(*value),
+            DexValue::Long(value) => return Some(i64::from(*value as i32)),
+            DexValue::Float(value) => return Some(from_double(f64::from(*value))),
+            DexValue::String(text) => {
+                let mut parse = invocation.clone();
+                parse.arguments = smallvec::smallvec![DexValue::String(text.clone())];
+                let bits = double_parse_double(&parse)?;
+                return Some(from_double(f64::from_bits(bits as u64)));
+            }
+            _ => {}
+        }
+        if !self.value_matches_type(value, "Ljava/lang/Number;") {
+            return None;
+        }
+        let mut unbox = invocation.clone();
+        unbox.arguments = smallvec::smallvec![value.clone()];
+        match self.number_value(if long { "longValue" } else { "intValue" }, &unbox)? {
+            DexExecutionResult::Int(value) => Some(i64::from(value)),
+            DexExecutionResult::Value(DexValue::Long(value)) => Some(value),
+            _ => None,
+        }
+    }
 }

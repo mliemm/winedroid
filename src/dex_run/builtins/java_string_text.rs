@@ -40,7 +40,10 @@ impl DexProgram {
 
         if method.class_descriptor == "Ljava/lang/String;"
             && method.name == "<init>"
-            && method.proto.descriptor_is("([BLjava/lang/String;)V")
+            && matches!(
+                method.proto.descriptor().as_str(),
+                "([B)V" | "([BLjava/lang/String;)V"
+            )
         {
             let invocation = invocation?;
             self.initialize_string_from_byte_array(invocation)?;

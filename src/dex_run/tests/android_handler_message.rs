@@ -1130,3 +1130,33 @@ fn looper_my_looper_is_per_thread_and_shared_with_s_thread_local() {
     });
     assert_eq!(current(), Some(DexExecutionResult::Value(main)));
 }
+
+// cite: frameworks-base Looper.java#myQueue, myLooper, getQueue
+#[test]
+fn looper_my_queue_is_the_current_looper_queue_or_throws_without_one() {
+    let program = DexProgram::new(Vec::new());
+    let get_queue = builtin_method(
+        "Landroid/os/Looper;",
+        "getQueue",
+        "Landroid/os/MessageQueue;",
+        &[],
+    );
+    let my_queue = builtin_method(
+        "Landroid/os/Looper;",
+        "myQueue",
+        "Landroid/os/MessageQueue;",
+        &[],
+    );
+    let main = DexValue::Reference(std::rc::Rc::from("Landroid/os/Looper;:main"));
+    let main_queue = program.invoke_builtin_method(&get_queue, Some(&test_invocation(vec![main])));
+    assert!(matches!(main_queue, Some(DexExecutionResult::Value(_))));
+    assert_eq!(program.invoke_builtin_method(&my_queue, None), main_queue);
+
+    let worker = program.allocate_object("Ljava/lang/Thread;".to_owned());
+    program.runtime.borrow_mut().current_guest_thread = worker;
+    let Some(DexExecutionResult::Throw(exception)) = program.invoke_builtin_method(&my_queue, None)
+    else {
+        panic!("myQueue without a looper should throw");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
+}

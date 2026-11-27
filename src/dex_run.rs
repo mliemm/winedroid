@@ -22,8 +22,8 @@ use crate::dex_interpreter::{
     DexInstanceOf, DexInvocation, DexInvocationFrame, DexInvocationHandler, DexInvocationRegisters,
     DexInvocationResult, DexInvokeKind, DexNewArray, DexNewInstance, DexNewInstanceResult,
     DexObjectRef, DexParkedExecution, DexParkedStep, DexPendingResult, DexStaticFieldAccess,
-    DexStaticFieldReadResult, DexStaticFieldWrite, DexStaticFieldWriteResult, DexStringAccess,
-    DexTypeCheck, DexValue,
+    DexStaticFieldReadResult, DexStaticFieldWrite, DexStaticFieldWriteResult,
+    DexStaticInvokeInitialization, DexStringAccess, DexTypeCheck, DexValue,
 };
 use crate::error::{Result, WinedroidError};
 use crate::external_storage::ExternalStoragePolicy;
@@ -3190,7 +3190,7 @@ impl DexProgram {
             }
         };
         let exceptional = name == "setException";
-        match self.future_task_guest_hook(
+        match self.guest_void_override(
             receiver,
             name,
             &[parameter],
@@ -3224,12 +3224,11 @@ impl DexProgram {
         self.write_stored_instance_field(receiver, &future_task_done_field(), DexValue::Int(1));
 
         Ok(self
-            .future_task_guest_hook(receiver, "done", &[], Vec::new(), depth)?
+            .guest_void_override(receiver, "done", &[], Vec::new(), depth)?
             .unwrap_or(DexExecutionResult::Void))
     }
 
-    // cite: libcore FutureTask.java#set, setException, done
-    fn future_task_guest_hook(
+    pub(super) fn guest_void_override(
         &self,
         receiver: &DexValue,
         name: &str,
@@ -3244,7 +3243,16 @@ impl DexProgram {
             class_descriptor: class_descriptor.to_owned(),
             name: name.to_owned(),
             proto: dex::DexProto {
-                shorty: format!("V{}", "L".repeat(parameters.len())),
+                shorty: std::iter::once('V')
+                    .chain(
+                        parameters
+                            .iter()
+                            .map(|parameter| match parameter.as_bytes()[0] {
+                                b'L' | b'[' => 'L',
+                                primitive => char::from(primitive),
+                            }),
+                    )
+                    .collect(),
                 return_type: "V".to_owned(),
                 parameters: parameters
                     .iter()
@@ -10549,6 +10557,47 @@ fn frame_invocation_androidx_runtime_contract(class_descriptor: &str) -> bool {
 }
 
 impl DexInvocationHandler for DexRunInvocationHandler<'_> {
+    fn initialize_static_invoke_class(
+        &mut self,
+        method_index: u32,
+    ) -> Result<DexStaticInvokeInitialization> {
+        // cite: art interpreter_common.h#DoInvoke
+        // cite: art class_linker.cc#ClassLinker::InitializeClass
+        let method = self
+            .program
+            .method_id(self.current_dex_file_index, method_index)?;
+        let Some(resolved) = self
+            .program
+            .resolve_exact_method_in_class_hierarchy(&method.class_descriptor, &method)?
+        else {
+            return Ok(DexStaticInvokeInitialization::Complete);
+        };
+        let class_descriptor = &resolved.method.class_descriptor;
+        if self
+            .program
+            .runtime
+            .borrow()
+            .initialized_classes
+            .contains(class_descriptor.as_str())
+        {
+            return Ok(DexStaticInvokeInitialization::Complete);
+        }
+        Ok(
+            match self
+                .program
+                .ensure_class_initialized(class_descriptor, self.depth)?
+            {
+                ClassInitializationResult::Complete => DexStaticInvokeInitialization::Complete,
+                ClassInitializationResult::Throw(exception) => {
+                    DexStaticInvokeInitialization::Throw(exception)
+                }
+                ClassInitializationResult::Parked(execution) => {
+                    DexStaticInvokeInitialization::Parked(execution)
+                }
+            },
+        )
+    }
+
     fn current_class_descriptor(&self) -> Option<&str> {
         self.current_class_descriptor.as_deref()
     }

@@ -6209,6 +6209,20 @@ impl DexProgram {
         ((high << 27) + low) as f64 / (1u64 << 53) as f64
     }
 
+    // cite: libcore Math.java#randomLongInternal
+    // cite: libcore Random.java#nextLong
+    pub(super) fn math_random_long_internal(&self) -> i64 {
+        let mut runtime = self.runtime.borrow_mut();
+        let initial_seed = runtime.boot_wall_clock_millis;
+        let seed = runtime
+            .random_seeds
+            .entry("Ljava/lang/Math$RandomNumberGeneratorHolder;".to_owned())
+            .or_insert_with(|| java_random_initial_scramble(initial_seed));
+        let high = i64::from(java_random_next_bits(seed, 32));
+        let low = i64::from(java_random_next_bits(seed, 32));
+        (high << 32).wrapping_add(low)
+    }
+
     fn with_random_seed<A: MethodIntrinsicArguments + ?Sized, T>(
         &self,
         invocation: &A,
@@ -6997,14 +7011,19 @@ fn parse_json_number(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Op
     text.parse::<f32>().ok().map(DexValue::Float)
 }
 
+// cite: libcore JSONTokener.java#readLiteral
 fn parse_json_literal(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<DexValue> {
     let mut word = String::new();
     while matches!(chars.peek(), Some(c) if c.is_ascii_alphabetic()) {
         word.push(chars.next()?);
     }
     match word.as_str() {
-        "true" => Some(DexValue::Int(1)),
-        "false" => Some(DexValue::Int(0)),
+        "true" => Some(DexValue::Reference(std::rc::Rc::from(
+            "Ljava/lang/Boolean;:true",
+        ))),
+        "false" => Some(DexValue::Reference(std::rc::Rc::from(
+            "Ljava/lang/Boolean;:false",
+        ))),
         "null" => Some(DexValue::Null),
         _ => None,
     }

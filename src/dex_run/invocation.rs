@@ -417,6 +417,13 @@ impl DexRunInvocationHandler<'_> {
             return Ok(invocation_result_from_execution(result));
         }
 
+        if let Some(result) =
+            self.program
+                .file_output_stream_intrinsic(&method, &invocation, self.depth)?
+        {
+            return Ok(invocation_result_from_execution(result));
+        }
+
         if method.class_descriptor == "Ljava/io/File;"
             && method.name == "listFiles"
             && proto_descriptor == "(Ljava/io/FileFilter;)[Ljava/io/File;"
@@ -973,6 +980,59 @@ impl DexProgram {
                 .future_task_set_outcome(receiver, exception.clone(), true, depth)
                 .map(Some),
             ("done", "()V", None) => Ok(Some(DexExecutionResult::Void)),
+            _ => Ok(None),
+        }
+    }
+
+    // cite: libcore FileOutputStream.java#write, flush, close
+    pub(super) fn file_output_stream_intrinsic(
+        &self,
+        method: &DexMethodId,
+        invocation: &DexInvocation,
+        depth: usize,
+    ) -> Result<Option<DexExecutionResult>> {
+        let stream_class = "Ljava/io/FileOutputStream;";
+        if !(method.class_descriptor == "Ljava/io/OutputStream;"
+            || self.descriptor_matches_type(&method.class_descriptor, stream_class))
+        {
+            return Ok(None);
+        }
+        let Some(receiver) = invocation.arguments.first() else {
+            return Ok(None);
+        };
+        if !self.value_matches_type(receiver, stream_class)
+            || !self.file_output_stream_is_open_by_path(receiver)
+            || self.guest_overrides(method, Some(invocation))
+        {
+            return Ok(None);
+        }
+        let descriptor = method.proto.descriptor();
+        let arguments = &invocation.arguments[1..];
+        let range = |array: &DexValue, offset: i32, count: i32| {
+            let parameters = ["[B", "I", "I"];
+            let values = vec![array.clone(), DexValue::Int(offset), DexValue::Int(count)];
+            match self.guest_void_override(receiver, "write", &parameters, values, depth)? {
+                Some(result) => Ok(Some(result)),
+                None => Ok(self.file_output_stream_write_bytes(receiver, array, offset, count)),
+            }
+        };
+        match (method.name.as_str(), descriptor.as_str(), arguments) {
+            ("write", "(I)V", [DexValue::Int(byte)]) => {
+                let array = self.allocate_filled_array(
+                    "[B".to_owned(),
+                    vec![DexValue::Int(i32::from(*byte as i8))],
+                );
+                range(&array, 0, 1)
+            }
+            ("write", "([B)V", [array]) => match self.array_length(array) {
+                Some(length) => range(array, 0, length),
+                None => Ok(Some(self.null_pointer_exception_result())),
+            },
+            ("write", "([BII)V", [array, DexValue::Int(offset), DexValue::Int(count)]) => {
+                Ok(self.file_output_stream_write_bytes(receiver, array, *offset, *count))
+            }
+            ("flush", "()V", []) => Ok(Some(DexExecutionResult::Void)),
+            ("close", "()V", []) => Ok(self.file_output_stream_close(receiver)),
             _ => Ok(None),
         }
     }

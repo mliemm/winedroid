@@ -1450,13 +1450,21 @@ impl DexProgram {
                     None => self.builtin_stream_close(source, depth + 1),
                 };
             }
-            // cite: libcore FileInputStream.java#close
+            // cite: libcore FileInputStream.java#close, channel
             StreamKind::File(_) => {
                 self.write_stored_instance_field(
                     stream,
                     &zip_field(FILE_STREAM, "Z", "closed"),
                     DexValue::Int(1),
                 );
+                if let Some(channel @ DexValue::Object(_)) = self.read_stored_instance_field(
+                    stream,
+                    &super::java_io::file_input_stream_channel_field(),
+                ) {
+                    if self.file_channel_is_open(&channel) == Some(true) {
+                        self.close_file_channel(&channel);
+                    }
+                }
             }
             // cite: libcore ZipFile.java#close
             StreamKind::StoredEntry | StreamKind::DeflatedEntry => self.close_entry_stream(stream),

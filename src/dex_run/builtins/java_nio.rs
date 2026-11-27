@@ -7,6 +7,8 @@ const BYTE_BUFFER: &str = "Ljava/nio/ByteBuffer;";
 const BYTE_ORDER: &str = "Ljava/nio/ByteOrder;";
 const FILE_CHANNEL: &str = "Ljava/nio/channels/FileChannel;";
 const FILE_CHANNEL_IMPL: &str = "Lsun/nio/ch/FileChannelImpl;";
+const FILE_LOCK: &str = "Ljava/nio/channels/FileLock;";
+const FILE_LOCK_IMPL: &str = "Lsun/nio/ch/FileLockImpl;";
 const HEAP_BYTE_BUFFER: &str = "Ljava/nio/HeapByteBuffer;";
 
 struct ByteBufferState {
@@ -35,6 +37,14 @@ impl DexProgram {
         if class == "Ljava/nio/charset/Charset;" {
             return self.charset_builtin(method, invocation);
         }
+        if class == FILE_LOCK {
+            let invocation = invocation?;
+            return match (method.name.as_str(), method.proto.descriptor().as_str()) {
+                ("release" | "close", "()V") => self.file_lock_release(invocation),
+                ("isValid", "()Z") => self.file_lock_is_valid(invocation),
+                _ => None,
+            };
+        }
         if !matches!(class, BUFFER | BYTE_BUFFER | FILE_CHANNEL) {
             return None;
         }
@@ -50,6 +60,8 @@ impl DexProgram {
                     self.file_channel_set_position(invocation)
                 }
                 ("read", "(Ljava/nio/ByteBuffer;)I") => self.file_channel_read(invocation),
+                ("lock", "()Ljava/nio/channels/FileLock;") => self.file_channel_lock(invocation),
+                ("read", "(Ljava/nio/ByteBuffer;J)I") => self.file_channel_read_at(invocation),
                 _ => None,
             };
         }
@@ -62,6 +74,8 @@ impl DexProgram {
             (BYTE_BUFFER, "order", "(Ljava/nio/ByteOrder;)Ljava/nio/ByteBuffer;") => {
                 self.byte_buffer_set_order(invocation)
             }
+            (BYTE_BUFFER, "get", "()B") => self.byte_buffer_get(invocation, 1, None),
+            (BYTE_BUFFER, "get", "(I)B") => self.byte_buffer_get(invocation, 1, Some(1)),
             (BYTE_BUFFER, "getShort", "()S") => self.byte_buffer_get(invocation, 2, None),
             (BYTE_BUFFER, "getShort", "(I)S") => self.byte_buffer_get(invocation, 2, Some(1)),
             (BYTE_BUFFER, "getInt", "()I") => self.byte_buffer_get(invocation, 4, None),
@@ -112,6 +126,70 @@ impl DexProgram {
             DexValue::Int(1),
         );
         channel
+    }
+
+    pub(in crate::dex_run) fn mark_file_channel_writable(&self, channel: &DexValue) {
+        self.write_stored_instance_field(
+            channel,
+            &nio_field(FILE_CHANNEL_IMPL, "Z", "writable"),
+            DexValue::Int(1),
+        );
+    }
+
+    // cite: libcore FileChannelImpl.java#lock, ensureOpen, writable
+    fn file_channel_lock(&self, invocation: &DexInvocation) -> Option<DexExecutionResult> {
+        let [channel] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        if let Err(exception) = self.open_file_channel_state(channel)? {
+            return Some(exception);
+        }
+        let writable = self
+            .read_stored_instance_field(channel, &nio_field(FILE_CHANNEL_IMPL, "Z", "writable"));
+        if writable != Some(DexValue::Int(1)) {
+            return Some(self.nio_throw("Ljava/nio/channels/NonWritableChannelException;", None));
+        }
+        let lock = self.allocate_object(FILE_LOCK_IMPL.to_owned());
+        self.write_stored_instance_field(
+            &lock,
+            &nio_field(FILE_LOCK, FILE_CHANNEL, "channel"),
+            channel.clone(),
+        );
+
+        Some(DexExecutionResult::Value(lock))
+    }
+
+    // cite: libcore FileLockImpl.java#release, isValid, invalidate
+    fn file_lock_release(&self, invocation: &DexInvocation) -> Option<DexExecutionResult> {
+        let [lock] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        let channel =
+            self.read_stored_instance_field(lock, &nio_field(FILE_LOCK, FILE_CHANNEL, "channel"))?;
+        if !self.file_channel_is_open(&channel)? {
+            return Some(self.nio_throw("Ljava/nio/channels/ClosedChannelException;", None));
+        }
+        self.write_stored_instance_field(
+            lock,
+            &nio_field(FILE_LOCK_IMPL, "Z", "invalid"),
+            DexValue::Int(1),
+        );
+
+        Some(DexExecutionResult::Void)
+    }
+
+    // cite: libcore FileLockImpl.java#isValid
+    fn file_lock_is_valid(&self, invocation: &DexInvocation) -> Option<DexExecutionResult> {
+        let [lock] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        self.read_stored_instance_field(lock, &nio_field(FILE_LOCK, FILE_CHANNEL, "channel"))?;
+        let invalid =
+            self.read_stored_instance_field(lock, &nio_field(FILE_LOCK_IMPL, "Z", "invalid"));
+
+        Some(DexExecutionResult::Int(i32::from(
+            invalid != Some(DexValue::Int(1)),
+        )))
     }
 
     pub(in crate::dex_run) fn close_file_channel(&self, channel: &DexValue) {
@@ -315,7 +393,7 @@ impl DexProgram {
         Some(DexExecutionResult::Value(buffer.clone()))
     }
 
-    // cite: libcore HeapByteBuffer.java#getShort, getInt, getLong
+    // cite: libcore HeapByteBuffer.java#get, getShort, getInt, getLong
     // cite: libcore Bits.java#getShort, getInt, getLong, getShortB, getShortL, getIntB, getIntL, getLongB, getLongL
     // cite: libcore Buffer.java#nextGetIndex, checkIndex
     fn byte_buffer_get(
@@ -332,13 +410,17 @@ impl DexProgram {
                     return None;
                 };
                 if index < 0 || width > state.limit - index {
-                    return Some(self.nio_throw(
-                        "Ljava/lang/IndexOutOfBoundsException;",
-                        Some(format!(
+                    let detail = if width == 1 {
+                        format!("index={index} out of bounds (limit={})", state.limit)
+                    } else {
+                        format!(
                             "index={index} out of bounds (limit={}, nb={width})",
                             state.limit
-                        )),
-                    ));
+                        )
+                    };
+                    return Some(
+                        self.nio_throw("Ljava/lang/IndexOutOfBoundsException;", Some(detail)),
+                    );
                 }
                 index
             }
@@ -370,6 +452,7 @@ impl DexProgram {
             .fold(0u64, |value, byte| (value << 8) | u64::from(*byte));
 
         Some(match width {
+            1 => DexExecutionResult::Int(i32::from(bits as u8 as i8)),
             2 => DexExecutionResult::Int(i32::from(bits as u16 as i16)),
             4 => DexExecutionResult::Int(bits as u32 as i32),
             _ => DexExecutionResult::Value(DexValue::Long(bits as i64)),
@@ -501,14 +584,41 @@ impl DexProgram {
     }
 
     // cite: libcore FileChannelImpl.java#read
-    // cite: libcore IOUtil.java#read, readIntoNativeBuffer
     fn file_channel_read(&self, invocation: &DexInvocation) -> Option<DexExecutionResult> {
-        let channel = invocation.arguments.first()?;
-        let destination = invocation.arguments.get(1)?;
+        let [channel, destination] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        self.file_channel_read_into(channel, destination, None)
+    }
+
+    // cite: libcore FileChannelImpl.java#read, readInternal
+    fn file_channel_read_at(&self, invocation: &DexInvocation) -> Option<DexExecutionResult> {
+        let [channel, destination, DexValue::Long(position), DexValue::Long(_)] =
+            invocation.arguments.as_slice()
+        else {
+            return None;
+        };
+        if *position < 0 {
+            return Some(self.nio_throw(
+                "Ljava/lang/IllegalArgumentException;",
+                Some("Negative position".to_owned()),
+            ));
+        }
+        self.file_channel_read_into(channel, destination, Some(*position))
+    }
+
+    // cite: libcore IOUtil.java#read, readIntoNativeBuffer
+    fn file_channel_read_into(
+        &self,
+        channel: &DexValue,
+        destination: &DexValue,
+        absolute_position: Option<i64>,
+    ) -> Option<DexExecutionResult> {
         let state = match self.open_file_channel_state(channel)? {
             Ok(state) => state,
             Err(exception) => return Some(exception),
         };
+        let start = absolute_position.unwrap_or(state.position);
         let buffer = self.byte_buffer_state(destination)?;
         if buffer.read_only {
             return Some(self.nio_throw(
@@ -523,7 +633,7 @@ impl DexProgram {
 
         let path = self.resolved_guest_path_for_channel(&state.path).ok()?;
         let mut file = path.open_read().ok()?;
-        file.seek(SeekFrom::Start(u64::try_from(state.position).ok()?))
+        file.seek(SeekFrom::Start(u64::try_from(start).ok()?))
             .ok()?;
         let mut bytes = vec![0u8; remaining];
         let mut read = 0;
@@ -549,11 +659,13 @@ impl DexProgram {
         }
         let read = i32::try_from(read).ok()?;
         self.set_buffer_int(destination, "position", buffer.position + read);
-        self.write_stored_instance_field(
-            channel,
-            &nio_field(FILE_CHANNEL_IMPL, "J", "position"),
-            DexValue::Long(state.position + i64::from(read)),
-        );
+        if absolute_position.is_none() {
+            self.write_stored_instance_field(
+                channel,
+                &nio_field(FILE_CHANNEL_IMPL, "J", "position"),
+                DexValue::Long(state.position + i64::from(read)),
+            );
+        }
 
         Some(DexExecutionResult::Int(read))
     }

@@ -959,3 +959,124 @@ fn libcore_json_object_string_constructor_rejects_empty_and_non_object_input() {
     }
     assert_eq!(construct("{}"), Some(DexExecutionResult::Void));
 }
+
+// cite: libcore JSONObject.java#JSONObject, optInt
+// cite: libcore JSON.java#toInteger
+#[test]
+fn libcore_json_object_opt_int_coerces_numbers_and_numeric_strings() {
+    let program = DexProgram::new(Vec::new());
+    let object = program.allocate_object("Lorg/json/JSONObject;".to_owned());
+    let constructor = builtin_method(
+        "Lorg/json/JSONObject;",
+        "<init>",
+        "V",
+        &["Ljava/lang/String;"],
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![
+                object.clone(),
+                DexValue::String(
+                    r#"{"int":7,"double":-3.9,"text":"12.8","word":"x","flag":true}"#.into()
+                ),
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    let opt_int = builtin_method(
+        "Lorg/json/JSONObject;",
+        "optInt",
+        "I",
+        &["Ljava/lang/String;", "I"],
+    );
+    let opt = |name: &str| {
+        program.invoke_builtin_method(
+            &opt_int,
+            Some(&test_invocation(vec![
+                object.clone(),
+                DexValue::String(name.into()),
+                DexValue::Int(-1),
+            ])),
+        )
+    };
+
+    for (name, expected) in [
+        ("int", 7),
+        ("double", -3),
+        ("text", 12),
+        ("word", -1),
+        ("flag", -1),
+        ("missing", -1),
+    ] {
+        assert_eq!(opt(name), Some(DexExecutionResult::Int(expected)), "{name}");
+    }
+}
+
+// cite: libcore JSONObject.java#JSONObject, optLong
+// cite: libcore JSON.java#toLong
+#[test]
+fn libcore_json_object_opt_long_keeps_long_range_and_truncates_doubles() {
+    let program = DexProgram::new(Vec::new());
+    let object = program.allocate_object("Lorg/json/JSONObject;".to_owned());
+    let constructor = builtin_method(
+        "Lorg/json/JSONObject;",
+        "<init>",
+        "V",
+        &["Ljava/lang/String;"],
+    );
+    program.invoke_builtin_method(
+        &constructor,
+        Some(&test_invocation(vec![
+            object.clone(),
+            DexValue::String(r#"{"big":12345678901,"int":7,"text":"1e10","word":"x"}"#.into()),
+        ])),
+    );
+    let opt_long = builtin_method(
+        "Lorg/json/JSONObject;",
+        "optLong",
+        "J",
+        &["Ljava/lang/String;", "J"],
+    );
+    let opt_int = builtin_method(
+        "Lorg/json/JSONObject;",
+        "optInt",
+        "I",
+        &["Ljava/lang/String;", "I"],
+    );
+    let long_of = |name: &str| {
+        program.invoke_builtin_method(
+            &opt_long,
+            Some(&test_invocation(vec![
+                object.clone(),
+                DexValue::String(name.into()),
+                DexValue::Long(-1),
+                DexValue::Long(-1),
+            ])),
+        )
+    };
+
+    for (name, expected) in [
+        ("big", 12_345_678_901),
+        ("int", 7),
+        ("text", 10_000_000_000),
+        ("word", -1),
+    ] {
+        assert_eq!(
+            long_of(name),
+            Some(DexExecutionResult::Value(DexValue::Long(expected))),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        program.invoke_builtin_method(
+            &opt_int,
+            Some(&test_invocation(vec![
+                object,
+                DexValue::String("big".into()),
+                DexValue::Int(-1)
+            ]))
+        ),
+        Some(DexExecutionResult::Int(12_345_678_901_i64 as i32))
+    );
+}

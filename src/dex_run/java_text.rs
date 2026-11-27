@@ -654,11 +654,13 @@ impl DexProgram {
         invocation: &DexInvocation,
     ) -> Option<()> {
         // cite: libcore String.java#String, StringCoding
-        if invocation.arguments.len() != 3 {
-            return None;
-        }
+        // cite: libcore Charset.java#defaultCharset
+        let charset = match invocation.arguments.get(2) {
+            None if invocation.arguments.len() == 2 => "UTF-8".to_owned(),
+            Some(name) if invocation.arguments.len() == 3 => self.string_text(name)?,
+            _ => return None,
+        };
         let bytes = self.byte_array_contents(&invocation.arguments[1])?;
-        let charset = self.string_text(&invocation.arguments[2])?;
         let text = decode_charset_bytes(&bytes, &charset)?;
         let key = map_identity_key(&invocation.arguments[0]);
 
@@ -706,7 +708,7 @@ impl DexProgram {
         ))
     }
 
-    fn byte_array_contents(&self, value: &DexValue) -> Option<Vec<u8>> {
+    pub(super) fn byte_array_contents(&self, value: &DexValue) -> Option<Vec<u8>> {
         let key = map_identity_key(value);
         let runtime = self.runtime.borrow();
         let entries = runtime.array_entries.get(&key)?;

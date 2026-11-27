@@ -104,6 +104,7 @@ pub(super) struct DexRuntimeState {
     pub(super) thread_priorities: HashMap<i32, i32>,
     pub(super) finished_activities: HashSet<String>,
     pub(super) thread_loopers: HashMap<String, DexValue>,
+    pub(super) thread_policy_masks: HashMap<String, i32>,
     pub(super) window_focused_activities: HashSet<String>,
     pub(super) pending_destroyed_activities: Vec<String>,
     pub(super) destroyed_activities: HashSet<String>,
@@ -461,6 +462,7 @@ impl DexRuntimeState {
             thread_priorities: HashMap::new(),
             finished_activities: HashSet::new(),
             thread_loopers: HashMap::new(),
+            thread_policy_masks: HashMap::new(),
             window_focused_activities: HashSet::new(),
             pending_destroyed_activities: Vec::new(),
             destroyed_activities: HashSet::new(),
@@ -1543,6 +1545,25 @@ impl InstanceFieldStore {
                     },
                 });
             }
+        }
+    }
+
+    pub(super) fn copy_object_fields(&mut self, from: u64, to: u64) -> bool {
+        let Some(storage) = self.object_data(from).map(|data| match &data.storage {
+            FieldStorage::Slots { layout, values } => FieldStorage::Slots {
+                layout: *layout,
+                values: values.clone(),
+            },
+            FieldStorage::Map(map) => FieldStorage::Map(map.clone()),
+        }) else {
+            return false;
+        };
+        match self.objects.get_mut(to as usize) {
+            Some(Some(data)) => {
+                data.storage = storage;
+                true
+            }
+            _ => false,
         }
     }
 

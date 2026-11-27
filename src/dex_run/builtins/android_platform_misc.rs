@@ -83,6 +83,53 @@ impl DexProgram {
             )));
         }
 
+        // cite: frameworks-base StrictMode.java#getThreadPolicy, allowThreadDiskReads, allowThreadDiskWrites, setThreadPolicy
+        if method.class_descriptor == "Landroid/os/StrictMode;" {
+            match (method.name.as_str(), method.proto.descriptor().as_str()) {
+                ("getThreadPolicy", "()Landroid/os/StrictMode$ThreadPolicy;") => {
+                    let mask = self.current_thread_policy_mask();
+                    return Some(DexExecutionResult::Value(self.allocate_thread_policy(mask)));
+                }
+                ("allowThreadDiskReads", "()Landroid/os/StrictMode$ThreadPolicy;") => {
+                    let mask = self.current_thread_policy_mask();
+                    self.set_current_thread_policy_mask(
+                        mask & !STRICT_MODE_DETECT_THREAD_DISK_READ,
+                    );
+                    return Some(DexExecutionResult::Value(self.allocate_thread_policy(mask)));
+                }
+                ("allowThreadDiskWrites", "()Landroid/os/StrictMode$ThreadPolicy;") => {
+                    let mask = self.current_thread_policy_mask();
+                    self.set_current_thread_policy_mask(
+                        mask & !(STRICT_MODE_DETECT_THREAD_DISK_WRITE
+                            | STRICT_MODE_DETECT_THREAD_DISK_READ),
+                    );
+                    return Some(DexExecutionResult::Value(self.allocate_thread_policy(mask)));
+                }
+                ("setThreadPolicy", "(Landroid/os/StrictMode$ThreadPolicy;)V") => {
+                    let policy = invocation?.arguments.first()?;
+                    let Some(DexValue::Int(mask)) =
+                        self.read_stored_instance_field(policy, &thread_policy_mask_field())
+                    else {
+                        return None;
+                    };
+                    self.set_current_thread_policy_mask(mask);
+                    return Some(DexExecutionResult::Void);
+                }
+                _ => {}
+            }
+        }
+
+        // cite: frameworks-base Environment.java#isExternalStorageEmulated, getExternalDirs
+        if method.matches_builtin_signature(
+            "Landroid/os/Environment;",
+            "isExternalStorageEmulated",
+            "()Z",
+        ) {
+            let emulated = crate::external_storage::GUEST_PRIMARY_EXTERNAL_ROOT
+                .starts_with("/storage/emulated/");
+            return Some(DexExecutionResult::Int(i32::from(emulated)));
+        }
+
         // cite: frameworks-base Environment.java#getDataDirectory, DIR_ANDROID_DATA, DIR_ANDROID_DATA_PATH, getDirectoryPath
         if method.class_descriptor == "Landroid/os/Environment;"
             && method.name == "getDataDirectory"
@@ -3430,6 +3477,45 @@ impl DexProgram {
         let row = cursor.rows.get(position)?;
 
         Some(row.get(column_index).cloned().unwrap_or(DexValue::Null))
+    }
+}
+
+impl DexProgram {
+    // cite: frameworks-base StrictMode.java#getThreadPolicyMask, setThreadPolicyMask
+    fn current_thread_policy_mask(&self) -> i32 {
+        let runtime = self.runtime.borrow();
+        let thread = map_identity_key(&runtime.current_guest_thread);
+        runtime
+            .thread_policy_masks
+            .get(&thread)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn set_current_thread_policy_mask(&self, mask: i32) {
+        let mut runtime = self.runtime.borrow_mut();
+        let thread = map_identity_key(&runtime.current_guest_thread);
+        runtime.thread_policy_masks.insert(thread, mask);
+    }
+
+    // cite: frameworks-base StrictMode.java#ThreadPolicy, mask
+    fn allocate_thread_policy(&self, mask: i32) -> DexValue {
+        let policy = self.allocate_object("Landroid/os/StrictMode$ThreadPolicy;".to_owned());
+        self.write_stored_instance_field(&policy, &thread_policy_mask_field(), DexValue::Int(mask));
+        policy
+    }
+}
+
+// cite: frameworks-base StrictMode.java#DETECT_THREAD_DISK_WRITE
+const STRICT_MODE_DETECT_THREAD_DISK_WRITE: i32 = 1 << 0;
+// cite: frameworks-base StrictMode.java#DETECT_THREAD_DISK_READ
+const STRICT_MODE_DETECT_THREAD_DISK_READ: i32 = 1 << 1;
+
+fn thread_policy_mask_field() -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Landroid/os/StrictMode$ThreadPolicy;".to_owned(),
+        type_descriptor: "I".to_owned(),
+        name: "mask".to_owned(),
     }
 }
 

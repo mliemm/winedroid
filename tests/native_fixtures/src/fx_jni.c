@@ -1,4 +1,5 @@
 #include <jni.h>
+#include <stdarg.h>
 #include <stddef.h>
 #include <string.h>
 
@@ -79,4 +80,40 @@ void Java_fx_Native_throwState(JNIEnv *env, jclass type)
         return;
     }
     (*env)->ThrowNew(env, exception, "fx_jni");
+}
+
+static jlong call_static_long(JNIEnv *env, jclass type, jmethodID method, ...)
+{
+    va_list arguments;
+    jlong result;
+    va_start(arguments, method);
+    result = (*env)->CallStaticLongMethodV(env, type, method, arguments);
+    va_end(arguments);
+    return result;
+}
+
+jlong Java_fx_Native_callStaticLong(JNIEnv *env, jclass type, jlong value)
+{
+    jmethodID scale = (*env)->GetStaticMethodID(env, type, "scale", "(JI)J");
+    if (scale == NULL) {
+        return -1;
+    }
+    return call_static_long(env, type, scale, value, (jint)3);
+}
+
+static void call_static_void(JNIEnv *env, jclass type, jmethodID method, ...)
+{
+    va_list arguments;
+    va_start(arguments, method);
+    (*env)->CallStaticVoidMethodV(env, type, method, arguments);
+    va_end(arguments);
+}
+
+void Java_fx_Native_callStaticVoid(JNIEnv *env, jclass type, jint value)
+{
+    jmethodID record = (*env)->GetStaticMethodID(env, type, "record", "(I)V");
+    if (record == NULL) {
+        return;
+    }
+    call_static_void(env, type, record, value + 1);
 }

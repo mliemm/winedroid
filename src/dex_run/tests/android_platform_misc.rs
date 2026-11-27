@@ -2165,3 +2165,89 @@ fn builtin_activity_lifecycle_callback_defaults_are_empty() {
         );
     }
 }
+
+// cite: frameworks-base StrictMode.java#getThreadPolicy, allowThreadDiskReads, allowThreadDiskWrites, setThreadPolicy, DETECT_THREAD_DISK_WRITE, DETECT_THREAD_DISK_READ
+#[test]
+fn strict_mode_thread_policy_mask_is_per_thread_and_restorable() {
+    let program = DexProgram::new(Vec::new());
+    let policy_type = "Landroid/os/StrictMode$ThreadPolicy;";
+    let get = builtin_method(
+        "Landroid/os/StrictMode;",
+        "getThreadPolicy",
+        policy_type,
+        &[],
+    );
+    let allow_reads = builtin_method(
+        "Landroid/os/StrictMode;",
+        "allowThreadDiskReads",
+        policy_type,
+        &[],
+    );
+    let allow_writes = builtin_method(
+        "Landroid/os/StrictMode;",
+        "allowThreadDiskWrites",
+        policy_type,
+        &[],
+    );
+    let set = builtin_method(
+        "Landroid/os/StrictMode;",
+        "setThreadPolicy",
+        "V",
+        &[policy_type],
+    );
+    let mask_field = DexFieldId {
+        class_descriptor: policy_type.to_owned(),
+        type_descriptor: "I".to_owned(),
+        name: "mask".to_owned(),
+    };
+    let policy_of = |method: &DexMethodId| {
+        let Some(DexExecutionResult::Value(policy)) = program.invoke_builtin_method(method, None)
+        else {
+            panic!("{} should return a ThreadPolicy", method.name);
+        };
+        policy
+    };
+    let mask_of = |policy: &DexValue| program.read_stored_instance_field(policy, &mask_field);
+
+    let detect_reads_and_writes = program.allocate_object(policy_type.to_owned());
+    program.write_stored_instance_field(&detect_reads_and_writes, &mask_field, DexValue::Int(7));
+    assert_eq!(mask_of(&policy_of(&get)), Some(DexValue::Int(0)));
+    assert_eq!(
+        program.invoke_builtin_method(&set, Some(&test_invocation(vec![detect_reads_and_writes]))),
+        Some(DexExecutionResult::Void)
+    );
+
+    let before_reads = policy_of(&allow_reads);
+    assert_eq!(mask_of(&before_reads), Some(DexValue::Int(7)));
+    assert_eq!(mask_of(&policy_of(&get)), Some(DexValue::Int(5)));
+    assert_eq!(mask_of(&policy_of(&allow_writes)), Some(DexValue::Int(5)));
+    assert_eq!(mask_of(&policy_of(&get)), Some(DexValue::Int(4)));
+
+    let worker = program.allocate_object("Ljava/lang/Thread;".to_owned());
+    let main = std::mem::replace(
+        &mut program.runtime.borrow_mut().current_guest_thread,
+        worker,
+    );
+    assert_eq!(mask_of(&policy_of(&get)), Some(DexValue::Int(0)));
+    program.runtime.borrow_mut().current_guest_thread = main;
+
+    program.invoke_builtin_method(&set, Some(&test_invocation(vec![before_reads])));
+    assert_eq!(mask_of(&policy_of(&get)), Some(DexValue::Int(7)));
+}
+
+// cite: frameworks-base Environment.java#isExternalStorageEmulated, getExternalDirs
+#[test]
+fn environment_reports_the_emulated_primary_volume_as_emulated() {
+    let program = DexProgram::new(Vec::new());
+    let method = builtin_method(
+        "Landroid/os/Environment;",
+        "isExternalStorageEmulated",
+        "Z",
+        &[],
+    );
+
+    assert_eq!(
+        program.invoke_builtin_method(&method, None),
+        Some(DexExecutionResult::Int(1))
+    );
+}

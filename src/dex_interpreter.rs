@@ -215,6 +215,13 @@ pub enum DexStaticFieldWriteResult {
     Parked(DexParkedExecution),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum DexStaticInvokeInitialization {
+    Complete,
+    Throw(DexValue),
+    Parked(DexParkedExecution),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DexStringAccess {
     pub string_index: u32,
@@ -498,6 +505,13 @@ pub trait DexInvocationHandler {
         _kind: DexInvokeKind,
     ) -> Option<String> {
         None
+    }
+
+    fn initialize_static_invoke_class(
+        &mut self,
+        _method_index: u32,
+    ) -> Result<DexStaticInvokeInitialization> {
+        Ok(DexStaticInvokeInitialization::Complete)
     }
 
     fn exception_matches(&mut self, exception: &DexValue, type_descriptor: &str) -> Result<bool> {
@@ -1998,6 +2012,44 @@ fn continue_code(
             0x6e..=0x72 => {
                 let invocation =
                     read_five_register_invocation_frame(code, &frame, pc, instruction, opcode)?;
+                // cite: art interpreter_common.h#DoInvoke
+                // cite: art class_linker.cc#ClassLinker::InitializeClass
+                if invocation.kind() == DexInvokeKind::Static {
+                    match invocation_handler
+                        .initialize_static_invoke_class(invocation.method_index())?
+                    {
+                        DexStaticInvokeInitialization::Complete => {}
+                        DexStaticInvokeInitialization::Throw(exception) => {
+                            if let Some(finished) = dispatch_exception(
+                                code,
+                                pc,
+                                exception,
+                                &mut pending_result,
+                                &mut pending_exception,
+                                &mut pc,
+                                invocation_handler,
+                            )? {
+                                return Ok(finished);
+                            }
+                            continue;
+                        }
+                        DexStaticInvokeInitialization::Parked(mut execution) => {
+                            let current_class_descriptor = invocation_handler
+                                .current_class_descriptor()
+                                .map(str::to_owned);
+                            execution.push_caller(DexParkedFrame::retry_instruction(
+                                dex_file_index,
+                                current_class_descriptor,
+                                code,
+                                &frame,
+                                &pending_result,
+                                &pending_exception,
+                                pc,
+                            ));
+                            return Ok(DexExecutionResult::Parked(execution));
+                        }
+                    }
+                }
                 let method_metric_start = crate::method_metrics::start_timing();
                 let invocation_result =
                     match null_receiver_exception(&invocation, invocation_handler) {
@@ -2023,6 +2075,44 @@ fn continue_code(
             0x74..=0x78 => {
                 let invocation =
                     read_range_invocation_frame(code, &frame, pc, instruction, opcode)?;
+                // cite: art interpreter_common.h#DoInvoke
+                // cite: art class_linker.cc#ClassLinker::InitializeClass
+                if invocation.kind() == DexInvokeKind::Static {
+                    match invocation_handler
+                        .initialize_static_invoke_class(invocation.method_index())?
+                    {
+                        DexStaticInvokeInitialization::Complete => {}
+                        DexStaticInvokeInitialization::Throw(exception) => {
+                            if let Some(finished) = dispatch_exception(
+                                code,
+                                pc,
+                                exception,
+                                &mut pending_result,
+                                &mut pending_exception,
+                                &mut pc,
+                                invocation_handler,
+                            )? {
+                                return Ok(finished);
+                            }
+                            continue;
+                        }
+                        DexStaticInvokeInitialization::Parked(mut execution) => {
+                            let current_class_descriptor = invocation_handler
+                                .current_class_descriptor()
+                                .map(str::to_owned);
+                            execution.push_caller(DexParkedFrame::retry_instruction(
+                                dex_file_index,
+                                current_class_descriptor,
+                                code,
+                                &frame,
+                                &pending_result,
+                                &pending_exception,
+                                pc,
+                            ));
+                            return Ok(DexExecutionResult::Parked(execution));
+                        }
+                    }
+                }
                 let method_metric_start = crate::method_metrics::start_timing();
                 let invocation_result =
                     match null_receiver_exception(&invocation, invocation_handler) {

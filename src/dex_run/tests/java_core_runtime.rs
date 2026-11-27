@@ -5005,3 +5005,107 @@ fn builtin_thread_priority_is_inherited_and_range_checked() {
     program.runtime.borrow_mut().current_guest_thread = previous;
     assert_eq!(priority_of(&child), Some(DexExecutionResult::Int(7)));
 }
+
+fn clone_contract_result(method: &str) -> DexExecutionResult {
+    let dex_file = crate::dex::parse_dex_file(
+        "clone_contract.dex",
+        include_bytes!("fixtures/clone_contract.dex").to_vec(),
+    )
+    .expect("clone contract DEX should parse");
+    let program = DexProgram::new(vec![dex_file]);
+    let method = DexMethodId {
+        class_descriptor: "Lwinedroid/tests/CloneContract;".to_owned(),
+        name: method.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "L".to_owned(),
+            return_type: "Ljava/lang/String;".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let resolved = program
+        .resolve_exact_method(&method)
+        .expect("clone contract method should resolve")
+        .expect("clone contract method should exist");
+
+    program
+        .execute_method(None, &resolved, None, 0)
+        .expect("clone contract method should execute")
+}
+
+// cite: libcore Object.java#clone, internalClone
+#[test]
+fn libcore_object_clone_copies_guest_fields_shallowly() {
+    assert_eq!(
+        clone_contract_result("cloneCopiesFieldsShallowly"),
+        DexExecutionResult::Value(DexValue::String("true:7:8:seven:true:2:true".into()))
+    );
+}
+
+// cite: libcore Object.java#clone
+#[test]
+fn libcore_object_clone_without_cloneable_throws_clone_not_supported() {
+    assert_eq!(
+        clone_contract_result("cloneWithoutCloneableThrows"),
+        DexExecutionResult::Value(DexValue::String(
+            "Class winedroid.tests.CloneContract$Plain doesn't implement Cloneable".into()
+        ))
+    );
+}
+
+// cite: libcore Observable.java#addObserver, deleteObserver, deleteObservers, countObservers, setChanged, clearChanged, hasChanged
+#[test]
+fn libcore_observable_keeps_distinct_observers_and_a_changed_flag() {
+    let program = DexProgram::new(Vec::new());
+    let observable = program.allocate_object("Ljava/util/Observable;".to_owned());
+    let first = program.allocate_object("Lapp/First;".to_owned());
+    let second = program.allocate_object("Lapp/Second;".to_owned());
+    let call = |name: &str, return_type: &str, parameters: &[&str], arguments: Vec<DexValue>| {
+        let method = builtin_method("Ljava/util/Observable;", name, return_type, parameters);
+        let mut all = vec![observable.clone()];
+        all.extend(arguments);
+        program.invoke_builtin_method(&method, Some(&test_invocation(all)))
+    };
+    let add = |observer: &DexValue| {
+        call(
+            "addObserver",
+            "V",
+            &["Ljava/util/Observer;"],
+            vec![observer.clone()],
+        )
+    };
+    let count = || call("countObservers", "I", &[], Vec::new());
+
+    assert_eq!(count(), Some(DexExecutionResult::Int(0)));
+    add(&first);
+    add(&first);
+    add(&second);
+    assert_eq!(count(), Some(DexExecutionResult::Int(2)));
+    call(
+        "deleteObserver",
+        "V",
+        &["Ljava/util/Observer;"],
+        vec![first],
+    );
+    assert_eq!(count(), Some(DexExecutionResult::Int(1)));
+    call("deleteObservers", "V", &[], Vec::new());
+    assert_eq!(count(), Some(DexExecutionResult::Int(0)));
+    let Some(DexExecutionResult::Throw(exception)) = add(&DexValue::Null) else {
+        panic!("addObserver(null) should throw");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
+
+    assert_eq!(
+        call("hasChanged", "Z", &[], Vec::new()),
+        Some(DexExecutionResult::Int(0))
+    );
+    call("setChanged", "V", &[], Vec::new());
+    assert_eq!(
+        call("hasChanged", "Z", &[], Vec::new()),
+        Some(DexExecutionResult::Int(1))
+    );
+    call("clearChanged", "V", &[], Vec::new());
+    assert_eq!(
+        call("hasChanged", "Z", &[], Vec::new()),
+        Some(DexExecutionResult::Int(0))
+    );
+}

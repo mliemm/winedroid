@@ -244,6 +244,8 @@ fn fixture_source_exports_and_imports_match_what_each_source_defines_and_calls()
                 "Java_fx_Native_arrayLength",
                 "Java_fx_Native_callLength",
                 "Java_fx_Native_callPing",
+                "Java_fx_Native_callStaticLong",
+                "Java_fx_Native_callStaticVoid",
                 "Java_fx_Native_greeting",
                 "Java_fx_Native_stringLength",
                 "Java_fx_Native_throwState",

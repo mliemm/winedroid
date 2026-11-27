@@ -2572,15 +2572,99 @@ fn libcore_random_access_file_constructor_rejects_bad_modes_and_missing_files() 
         "Ljava/io/FileNotFoundException;"
     );
     assert_eq!(
-        program.invoke_builtin_method(
+        thrown_class(invoke_value(
+            &program,
             &constructor,
-            Some(&test_invocation(vec![
+            vec![
                 program.allocate_object("Ljava/io/RandomAccessFile;".to_owned()),
                 string(missing),
                 string("rw")
-            ]))
-        ),
-        None
+            ]
+        )),
+        "Ljava/io/FileNotFoundException;"
+    );
+}
+
+#[test]
+fn libcore_random_access_file_read_write_mode_creates_and_locks_the_file() {
+    // cite: libcore RandomAccessFile.java#RandomAccessFile, getChannel
+    // cite: libcore FileChannelImpl.java#lock, writable
+    // cite: libcore FileLockImpl.java#release, isValid
+    let fixture = GuestIoFixture::new("random_access_file_lock");
+    let program = fixture.program();
+    let directory = fixture.private.join("files");
+    fs::create_dir_all(&directory).expect("files directory");
+    fs::write(directory.join("ro.lock"), [1u8]).expect("read-only lock file");
+    let constructor = java_io_method(
+        "Ljava/io/RandomAccessFile;",
+        "<init>",
+        "V",
+        &["Ljava/io/File;", "Ljava/lang/String;"],
+    );
+    let get_channel = java_io_method(
+        "Ljava/io/RandomAccessFile;",
+        "getChannel",
+        "Ljava/nio/channels/FileChannel;",
+        &[],
+    );
+    let lock = java_io_method(
+        "Ljava/nio/channels/FileChannel;",
+        "lock",
+        "Ljava/nio/channels/FileLock;",
+        &[],
+    );
+    let release = java_io_method("Ljava/nio/channels/FileLock;", "release", "V", &[]);
+    let is_valid = java_io_method("Ljava/nio/channels/FileLock;", "isValid", "Z", &[]);
+    let close = java_io_method("Ljava/io/RandomAccessFile;", "close", "V", &[]);
+    let channel_of = |name: &str, mode: &str| {
+        let file = program.allocate_object("Ljava/io/RandomAccessFile;".to_owned());
+        assert_eq!(
+            invoke_value(
+                &program,
+                &constructor,
+                vec![
+                    file.clone(),
+                    file_value(&format!("/data/user/0/com.example/files/{name}")),
+                    DexValue::String(std::rc::Rc::from(mode)),
+                ]
+            ),
+            DexExecutionResult::Void
+        );
+        let DexExecutionResult::Value(channel) =
+            invoke_value(&program, &get_channel, vec![file.clone()])
+        else {
+            panic!("getChannel should return a channel");
+        };
+        (file, channel)
+    };
+
+    let (file, channel) = channel_of("process.lock", "rw");
+    assert!(directory.join("process.lock").is_file());
+    let DexExecutionResult::Value(file_lock) = invoke_value(&program, &lock, vec![channel]) else {
+        panic!("lock should return a FileLock");
+    };
+    assert_eq!(
+        invoke_value(&program, &is_valid, vec![file_lock.clone()]),
+        DexExecutionResult::Int(1)
+    );
+    assert_eq!(
+        invoke_value(&program, &release, vec![file_lock.clone()]),
+        DexExecutionResult::Void
+    );
+    assert_eq!(
+        invoke_value(&program, &is_valid, vec![file_lock.clone()]),
+        DexExecutionResult::Int(0)
+    );
+    invoke_value(&program, &close, vec![file]);
+    assert_eq!(
+        thrown_class(invoke_value(&program, &release, vec![file_lock])),
+        "Ljava/nio/channels/ClosedChannelException;"
+    );
+
+    let (_, read_only_channel) = channel_of("ro.lock", "r");
+    assert_eq!(
+        thrown_class(invoke_value(&program, &lock, vec![read_only_channel])),
+        "Ljava/nio/channels/NonWritableChannelException;"
     );
 }
 
@@ -2729,5 +2813,502 @@ fn builtin_charset_for_name_returns_canonical_charset() {
         Some(DexExecutionResult::Value(DexValue::String(
             std::rc::Rc::from("UTF-8")
         )))
+    );
+}
+
+// cite: libcore FileOutputStream.java#FileOutputStream
+// cite: libcore IoBridge.java#open
+#[test]
+fn libcore_file_output_stream_append_flag_keeps_or_truncates_existing_bytes() {
+    let fixture = GuestIoFixture::new("output_stream_append");
+    let program = fixture.program();
+    let constructor = builtin_method(
+        "Ljava/io/FileOutputStream;",
+        "<init>",
+        "V",
+        &["Ljava/io/File;", "Z"],
+    );
+    let directory = fixture.private.join("files");
+    fs::create_dir_all(&directory).expect("files directory should exist");
+    let open = |name: &str, append: i32| {
+        let stream = program.allocate_object("Ljava/io/FileOutputStream;".to_owned());
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![
+                stream,
+                file_value(&format!("/data/user/0/com.example/files/{name}")),
+                DexValue::Int(append),
+            ])),
+        )
+    };
+
+    fs::write(directory.join("kept.log"), b"old").expect("seed kept.log");
+    assert_eq!(open("kept.log", 1), Some(DexExecutionResult::Void));
+    assert_eq!(fs::read(directory.join("kept.log")).unwrap(), b"old");
+
+    fs::write(directory.join("cut.log"), b"old").expect("seed cut.log");
+    assert_eq!(open("cut.log", 0), Some(DexExecutionResult::Void));
+    assert_eq!(fs::read(directory.join("cut.log")).unwrap(), b"");
+
+    assert_eq!(open("new.log", 1), Some(DexExecutionResult::Void));
+    assert!(directory.join("new.log").is_file());
+}
+
+// cite: libcore FileOutputStream.java#write, close, closed
+// cite: libcore IoBridge.java#write
+// cite: libcore ArrayUtils.java#throwsIfOutOfBounds
+#[test]
+fn libcore_file_output_stream_writes_bytes_in_order_until_closed() {
+    let fixture = GuestIoFixture::new("output_stream_write");
+    let program = fixture.program();
+    let directory = fixture.private.join("files");
+    fs::create_dir_all(&directory).expect("files directory should exist");
+    let stream = program.allocate_object("Ljava/io/FileOutputStream;".to_owned());
+    let constructor = builtin_method(
+        "Ljava/io/FileOutputStream;",
+        "<init>",
+        "V",
+        &["Ljava/io/File;"],
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![
+                stream.clone(),
+                file_value("/data/user/0/com.example/files/out.bin"),
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    let call = |name: &str, parameters: &[&str], mut arguments: Vec<DexValue>| {
+        let method = builtin_method("Ljava/io/OutputStream;", name, "V", parameters);
+        arguments.insert(0, stream.clone());
+        program
+            .file_output_stream_intrinsic(&method, &test_invocation(arguments), 0)
+            .expect("FileOutputStream call should not fail")
+    };
+    let bytes = |values: &[i32]| {
+        program.allocate_filled_array(
+            "[B".to_owned(),
+            values.iter().map(|value| DexValue::Int(*value)).collect(),
+        )
+    };
+
+    assert_eq!(
+        call("write", &["[B"], vec![bytes(&[0x61, 0x62])]),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        call("write", &["I"], vec![DexValue::Int(0x163)]),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        call(
+            "write",
+            &["[B", "I", "I"],
+            vec![
+                bytes(&[0x78, 0x64, 0x65, 0x79]),
+                DexValue::Int(1),
+                DexValue::Int(2)
+            ]
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    let Some(DexExecutionResult::Throw(out_of_bounds)) = call(
+        "write",
+        &["[B", "I", "I"],
+        vec![bytes(&[0x78]), DexValue::Int(1), DexValue::Int(1)],
+    ) else {
+        panic!("a region past the array end should throw");
+    };
+    assert!(
+        program.value_matches_type(&out_of_bounds, "Ljava/lang/ArrayIndexOutOfBoundsException;")
+    );
+    assert_eq!(fs::read(directory.join("out.bin")).unwrap(), b"abcde");
+
+    assert_eq!(
+        call("close", &[], Vec::new()),
+        Some(DexExecutionResult::Void)
+    );
+    let Some(DexExecutionResult::Throw(closed)) = call("write", &["[B"], vec![bytes(&[0x66])])
+    else {
+        panic!("a write after close should throw");
+    };
+    assert!(program.value_matches_type(&closed, "Ljava/io/IOException;"));
+    assert_eq!(
+        call("write", &["[B"], vec![bytes(&[])]),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(fs::read(directory.join("out.bin")).unwrap(), b"abcde");
+}
+
+#[test]
+fn libcore_file_input_stream_channel_reads_at_absolute_positions_until_closed() {
+    // cite: libcore FileInputStream.java#getChannel, close, channel
+    // cite: libcore FileChannelImpl.java#read, readInternal, position
+    let fixture = GuestIoFixture::new("file_input_stream_channel");
+    let program = fixture.program();
+    let path = fixture.private.join("files/lib.so");
+    fs::create_dir_all(path.parent().expect("parent")).expect("files directory");
+    fs::write(&path, [0x7f, b'E', b'L', b'F', 2, 1, 1, 0]).expect("elf bytes");
+    let constructor = java_io_method(
+        "Ljava/io/FileInputStream;",
+        "<init>",
+        "V",
+        &["Ljava/io/File;"],
+    );
+    let get_channel = java_io_method(
+        "Ljava/io/FileInputStream;",
+        "getChannel",
+        "Ljava/nio/channels/FileChannel;",
+        &[],
+    );
+    let close = java_io_method("Ljava/io/InputStream;", "close", "V", &[]);
+    let channel_position = java_io_method("Ljava/nio/channels/FileChannel;", "position", "J", &[]);
+    let read_at = java_io_method(
+        "Ljava/nio/channels/FileChannel;",
+        "read",
+        "I",
+        &["Ljava/nio/ByteBuffer;", "J"],
+    );
+    let get_int_at = java_io_method("Ljava/nio/ByteBuffer;", "getInt", "I", &["I"]);
+    let stream = program.allocate_object("Ljava/io/FileInputStream;".to_owned());
+    assert_eq!(
+        invoke_value(
+            &program,
+            &constructor,
+            vec![
+                stream.clone(),
+                file_value("/data/user/0/com.example/files/lib.so")
+            ]
+        ),
+        DexExecutionResult::Void
+    );
+    let DexExecutionResult::Value(channel) =
+        invoke_value(&program, &get_channel, vec![stream.clone()])
+    else {
+        panic!("getChannel should return a channel");
+    };
+    assert_eq!(
+        invoke_value(&program, &get_channel, vec![stream.clone()]),
+        DexExecutionResult::Value(channel.clone())
+    );
+
+    let destination = allocate_byte_buffer(&program, 4);
+    assert_eq!(
+        invoke_value(
+            &program,
+            &read_at,
+            vec![
+                channel.clone(),
+                destination.clone(),
+                DexValue::Long(4),
+                DexValue::Long(4)
+            ]
+        ),
+        DexExecutionResult::Int(4)
+    );
+    assert_eq!(
+        invoke_value(&program, &get_int_at, vec![destination, DexValue::Int(0)]),
+        DexExecutionResult::Int(0x0201_0100)
+    );
+    assert_eq!(
+        invoke_value(&program, &channel_position, vec![channel.clone()]),
+        DexExecutionResult::Value(DexValue::Long(0))
+    );
+    assert_eq!(
+        thrown_class(invoke_value(
+            &program,
+            &read_at,
+            vec![
+                channel.clone(),
+                allocate_byte_buffer(&program, 4),
+                DexValue::Long(-1),
+                DexValue::Long(-1)
+            ]
+        )),
+        "Ljava/lang/IllegalArgumentException;"
+    );
+    assert_eq!(
+        invoke_value(
+            &program,
+            &read_at,
+            vec![
+                channel.clone(),
+                allocate_byte_buffer(&program, 4),
+                DexValue::Long(8),
+                DexValue::Long(8)
+            ]
+        ),
+        DexExecutionResult::Int(-1)
+    );
+
+    assert_eq!(
+        invoke_value(&program, &close, vec![stream]),
+        DexExecutionResult::Void
+    );
+    assert_eq!(
+        thrown_class(invoke_value(&program, &channel_position, vec![channel])),
+        "Ljava/nio/channels/ClosedChannelException;"
+    );
+}
+
+#[test]
+fn libcore_heap_byte_buffer_get_reads_signed_bytes_relative_and_absolute() {
+    // cite: libcore HeapByteBuffer.java#get
+    // cite: libcore Buffer.java#nextGetIndex, checkIndex
+    let program = DexProgram::new(Vec::new());
+    let buffer = allocate_byte_buffer(&program, 2);
+    let array = java_io_method("Ljava/nio/ByteBuffer;", "array", "[B", &[]);
+    let get = java_io_method("Ljava/nio/ByteBuffer;", "get", "B", &[]);
+    let get_at = java_io_method("Ljava/nio/ByteBuffer;", "get", "B", &["I"]);
+    let position = java_io_method("Ljava/nio/Buffer;", "position", "I", &[]);
+    let DexExecutionResult::Value(backing) = invoke_value(&program, &array, vec![buffer.clone()])
+    else {
+        panic!("array should return the backing bytes");
+    };
+    program.write_array_value(&backing, 0, DexValue::Int(0x7f));
+    program.write_array_value(&backing, 1, DexValue::Int(-2));
+
+    assert_eq!(
+        invoke_value(&program, &get_at, vec![buffer.clone(), DexValue::Int(1)]),
+        DexExecutionResult::Int(-2)
+    );
+    assert_eq!(
+        invoke_value(&program, &position, vec![buffer.clone()]),
+        DexExecutionResult::Int(0)
+    );
+    assert_eq!(
+        invoke_value(&program, &get, vec![buffer.clone()]),
+        DexExecutionResult::Int(0x7f)
+    );
+    assert_eq!(
+        invoke_value(&program, &get, vec![buffer.clone()]),
+        DexExecutionResult::Int(-2)
+    );
+    assert_eq!(
+        thrown_class(invoke_value(&program, &get, vec![buffer.clone()])),
+        "Ljava/nio/BufferUnderflowException;"
+    );
+    assert_eq!(
+        thrown_class(invoke_value(
+            &program,
+            &get_at,
+            vec![buffer, DexValue::Int(2)]
+        )),
+        "Ljava/lang/IndexOutOfBoundsException;"
+    );
+}
+
+#[test]
+fn libcore_file_create_temp_file_creates_a_unique_random_name_in_the_directory() {
+    // cite: libcore File.java#createTempFile, generateFile
+    // cite: libcore Math.java#randomLongInternal
+    // cite: libcore Random.java#nextLong
+    let fixture = GuestIoFixture::new("create_temp_file");
+    let program = fixture.program();
+    program.runtime.borrow_mut().boot_wall_clock_millis = 0;
+    let directory = fixture.private.join("files");
+    fs::create_dir_all(&directory).expect("files directory");
+    let create = java_io_method(
+        "Ljava/io/File;",
+        "createTempFile",
+        "Ljava/io/File;",
+        &["Ljava/lang/String;", "Ljava/lang/String;", "Ljava/io/File;"],
+    );
+    let string = |value: &str| DexValue::String(std::rc::Rc::from(value));
+    let dir = file_value("/data/user/0/com.example/files");
+
+    assert_eq!(
+        invoke_value(
+            &program,
+            &create,
+            vec![string("lib"), string(".so"), dir.clone()]
+        ),
+        DexExecutionResult::Value(DexValue::Reference(std::rc::Rc::from(
+            "Ljava/io/File;:/data/user/0/com.example/files/lib4962768465676381896.so"
+        )))
+    );
+    assert!(directory.join("lib4962768465676381896.so").is_file());
+
+    let DexExecutionResult::Value(DexValue::Reference(second)) = invoke_value(
+        &program,
+        &create,
+        vec![string("lib"), DexValue::Null, dir.clone()],
+    ) else {
+        panic!("createTempFile should return a File");
+    };
+    assert!(second.ends_with(".tmp"));
+    assert!(directory.join(second.rsplit('/').next().unwrap()).is_file());
+
+    assert_eq!(
+        thrown_class(invoke_value(
+            &program,
+            &create,
+            vec![string("ab"), string(".so"), dir]
+        )),
+        "Ljava/lang/IllegalArgumentException;"
+    );
+}
+
+#[test]
+fn libcore_file_set_read_only_clears_every_write_bit() {
+    // cite: libcore File.java#setReadOnly
+    // cite: libcore UnixFileSystem_md.c#Java_java_io_UnixFileSystem_setReadOnly0
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = GuestIoFixture::new("set_read_only");
+    let program = fixture.program();
+    let directory = fixture.private.join("files");
+    fs::create_dir_all(&directory).expect("files directory");
+    let library = directory.join("lib.so");
+    fs::write(&library, b"elf").expect("library bytes");
+    fs::set_permissions(&library, fs::Permissions::from_mode(0o764)).expect("initial mode");
+    let set_read_only = java_io_method("Ljava/io/File;", "setReadOnly", "Z", &[]);
+
+    assert_eq!(
+        invoke_value(
+            &program,
+            &set_read_only,
+            vec![file_value("/data/user/0/com.example/files/lib.so")]
+        ),
+        DexExecutionResult::Int(1)
+    );
+    assert_eq!(
+        fs::metadata(&library).unwrap().permissions().mode() & 0o777,
+        0o544
+    );
+    assert_eq!(
+        invoke_value(
+            &program,
+            &set_read_only,
+            vec![file_value("/data/user/0/com.example/files/missing.so")]
+        ),
+        DexExecutionResult::Int(0)
+    );
+}
+
+#[test]
+fn libcore_file_list_returns_child_names_or_null_for_a_non_directory() {
+    // cite: libcore File.java#list
+    let fixture = GuestIoFixture::new("file_list");
+    let program = fixture.program();
+    let directory = fixture.private.join("files/libs");
+    fs::create_dir_all(&directory).expect("libs directory");
+    fs::write(directory.join("a.so"), b"a").expect("a.so");
+    fs::write(directory.join("b.so"), b"b").expect("b.so");
+    let list = java_io_method("Ljava/io/File;", "list", "[Ljava/lang/String;", &[]);
+
+    let DexExecutionResult::Value(names) = invoke_value(
+        &program,
+        &list,
+        vec![file_value("/data/user/0/com.example/files/libs")],
+    ) else {
+        panic!("list should return an array");
+    };
+    let mut entries: Vec<String> = program.runtime.borrow().array_entries
+        [&map_identity_key(&names)]
+        .iter()
+        .map(|name| match name {
+            DexValue::String(name) => name.to_string(),
+            other => panic!("list entry should be a String, got {other}"),
+        })
+        .collect();
+    entries.sort();
+    assert_eq!(entries, ["a.so", "b.so"]);
+    assert_eq!(
+        invoke_value(
+            &program,
+            &list,
+            vec![file_value("/data/user/0/com.example/files/libs/a.so")]
+        ),
+        DexExecutionResult::Value(DexValue::Null)
+    );
+}
+
+#[test]
+fn libcore_file_get_canonical_path_returns_the_collapsed_guest_path_string() {
+    // cite: libcore File.java#getCanonicalPath
+    // cite: libcore canonicalize_md.c#canonicalize, collapse
+    let fixture = GuestIoFixture::new("canonical_path");
+    fs::create_dir_all(fixture.private.join("cache")).expect("cache directory");
+    let program = fixture.program();
+    let get_canonical_path = java_io_method(
+        "Ljava/io/File;",
+        "getCanonicalPath",
+        "Ljava/lang/String;",
+        &[],
+    );
+
+    assert_eq!(
+        invoke_value(
+            &program,
+            &get_canonical_path,
+            vec![file_value("/data/user/0/com.example/files/../cache/./x.db")]
+        ),
+        DexExecutionResult::Value(DexValue::String(std::rc::Rc::from(
+            "/data/user/0/com.example/cache/x.db"
+        )))
+    );
+}
+
+#[test]
+fn libcore_file_constructors_accept_string_objects_built_at_runtime() {
+    // cite: libcore File.java#File
+    // cite: libcore String.java#String
+    let program = DexProgram::new(Vec::new());
+    let string_from_bytes = java_io_method("Ljava/lang/String;", "<init>", "V", &["[B"]);
+    let runtime_string = |text: &str| {
+        let value = program.allocate_object("Ljava/lang/String;".to_owned());
+        let bytes = program.allocate_filled_array(
+            "[B".to_owned(),
+            text.bytes()
+                .map(|byte| DexValue::Int(i32::from(byte as i8)))
+                .collect(),
+        );
+        invoke_value(&program, &string_from_bytes, vec![value.clone(), bytes]);
+        value
+    };
+    let path_field = DexFieldId {
+        class_descriptor: "Ljava/io/File;".to_owned(),
+        type_descriptor: "Ljava/lang/String;".to_owned(),
+        name: "path".to_owned(),
+    };
+    let from_path = java_io_method("Ljava/io/File;", "<init>", "V", &["Ljava/lang/String;"]);
+    let from_parent = java_io_method(
+        "Ljava/io/File;",
+        "<init>",
+        "V",
+        &["Ljava/lang/String;", "Ljava/lang/String;"],
+    );
+    let file = program.allocate_object("Lapp/GuestFile;".to_owned());
+    let child = program.allocate_object("Ljava/io/File;".to_owned());
+
+    assert_eq!(
+        invoke_value(
+            &program,
+            &from_path,
+            vec![file.clone(), runtime_string("/data/local//tmp/")]
+        ),
+        DexExecutionResult::Void
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&file, &path_field),
+        Some(DexValue::String(std::rc::Rc::from("/data/local/tmp")))
+    );
+    assert_eq!(
+        invoke_value(
+            &program,
+            &from_parent,
+            vec![
+                child.clone(),
+                runtime_string("/data"),
+                runtime_string("lib.so")
+            ]
+        ),
+        DexExecutionResult::Void
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&child, &path_field),
+        Some(DexValue::String(std::rc::Rc::from("/data/lib.so")))
     );
 }
