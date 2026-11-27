@@ -483,6 +483,7 @@ impl DexProgram {
                     holds
                 };
                 let _ = holds;
+                self.runtime.borrow_mut().block_thread_on_lock(&thread);
                 self.lock_grant(&sync);
             }
             self.runtime
@@ -1695,7 +1696,8 @@ impl DexProgram {
             let writer_free = state.owner.is_none() || owned_by_me;
             let writer_queued = state.waiters.front().is_some_and(|waiter| !waiter.shared);
             let reentrant_read = state.readers.contains_key(&thread_key);
-            if writer_free && (owned_by_me || reentrant_read || !writer_queued) {
+            // cite: libcore ReentrantReadWriteLock.java#tryReadLock, readerShouldBlock
+            if writer_free && (!wait || owned_by_me || reentrant_read || !writer_queued) {
                 *state.readers.entry(thread_key).or_default() += 1;
                 true
             } else {
@@ -1722,10 +1724,11 @@ impl DexProgram {
             return DexExecutionResult::Int(0);
         }
         state.waiters.push_back(LockWaiter {
-            thread,
+            thread: thread.clone(),
             shared,
             holds: 1,
         });
+        runtime.block_thread_on_lock(&thread);
         DexExecutionResult::Parked(DexParkedExecution::empty())
     }
 
@@ -1797,7 +1800,7 @@ impl DexProgram {
             }
         }
         for thread in wake {
-            runtime.unpark_thread(&thread);
+            runtime.resume_lock_waiter(&thread);
         }
     }
 

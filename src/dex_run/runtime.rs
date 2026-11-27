@@ -42,7 +42,7 @@ pub(super) struct DexRuntimeState {
     pub(super) file_locks: HashMap<String, Vec<DexValue>>,
     pub(super) output_streams: HashMap<String, std::fs::File>,
     pub(super) object_output_handles: HashMap<String, Vec<String>>,
-    pub(super) object_input_handles: HashMap<String, Vec<super::java_serialization::InputHandle>>,
+    pub(super) object_input_handles: HashMap<String, super::java_serialization::ReadState>,
     pub(super) lru_caches: HashMap<String, super::android::lru_cache::LruCacheState>,
     pub(super) uri_matchers: HashMap<String, super::android::uri_matcher::UriMatcherNode>,
     pub(super) content_providers: HashMap<String, DexValue>,
@@ -141,6 +141,7 @@ pub(super) struct DexRuntimeState {
     pub(super) next_parked_runtime_action_id: u64,
     pub(super) parked_runtime_actions: HashMap<u64, ParkedRuntimeAction>,
     pub(super) thread_park_permits: HashSet<String>,
+    pub(super) lock_blocked_threads: HashSet<String>,
     pub(super) parked_thread_values: HashMap<String, DexValue>,
     pub(super) parked_thread_deadlines: HashMap<String, i64>,
     pub(super) thread_resumes: Vec<ThreadResume>,
@@ -506,6 +507,7 @@ impl DexRuntimeState {
             next_parked_runtime_action_id: 1,
             parked_runtime_actions: HashMap::new(),
             thread_park_permits: HashSet::new(),
+            lock_blocked_threads: HashSet::new(),
             parked_thread_values: HashMap::new(),
             parked_thread_deadlines: HashMap::new(),
             thread_resumes: Vec::new(),
@@ -911,7 +913,10 @@ impl DexRuntimeState {
             return Some(());
         }
         let key = thread_storage_key(thread)?;
-        if self.thread_park_permits.remove(&key) {
+        // cite: libcore AbstractQueuedSynchronizer.java#acquire
+        if self.lock_blocked_threads.contains(&key) {
+            self.thread_park_permits.remove(&key);
+        } else if self.thread_park_permits.remove(&key) {
             self.thread_resumes.push(ThreadResume {
                 thread: thread.clone(),
                 execution,
@@ -950,9 +955,27 @@ impl DexRuntimeState {
         }
     }
 
+    // cite: libcore AbstractQueuedSynchronizer.java#acquire, signalNext
+    pub(super) fn block_thread_on_lock(&mut self, thread: &DexValue) {
+        if let Some(key) = thread_storage_key(thread) {
+            self.lock_blocked_threads.insert(key);
+        }
+    }
+
+    pub(super) fn resume_lock_waiter(&mut self, thread: &DexValue) {
+        if let Some(key) = thread_storage_key(thread) {
+            self.lock_blocked_threads.remove(&key);
+        }
+        self.unpark_thread(thread);
+    }
+
     // cite: libcore LockSupport.java#unpark
     pub(super) fn unpark_thread(&mut self, thread: &DexValue) -> Option<bool> {
         let key = thread_storage_key(thread)?;
+        // cite: libcore AbstractQueuedSynchronizer.java#acquire
+        if self.lock_blocked_threads.contains(&key) {
+            return Some(false);
+        }
         let Some(execution) = self.parked_threads.remove(&key) else {
             self.thread_park_permits.insert(key);
             return Some(false);

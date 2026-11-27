@@ -5,7 +5,7 @@ source src/fx_bridge.c 3835130979 7386
 source src/fx_dep.c 982460949 562
 source src/fx_dlmain.c 2837828515 2892
 source src/fx_io.c 2785170865 6464
-source src/fx_jni.c 1693355073 4301
+source src/fx_jni.c 3259210352 4705
 source src/fx_libc.c 744471232 22326
 source src/fx_math.c 820226804 3130
 source src/fx_net.c 1536959900 8638
@@ -26,7 +26,7 @@ binary 16k/libfx_cxx.so 1746450148 5368
 binary 16k/libfx_dep.so 734394195 3648
 binary 16k/libfx_dlmain.so 4247953846 6136
 binary 16k/libfx_io.so 1273668802 11928
-binary 16k/libfx_jni.so 4119584769 7040
+binary 16k/libfx_jni.so 1697518386 7664
 binary 16k/libfx_libc.so 4065860665 38360
 binary 16k/libfx_math.so 2546408872 10760
 binary 16k/libfx_net.so 3075338523 12016
@@ -46,7 +46,7 @@ binary 4k/libfx_cxx.so 3474108583 5368
 binary 4k/libfx_dep.so 3961699566 3648
 binary 4k/libfx_dlmain.so 493384813 6136
 binary 4k/libfx_io.so 3609426543 11928
-binary 4k/libfx_jni.so 3700658644 7040
+binary 4k/libfx_jni.so 2856055896 7664
 binary 4k/libfx_libc.so 3094425571 38360
 binary 4k/libfx_math.so 1075974379 10760
 binary 4k/libfx_net.so 3814671843 12016

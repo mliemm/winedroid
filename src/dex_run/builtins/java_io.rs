@@ -440,6 +440,16 @@ impl DexProgram {
             && method.proto.descriptor_is("()V")
         {
             let invocation = invocation?;
+            // cite: libcore ByteArrayInputStream.java#close
+            if self
+                .read_stored_instance_field(
+                    invocation.arguments.first()?,
+                    &super::java_zip::byte_array_input_buffer_field(),
+                )
+                .is_some()
+            {
+                return Some(DexExecutionResult::Void);
+            }
             if let Some(key) = self.resolve_input_stream_key(invocation.arguments.first()?) {
                 self.runtime.borrow_mut().input_stream_values.remove(&key);
             }

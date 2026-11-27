@@ -4077,3 +4077,96 @@ fn libcore_read_write_lock_counts_read_holds_per_thread() {
     call(&read, read_class, "unlock", "V");
     assert_eq!(read_holds(), Some(DexExecutionResult::Int(1)));
 }
+
+// cite: libcore AbstractQueuedSynchronizer.java#acquire
+// cite: libcore LockSupport.java#unpark
+#[test]
+fn libcore_lock_waiter_ignores_an_unrelated_unpark_until_the_lock_is_handed_off() {
+    let program = DexProgram::new(Vec::new());
+    let lock_class = "Ljava/util/concurrent/locks/ReentrantLock;";
+    let lock = program.allocate_object(lock_class.to_owned());
+    let call = |name: &str| {
+        let method = builtin_method(lock_class, name, "V", &[]);
+        program.invoke_builtin_method(&method, Some(&test_invocation(vec![lock.clone()])))
+    };
+    let worker = program.allocate_object("Ljava/lang/Thread;".to_owned());
+    let resumed = |program: &DexProgram| {
+        program
+            .runtime
+            .borrow()
+            .thread_resumes
+            .iter()
+            .any(|resume| resume.thread == worker)
+    };
+
+    call("lock");
+    let Some(DexExecutionResult::Parked(execution)) = as_thread(&program, &worker, || call("lock"))
+    else {
+        panic!("a contended lock should park");
+    };
+    program
+        .runtime
+        .borrow_mut()
+        .store_parked_thread(&worker, execution)
+        .unwrap();
+    program.runtime.borrow_mut().unpark_thread(&worker);
+    assert!(!resumed(&program));
+
+    call("unlock");
+    assert!(resumed(&program));
+    assert_eq!(
+        program.runtime.borrow().lock_states[&map_identity_key(&lock)].owner,
+        Some(map_identity_key(&worker))
+    );
+}
+
+// cite: libcore ReentrantReadWriteLock.java#tryReadLock, readerShouldBlock
+#[test]
+fn libcore_read_lock_try_lock_barges_past_a_queued_writer() {
+    let program = DexProgram::new(Vec::new());
+    let rw_class = "Ljava/util/concurrent/locks/ReentrantReadWriteLock;";
+    let rw = program.allocate_object(rw_class.to_owned());
+    program.invoke_builtin_method(
+        &builtin_method(rw_class, "<init>", "V", &[]),
+        Some(&test_invocation(vec![rw.clone()])),
+    );
+    let child = |name: &str, class: &str| {
+        let Some(DexExecutionResult::Value(lock)) = program.invoke_builtin_method(
+            &builtin_method(rw_class, name, class, &[]),
+            Some(&test_invocation(vec![rw.clone()])),
+        ) else {
+            panic!("{name} should return a lock");
+        };
+        lock
+    };
+    let read_class = "Ljava/util/concurrent/locks/ReentrantReadWriteLock$ReadLock;";
+    let write_class = "Ljava/util/concurrent/locks/ReentrantReadWriteLock$WriteLock;";
+    let read = child("readLock", read_class);
+    let write = child("writeLock", write_class);
+    let call = |target: &DexValue, class: &str, name: &str, return_type: &str| {
+        program.invoke_builtin_method(
+            &builtin_method(class, name, return_type, &[]),
+            Some(&test_invocation(vec![target.clone()])),
+        )
+    };
+    let writer = program.allocate_object("Ljava/lang/Thread;".to_owned());
+    let late_reader = program.allocate_object("Ljava/lang/Thread;".to_owned());
+
+    call(&read, read_class, "lock", "V");
+    assert!(matches!(
+        as_thread(&program, &writer, || call(&write, write_class, "lock", "V")),
+        Some(DexExecutionResult::Parked(_))
+    ));
+    assert_eq!(
+        as_thread(&program, &late_reader, || call(
+            &read, read_class, "tryLock", "Z"
+        )),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert!(matches!(
+        as_thread(&program, &late_reader, || call(
+            &read, read_class, "lock", "V"
+        )),
+        Some(DexExecutionResult::Void)
+    ));
+}

@@ -38,6 +38,7 @@ pub(super) struct JniState {
     methods_by_id: RefCell<HashMap<usize, DexMethodId>>,
     field_ids: RefCell<Vec<DexFieldId>>,
     globals: RefCell<HashMap<usize, DexValue>>,
+    native_buffers: RefCell<HashMap<usize, (DexValue, Vec<u8>)>>,
 }
 
 impl DexProgram {
@@ -712,6 +713,17 @@ mod tests {
         );
         assert_eq!(contents(&data), [DexValue::Int(6)]);
 
+        let pinned = bytes(&[9]);
+        assert_eq!(
+            call("pinBytes", &[pinned.clone()]),
+            DexExecutionResult::Void
+        );
+        assert_eq!(
+            call("bumpPinnedAndRelease", &[pinned.clone()]),
+            DexExecutionResult::Void
+        );
+        assert_eq!(contents(&pinned), [DexValue::Int(10)]);
+
         let short = bytes(&[0, 0]);
         let DexExecutionResult::Throw(exception) = call("overflowRegion", &[short.clone()]) else {
             panic!("a region past the end should throw");
@@ -723,8 +735,8 @@ mod tests {
     }
 
     #[test]
-    fn art_jni_get_string_utf_chars_encodes_string_objects_as_modified_utf8() {
-        // cite: art jni_internal.cc#GetStringUTFChars, ReleaseStringUTFChars
+    fn art_jni_get_string_utf_chars_encodes_string_objects_as_utf8() {
+        // cite: art jni_internal.cc#GetStringUTFChars, ReleaseStringUTFChars, GetUncompressedStringUTFChars
         let dex = dex::parse_dex_file(
             "jni_static_long.dex",
             include_bytes!("tests/fixtures/jni_static_long.dex").to_vec(),
@@ -749,7 +761,7 @@ mod tests {
             value
         };
 
-        for (text, length) in [("h\u{e9}llo", 6), ("\u{1f600}", 6), ("", 0)] {
+        for (text, length) in [("h\u{e9}llo", 6), ("\u{1f600}", 4), ("a\u{0}b", 1), ("", 0)] {
             assert_eq!(
                 program
                     .execute_method(None, &method, Some(&[string_object(text)]), 0)

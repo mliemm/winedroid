@@ -262,7 +262,9 @@ impl DexProgram {
             [DexValue::Long(bits)] | [DexValue::Long(bits), DexValue::Long(_)] => *bits,
             _ => return None,
         };
-        let value = java_double_to_string(f64::from_bits(bits as u64))?;
+        // cite: libcore BigDecimal.java#valueOf, BigDecimal
+        let value =
+            java_scientific_to_plain_decimal(&java_double_to_string(f64::from_bits(bits as u64))?)?;
 
         let result = self.allocate_object("Ljava/math/BigDecimal;".to_owned());
         let key = map_identity_key(&result);
@@ -827,6 +829,33 @@ pub(super) fn java_double_to_string(value: f64) -> Option<String> {
         value.abs() >= 1.0e-3 && value.abs() < 1.0e7,
         value == 0.0,
     ))
+}
+
+// cite: libcore BigDecimal.java#BigDecimal, layoutChars
+fn java_scientific_to_plain_decimal(text: &str) -> Option<String> {
+    let Some((mantissa, exponent)) = text.split_once('E') else {
+        return Some(text.to_owned());
+    };
+    let exponent: i64 = exponent.parse().ok()?;
+    let (negative, mantissa) = match mantissa.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, mantissa),
+    };
+    let (integer, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let digits: String = integer.chars().chain(fraction.chars()).collect();
+    let scale = i64::try_from(fraction.len()).ok()?.checked_sub(exponent)?;
+    if i64::try_from(digits.len()).ok()? - 1 - scale < -6 {
+        return None;
+    }
+    let scale = usize::try_from(scale).ok()?;
+    let digits = format!("{digits:0>width$}", width = scale + 1);
+    let split = digits.len() - scale;
+    let sign = if negative { "-" } else { "" };
+    if scale == 0 {
+        return Some(format!("{sign}{digits}"));
+    }
+
+    Some(format!("{sign}{}.{}", &digits[..split], &digits[split..]))
 }
 
 pub(super) fn decimal_digits_from_u64(value: u64) -> Option<Vec<u8>> {
@@ -1427,4 +1456,29 @@ pub(super) fn set_big_decimal_scale(
     let negative = parsed.negative && !is_zero_decimal_digits(&rounded_digits);
 
     format_plain_big_decimal(negative, &rounded_digits, output_scale)
+}
+
+#[cfg(test)]
+mod scientific_tests {
+    use super::java_scientific_to_plain_decimal;
+
+    // cite: libcore BigDecimal.java#valueOf, layoutChars
+    #[test]
+    fn libcore_big_decimal_value_of_double_keeps_scale_from_scientific_double_text() {
+        for (text, expected) in [
+            ("1.0E-5", Some("0.000010")),
+            ("-2.5E-4", Some("-0.00025")),
+            ("1.0E-6", Some("0.0000010")),
+            ("1.0E-7", None),
+            ("1.0E7", None),
+            ("1.2345E8", None),
+            ("0.001", Some("0.001")),
+        ] {
+            assert_eq!(
+                java_scientific_to_plain_decimal(text).as_deref(),
+                expected,
+                "OpenJDK BigDecimal.valueOf({text}).toString(); None where it needs an exponent"
+            );
+        }
+    }
 }

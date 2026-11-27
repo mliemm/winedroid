@@ -116,4 +116,30 @@ public class SerialContract {
         java.nio.file.Files.write(java.nio.file.Paths.get(arguments[0]), data);
         System.out.println(readGraph(data));
     }
+
+    public static String readMixed(byte[] data) throws Exception {
+        ObjectInputStream in = new ObjectInputStream(new Feeder(data));
+        String result = "";
+        try {
+            in.readObject();
+            result += "outer-read;";
+        } catch (ClassNotFoundException missing) {
+            result += "cnfe:" + missing.getMessage() + ";";
+        }
+        result += in.readObject() + ";";
+        SerialHost.Hooked hooked = (SerialHost.Hooked) in.readObject();
+        result += hooked.kept + ";";
+        result += in.readObject();
+        in.close();
+        return result;
+    }
+
+    public static class WithMap implements Serializable {
+        private static final long serialVersionUID = 6L;
+        public java.util.HashMap<String, String> map = new java.util.HashMap<>();
+    }
+
+    public static void writeWithMap() throws Exception {
+        new ObjectOutputStream(new Collector()).writeObject(new WithMap());
+    }
 }

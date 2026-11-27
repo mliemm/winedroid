@@ -153,3 +153,17 @@ void Java_fx_Native_incrementInPlace(JNIEnv *env, jclass type, jbyteArray data)
     bytes[0] = (jbyte)(bytes[0] + 1);
     (*env)->ReleaseByteArrayElements(env, data, bytes, 0);
 }
+
+static jbyte *pinned_bytes;
+
+void Java_fx_Native_pinBytes(JNIEnv *env, jclass type, jbyteArray data)
+{
+    pinned_bytes = (*env)->GetByteArrayElements(env, data, NULL);
+}
+
+void Java_fx_Native_bumpPinnedAndRelease(JNIEnv *env, jclass type, jbyteArray data)
+{
+    pinned_bytes[0] = (jbyte)(pinned_bytes[0] + 1);
+    (*env)->ReleaseByteArrayElements(env, data, pinned_bytes, 0);
+    pinned_bytes = NULL;
+}

@@ -1,6 +1,6 @@
 use super::*;
 
-// cite: libcore ObjectStreamConstants.java#STREAM_MAGIC, STREAM_VERSION, TC_NULL, TC_REFERENCE, TC_CLASSDESC, TC_OBJECT, TC_STRING, TC_ENDBLOCKDATA, TC_LONGSTRING, baseWireHandle, SC_SERIALIZABLE
+// cite: libcore ObjectStreamConstants.java#STREAM_MAGIC, STREAM_VERSION, TC_NULL, TC_REFERENCE, TC_CLASSDESC, TC_OBJECT, TC_STRING, TC_BLOCKDATA, TC_ENDBLOCKDATA, TC_BLOCKDATALONG, TC_LONGSTRING, baseWireHandle, SC_WRITE_METHOD, SC_SERIALIZABLE
 const STREAM_MAGIC: u16 = 0xaced;
 const STREAM_VERSION: u16 = 5;
 const TC_NULL: u8 = 0x70;
@@ -8,10 +8,14 @@ const TC_REFERENCE: u8 = 0x71;
 const TC_CLASSDESC: u8 = 0x72;
 const TC_OBJECT: u8 = 0x73;
 const TC_STRING: u8 = 0x74;
+const TC_BLOCKDATA: u8 = 0x77;
 const TC_ENDBLOCKDATA: u8 = 0x78;
+const TC_BLOCKDATALONG: u8 = 0x7a;
 const TC_LONGSTRING: u8 = 0x7c;
 const BASE_WIRE_HANDLE: i32 = 0x7e0000;
+const SC_WRITE_METHOD: u8 = 0x01;
 const SC_SERIALIZABLE: u8 = 0x02;
+const READ_CHUNK: usize = 8192;
 
 const OBJECT_OUTPUT_STREAM: &str = "Ljava/io/ObjectOutputStream;";
 const OBJECT_INPUT_STREAM: &str = "Ljava/io/ObjectInputStream;";
@@ -20,6 +24,7 @@ const OBJECT_INPUT_STREAM: &str = "Ljava/io/ObjectInputStream;";
 pub(super) struct StreamClassDesc {
     name: String,
     suid: i64,
+    flags: u8,
     fields: Vec<StreamField>,
     super_desc: Option<Rc<StreamClassDesc>>,
 }
@@ -35,6 +40,12 @@ pub(super) enum InputHandle {
     Object(DexValue),
     Class(Rc<StreamClassDesc>),
     Pending,
+    Failed(String),
+}
+
+pub(super) struct ReadState {
+    handles: Vec<InputHandle>,
+    class_not_found: Option<String>,
 }
 
 struct LocalClass {
@@ -133,6 +144,25 @@ fn decode_modified_utf8(bytes: &[u8]) -> Option<String> {
     Some(String::from_utf16_lossy(&units))
 }
 
+fn is_framework_descriptor(descriptor: &str) -> bool {
+    is_bootstrap_class_descriptor(descriptor)
+        || [
+            "Ljava/",
+            "Ljavax/",
+            "Landroid/",
+            "Ldalvik/",
+            "Lsun/",
+            "Llibcore/",
+            "Lcom/android/",
+            "Lorg/json/",
+            "Lorg/xml/",
+            "Lorg/w3c/",
+            "Lorg/apache/harmony/",
+        ]
+        .iter()
+        .any(|prefix| descriptor.starts_with(prefix))
+}
+
 fn missing(detail: String) -> WinedroidError {
     WinedroidError::new(format!("next missing primitive: {detail}"))
 }
@@ -154,6 +184,14 @@ impl DexProgram {
         if !(output || input) || self.guest_overrides(method, Some(invocation)) {
             return Ok(None);
         }
+        if let Some(class) = value_class_descriptor(receiver) {
+            if self.load_class(class).is_some() {
+                return Err(missing(format!(
+                    "object stream subclass {} with overridable stream hooks",
+                    java_class_name(class)
+                )));
+            }
+        }
         let descriptor = method.proto.descriptor();
         let result = match (method.name.as_str(), descriptor.as_str(), output) {
             ("<init>", "(Ljava/io/OutputStream;)V", true)
@@ -164,7 +202,7 @@ impl DexProgram {
             ("writeObject", "(Ljava/lang/Object;)V", true) => {
                 self.object_output_write(receiver, invocation.arguments.get(1), depth)?
             }
-            ("flush", "()V", true) => DexExecutionResult::Void,
+            ("flush", "()V", true) => self.object_output_flush(receiver, depth)?,
             ("close", "()V", true) => self.object_stream_close(receiver, depth)?,
             ("<init>", "(Ljava/io/InputStream;)V", false)
                 if method.class_descriptor == OBJECT_INPUT_STREAM =>
@@ -255,7 +293,10 @@ impl DexProgram {
             .object_output_handles
             .insert(stream_key, handles);
         if let Err(exception) = written? {
-            return Ok(DexExecutionResult::Throw(exception));
+            return Err(missing(format!(
+                "ObjectOutputStream.writeFatalException for {}",
+                value_class_descriptor(&exception).unwrap_or("unknown exception")
+            )));
         }
         // cite: libcore ObjectOutputStream.java#BlockDataOutputStream, drain, MAX_BLOCK_SIZE
         for chunk in bytes.chunks(1024) {
@@ -264,6 +305,40 @@ impl DexProgram {
             }
         }
         Ok(DexExecutionResult::Void)
+    }
+
+    // cite: libcore ObjectOutputStream.java#flush
+    // cite: libcore OutputStream.java#flush
+    fn object_output_flush(&self, stream: &DexValue, depth: usize) -> Result<DexExecutionResult> {
+        let Some(out) = self
+            .read_stored_instance_field(stream, &self.object_stream_field(true))
+            .filter(dex_value_is_object_like)
+        else {
+            return Ok(DexExecutionResult::Void);
+        };
+        if let Some(result) = self.guest_void_override(&out, "flush", &[], Vec::new(), depth)? {
+            return Ok(result);
+        }
+        match self.first_framework_class(&out).as_deref() {
+            Some("Ljava/io/OutputStream;" | "Ljava/io/FileOutputStream;") => {
+                Ok(DexExecutionResult::Void)
+            }
+            other => Err(missing(format!(
+                "flush of the stream under an ObjectOutputStream: {}",
+                other.unwrap_or("unknown class")
+            ))),
+        }
+    }
+
+    fn first_framework_class(&self, value: &DexValue) -> Option<String> {
+        let mut class = value_class_descriptor(value).map(str::to_owned);
+        while let Some(descriptor) = class.as_deref() {
+            if self.load_class(descriptor).is_none() {
+                break;
+            }
+            class = self.superclass_descriptor(descriptor);
+        }
+        class
     }
 
     fn object_stream_close(&self, stream: &DexValue, depth: usize) -> Result<DexExecutionResult> {
@@ -279,13 +354,7 @@ impl DexProgram {
         }
         // cite: libcore OutputStream.java#close
         // cite: libcore InputStream.java#close
-        let mut framework_class = value_class_descriptor(&target).map(str::to_owned);
-        while let Some(class) = framework_class.as_deref() {
-            if self.load_class(class).is_none() {
-                break;
-            }
-            framework_class = self.superclass_descriptor(class);
-        }
+        let framework_class = self.first_framework_class(&target);
         if matches!(
             framework_class.as_deref(),
             Some("Ljava/io/OutputStream;" | "Ljava/io/InputStream;")
@@ -372,9 +441,9 @@ impl DexProgram {
             }
             _ => None,
         };
-        let key = match &text {
-            Some(text) => format!("string:{text}"),
-            None => format!("object:{}", map_identity_key(value)),
+        let key = match value {
+            DexValue::String(text) => format!("string:{text}"),
+            _ => format!("object:{}", map_identity_key(value)),
         };
         if let Some(handle) = handles.iter().position(|known| *known == key) {
             bytes.push(TC_REFERENCE);
@@ -391,6 +460,12 @@ impl DexProgram {
                 "ObjectOutputStream.writeObject of {value}"
             )));
         };
+        if self.load_class(&class_descriptor).is_none() {
+            return Err(missing(format!(
+                "serialization of framework class {}",
+                java_class_name(&class_descriptor)
+            )));
+        }
         if !self.descriptor_matches_type(&class_descriptor, "Ljava/io/Serializable;") {
             return Ok(Err(self.serial_exception(
                 "Ljava/io/NotSerializableException;",
@@ -624,10 +699,13 @@ impl DexProgram {
             return Ok(self.null_pointer_exception_result());
         };
         self.write_stored_instance_field(stream, &self.object_stream_field(false), input.clone());
-        self.runtime
-            .borrow_mut()
-            .object_input_handles
-            .insert(map_identity_key(stream), Vec::new());
+        self.runtime.borrow_mut().object_input_handles.insert(
+            map_identity_key(stream),
+            ReadState {
+                handles: Vec::new(),
+                class_not_found: None,
+            },
+        );
         // cite: libcore ObjectInputStream.java#readStreamHeader
         let header = match self.input_stream_read_exact(input, 4, depth)? {
             Ok(header) => header,
@@ -654,18 +732,27 @@ impl DexProgram {
             ));
         };
         let stream_key = map_identity_key(stream);
-        let mut handles = self
+        let mut state = self
             .runtime
             .borrow_mut()
             .object_input_handles
             .remove(&stream_key)
-            .unwrap_or_default();
-        let result = self.read_object0(&input, &mut handles, depth);
+            .unwrap_or(ReadState {
+                handles: Vec::new(),
+                class_not_found: None,
+            });
+        state.class_not_found = None;
+        let result = self.read_object0(&input, &mut state, depth);
+        let class_not_found = state.class_not_found.take();
         self.runtime
             .borrow_mut()
             .object_input_handles
-            .insert(stream_key, handles);
+            .insert(stream_key, state);
+        // cite: libcore ObjectInputStream.java#readObject, lookupException
         Ok(match result? {
+            Ok(_) if class_not_found.is_some() => DexExecutionResult::Throw(
+                self.serial_exception("Ljava/lang/ClassNotFoundException;", class_not_found),
+            ),
             Ok(value) => DexExecutionResult::Value(value),
             Err(exception) => DexExecutionResult::Throw(exception),
         })
@@ -678,9 +765,9 @@ impl DexProgram {
         count: usize,
         depth: usize,
     ) -> Result<Thrown<Vec<u8>>> {
-        let mut bytes = Vec::with_capacity(count);
+        let mut bytes = Vec::with_capacity(count.min(READ_CHUNK));
         while bytes.len() < count {
-            let remaining = count - bytes.len();
+            let remaining = (count - bytes.len()).min(READ_CHUNK);
             let array =
                 self.allocate_filled_array("[B".to_owned(), vec![DexValue::Int(0); remaining]);
             let read = self.stream_read_into(
@@ -792,22 +879,36 @@ impl DexProgram {
     fn read_object0(
         &self,
         input: &DexValue,
-        handles: &mut Vec<InputHandle>,
+        state: &mut ReadState,
         depth: usize,
     ) -> Result<Thrown<DexValue>> {
         let tc = match self.read_u8(input, depth)? {
             Ok(tc) => tc,
             Err(exception) => return Ok(Err(exception)),
         };
+        self.read_object_with_type_code(input, state, tc, depth)
+    }
+
+    fn read_object_with_type_code(
+        &self,
+        input: &DexValue,
+        state: &mut ReadState,
+        tc: u8,
+        depth: usize,
+    ) -> Result<Thrown<DexValue>> {
         match tc {
             TC_NULL => Ok(Ok(DexValue::Null)),
             TC_REFERENCE => {
-                let index = match self.read_handle_index(input, handles, depth)? {
+                let index = match self.read_handle_index(input, &state.handles, depth)? {
                     Ok(index) => index,
                     Err(exception) => return Ok(Err(exception)),
                 };
-                match &handles[index] {
+                match &state.handles[index] {
                     InputHandle::Object(value) => Ok(Ok(value.clone())),
+                    InputHandle::Failed(name) => {
+                        state.class_not_found.get_or_insert_with(|| name.clone());
+                        Ok(Ok(DexValue::Null))
+                    }
                     InputHandle::Class(_) | InputHandle::Pending => Err(missing(
                         "ObjectInputStream reference to a class descriptor or unfinished object"
                             .to_owned(),
@@ -820,10 +921,10 @@ impl DexProgram {
                     Err(exception) => return Ok(Err(exception)),
                 };
                 let value = DexValue::String(std::rc::Rc::from(text));
-                handles.push(InputHandle::Object(value.clone()));
+                state.handles.push(InputHandle::Object(value.clone()));
                 Ok(Ok(value))
             }
-            TC_OBJECT => self.read_ordinary_object(input, handles, depth),
+            TC_OBJECT => self.read_ordinary_object(input, state, depth),
             0x72 | 0x75..=0x77 | 0x79..=0x7b | 0x7d | 0x7e | TC_ENDBLOCKDATA => {
                 Err(missing(format!("ObjectInputStream type code {tc:02X}")))
             }
@@ -839,7 +940,7 @@ impl DexProgram {
     fn read_class_desc(
         &self,
         input: &DexValue,
-        handles: &mut Vec<InputHandle>,
+        state: &mut ReadState,
         depth: usize,
     ) -> Result<Thrown<Option<Rc<StreamClassDesc>>>> {
         let tc = match self.read_u8(input, depth)? {
@@ -849,11 +950,11 @@ impl DexProgram {
         match tc {
             TC_NULL => return Ok(Ok(None)),
             TC_REFERENCE => {
-                let index = match self.read_handle_index(input, handles, depth)? {
+                let index = match self.read_handle_index(input, &state.handles, depth)? {
                     Ok(index) => index,
                     Err(exception) => return Ok(Err(exception)),
                 };
-                return match &handles[index] {
+                return match &state.handles[index] {
                     InputHandle::Class(desc) => Ok(Ok(Some(desc.clone()))),
                     _ => Ok(Err(self.serial_exception(
                         "Ljava/io/StreamCorruptedException;",
@@ -874,8 +975,8 @@ impl DexProgram {
                 )))
             }
         }
-        let handle_index = handles.len();
-        handles.push(InputHandle::Pending);
+        let handle_index = state.handles.len();
+        state.handles.push(InputHandle::Pending);
         macro_rules! read {
             ($expression:expr) => {
                 match $expression? {
@@ -887,7 +988,7 @@ impl DexProgram {
         let name = read!(self.read_utf(input, false, depth));
         let suid = i64::from_be_bytes(read!(self.read_be::<8>(input, depth)));
         let flags = read!(self.read_u8(input, depth));
-        if flags & SC_SERIALIZABLE == 0 {
+        if flags & SC_SERIALIZABLE == 0 || flags & !(SC_SERIALIZABLE | SC_WRITE_METHOD) != 0 {
             return Err(missing(format!(
                 "ObjectInputStream class descriptor flags {flags:02X} for {name}"
             )));
@@ -904,7 +1005,7 @@ impl DexProgram {
                         Some(format!("{name}; invalid descriptor for field {field_name}")),
                     )));
                 }
-                let signature = read!(self.read_object0(input, handles, depth));
+                let signature = read!(self.read_object0(input, state, depth));
                 if !matches!(signature, DexValue::String(_)) {
                     return Ok(Err(self.serial_exception(
                         "Ljava/io/StreamCorruptedException;",
@@ -923,14 +1024,15 @@ impl DexProgram {
                 "ObjectInputStream class annotation data for {name}"
             )));
         }
-        let super_desc = read!(self.read_class_desc(input, handles, depth));
+        let super_desc = read!(self.read_class_desc(input, state, depth));
         let desc = Rc::new(StreamClassDesc {
             name,
             suid,
+            flags,
             fields,
             super_desc,
         });
-        handles[handle_index] = InputHandle::Class(desc.clone());
+        state.handles[handle_index] = InputHandle::Class(desc.clone());
         Ok(Ok(Some(desc)))
     }
 
@@ -939,7 +1041,7 @@ impl DexProgram {
     fn read_ordinary_object(
         &self,
         input: &DexValue,
-        handles: &mut Vec<InputHandle>,
+        state: &mut ReadState,
         depth: usize,
     ) -> Result<Thrown<DexValue>> {
         macro_rules! read {
@@ -950,13 +1052,19 @@ impl DexProgram {
                 }
             };
         }
-        let Some(desc) = read!(self.read_class_desc(input, handles, depth)) else {
+        let Some(desc) = read!(self.read_class_desc(input, state, depth)) else {
             return Ok(Err(self.serial_exception(
                 "Ljava/io/InvalidClassException;",
                 Some("null class descriptor".to_owned()),
             )));
         };
         let descriptor = format!("L{};", desc.name.replace('.', "/"));
+        if self.load_class(&descriptor).is_none() && is_framework_descriptor(&descriptor) {
+            return Err(missing(format!(
+                "deserialization of framework class {}",
+                desc.name
+            )));
+        }
         if self.load_class(&descriptor).is_some()
             && !self.descriptor_matches_type(&descriptor, "Ljava/io/Serializable;")
         {
@@ -1003,11 +1111,15 @@ impl DexProgram {
             }
             None => None,
         };
-        let handle_index = handles.len();
-        handles.push(match &object {
+        state.handles.push(match &object {
             Some(object) => InputHandle::Object(object.clone()),
-            None => InputHandle::Pending,
+            None => InputHandle::Failed(desc.name.clone()),
         });
+        if object.is_none() {
+            state
+                .class_not_found
+                .get_or_insert_with(|| desc.name.clone());
+        }
         for stream_desc in stream_chain.iter().rev() {
             let class = local.as_ref().and_then(|hierarchy| {
                 hierarchy
@@ -1015,16 +1127,58 @@ impl DexProgram {
                     .iter()
                     .find(|class| class.name == stream_desc.name)
             });
-            read!(self.read_fields(input, handles, object.as_ref(), stream_desc, class, depth));
+            read!(self.read_fields(input, state, object.as_ref(), stream_desc, class, depth));
+            if stream_desc.flags & SC_WRITE_METHOD != 0 {
+                read!(self.skip_custom_data(input, state, depth));
+            }
         }
-        match object {
-            Some(object) => Ok(Ok(object)),
-            None => {
-                let _ = handle_index;
-                Ok(Err(self.serial_exception(
-                    "Ljava/lang/ClassNotFoundException;",
-                    Some(desc.name.clone()),
-                )))
+        Ok(Ok(object.unwrap_or(DexValue::Null)))
+    }
+
+    // cite: libcore ObjectInputStream.java#skipCustomData
+    fn skip_custom_data(
+        &self,
+        input: &DexValue,
+        state: &mut ReadState,
+        depth: usize,
+    ) -> Result<Thrown<()>> {
+        loop {
+            let tc = match self.read_u8(input, depth)? {
+                Ok(tc) => tc,
+                Err(exception) => return Ok(Err(exception)),
+            };
+            let length = match tc {
+                TC_ENDBLOCKDATA => return Ok(Ok(())),
+                TC_BLOCKDATA => match self.read_u8(input, depth)? {
+                    Ok(length) => usize::from(length),
+                    Err(exception) => return Ok(Err(exception)),
+                },
+                TC_BLOCKDATALONG => match self.read_be::<4>(input, depth)? {
+                    Ok(bytes) => match usize::try_from(i32::from_be_bytes(bytes)) {
+                        Ok(length) => length,
+                        Err(_) => {
+                            return Ok(Err(self.serial_exception(
+                                "Ljava/io/StreamCorruptedException;",
+                                Some(format!(
+                                    "illegal block data header length: {}",
+                                    i32::from_be_bytes(bytes)
+                                )),
+                            )))
+                        }
+                    },
+                    Err(exception) => return Ok(Err(exception)),
+                },
+                tc => {
+                    if let Err(exception) =
+                        self.read_object_with_type_code(input, state, tc, depth)?
+                    {
+                        return Ok(Err(exception));
+                    }
+                    continue;
+                }
+            };
+            if let Err(exception) = self.input_stream_read_exact(input, length, depth)? {
+                return Ok(Err(exception));
             }
         }
     }
@@ -1094,7 +1248,7 @@ impl DexProgram {
     fn read_fields(
         &self,
         input: &DexValue,
-        handles: &mut Vec<InputHandle>,
+        state: &mut ReadState,
         object: Option<&DexValue>,
         stream_desc: &StreamClassDesc,
         class: Option<&LocalClass>,
@@ -1146,7 +1300,7 @@ impl DexProgram {
             if primitive_width(field.type_code).is_some() {
                 continue;
             }
-            let value = match self.read_object0(input, handles, depth)? {
+            let value = match self.read_object0(input, state, depth)? {
                 Ok(value) => value,
                 Err(exception) => return Ok(Err(exception)),
             };

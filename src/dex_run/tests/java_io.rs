@@ -3676,6 +3676,45 @@ fn libcore_byte_array_input_stream_reads_its_live_buffer_within_bounds() {
     assert_eq!(read_all(&window), [21, 30, 255]);
 }
 
+#[test]
+fn libcore_byte_array_input_stream_close_is_a_no_op_and_empty_reads_report_eof() {
+    // cite: libcore ByteArrayInputStream.java#close, read
+    let program = DexProgram::new(Vec::new());
+    let init = java_io_method("Ljava/io/ByteArrayInputStream;", "<init>", "V", &["[B"]);
+    let read = java_io_method("Ljava/io/InputStream;", "read", "I", &[]);
+    let read_into = java_io_method("Ljava/io/InputStream;", "read", "I", &["[B", "I", "I"]);
+    let close = java_io_method("Ljava/io/InputStream;", "close", "V", &[]);
+    let buffer = program.allocate_filled_array("[B".to_owned(), vec![DexValue::Int(7)]);
+    let target = program.allocate_filled_array("[B".to_owned(), vec![DexValue::Int(0)]);
+    let stream = program.allocate_object("Ljava/io/ByteArrayInputStream;".to_owned());
+    invoke_value(&program, &init, vec![stream.clone(), buffer]);
+    let empty_read = || {
+        invoke_value(
+            &program,
+            &read_into,
+            vec![
+                stream.clone(),
+                target.clone(),
+                DexValue::Int(0),
+                DexValue::Int(0),
+            ],
+        )
+    };
+
+    assert_eq!(empty_read(), DexExecutionResult::Int(0));
+    invoke_value(&program, &close, vec![stream.clone()]);
+    assert_eq!(
+        invoke_value(&program, &read, vec![stream.clone()]),
+        DexExecutionResult::Int(7),
+        "libcore ByteArrayInputStream.close has an empty body"
+    );
+    assert_eq!(
+        empty_read(),
+        DexExecutionResult::Int(-1),
+        "libcore read(b, off, len) returns -1 once pos >= count, before checking len"
+    );
+}
+
 fn serial_contract_program() -> DexProgram {
     let dex_file = crate::dex::parse_dex_file(
         "serial_contract.dex",
@@ -3823,4 +3862,82 @@ fn file_observer_watch_on_a_missing_path_gets_a_failed_descriptor() {
         program.invoke_builtin_method(&start_method, Some(&test_invocation(vec![present]))),
         None
     );
+}
+
+#[test]
+fn libcore_object_input_stream_defers_class_not_found_and_skips_custom_data() {
+    // cite: libcore ObjectInputStream.java#readObject, lookupException, readOrdinaryObject, skipCustomData
+    let program = serial_contract_program();
+    let oracle = include_bytes!("fixtures/serial_mixed.openjdk.ser");
+    let data = program.allocate_filled_array(
+        "[B".to_owned(),
+        oracle
+            .iter()
+            .map(|byte| DexValue::Int(i32::from(*byte as i8)))
+            .collect(),
+    );
+
+    assert_eq!(
+        serial_contract_call(
+            &program,
+            "readMixed",
+            "Ljava/lang/String;",
+            &["[B"],
+            &[data]
+        ),
+        DexExecutionResult::Value(DexValue::String(
+            "cnfe:winedroid.tests.SerialHost$Ghost;after;77;tail".into()
+        ))
+    );
+}
+
+#[test]
+fn libcore_object_output_stream_reports_framework_fields_as_missing_support() {
+    // cite: libcore ObjectOutputStream.java#writeObject0
+    let program = serial_contract_program();
+    let method = DexMethodId {
+        class_descriptor: "Lwinedroid/tests/SerialContract;".to_owned(),
+        name: "writeWithMap".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "V".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let resolved = program.resolve_exact_method(&method).unwrap().unwrap();
+    let error = program
+        .execute_method(None, &resolved, None, 0)
+        .expect_err("a HashMap field is not serializable yet");
+    assert!(
+        error
+            .to_string()
+            .contains("serialization of framework class java.util.HashMap"),
+        "{error}"
+    );
+}
+
+#[test]
+fn libcore_object_input_stream_huge_string_length_ends_in_eof_without_allocating_it() {
+    // cite: libcore ObjectInputStream.java#readLongUTF, readFully
+    let program = serial_contract_program();
+    let data = program.allocate_filled_array(
+        "[B".to_owned(),
+        [
+            0xac, 0xed, 0x00, 0x05, 0x7c, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        ]
+        .iter()
+        .map(|byte: &u8| DexValue::Int(i32::from(*byte as i8)))
+        .collect(),
+    );
+
+    let DexExecutionResult::Throw(exception) = serial_contract_call(
+        &program,
+        "readGraph",
+        "Ljava/lang/String;",
+        &["[B"],
+        &[data],
+    ) else {
+        panic!("a truncated long string should throw");
+    };
+    assert!(program.value_matches_type(&exception, "Ljava/io/EOFException;"));
 }

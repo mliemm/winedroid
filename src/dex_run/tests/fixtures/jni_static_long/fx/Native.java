@@ -17,6 +17,10 @@ public class Native {
 
     public static native int stringLength(String text);
 
+    public static native void pinBytes(byte[] data);
+
+    public static native void bumpPinnedAndRelease(byte[] data);
+
     public static int recorded;
 
     public static void record(int value) {

@@ -37,8 +37,6 @@ pub(super) struct Frame<'a> {
     depth: usize,
     refs: RefCell<HashMap<usize, DexValue>>,
     bindings: RefCell<HashMap<NativeMethod, usize>>,
-    strings: RefCell<HashMap<usize, (usize, Vec<u8>)>>,
-    byte_arrays: RefCell<HashMap<usize, (usize, Vec<u8>)>>,
     exception: RefCell<Option<DexValue>>,
 }
 
@@ -49,8 +47,6 @@ impl<'a> Frame<'a> {
             depth,
             refs: RefCell::new(HashMap::new()),
             bindings: RefCell::new(HashMap::new()),
-            strings: RefCell::new(HashMap::new()),
-            byte_arrays: RefCell::new(HashMap::new()),
             exception: RefCell::new(None),
         }
     }
@@ -388,9 +384,11 @@ fn get_byte_array_elements(context: &mut CallContext) {
         bytes.push(0);
         let address = bytes.as_ptr() as usize;
         frame
-            .byte_arrays
+            .program
+            .jni
+            .native_buffers
             .borrow_mut()
-            .insert(address, (handle, bytes));
+            .insert(address, (array, bytes));
         let is_copy = context.arg_ptr(2);
         if is_copy != 0 {
             write_value(is_copy, 1u8);
@@ -410,11 +408,11 @@ fn release_byte_array_elements(context: &mut CallContext) {
         let mode = context.arg_ptr(3) as u32 as i32;
         let array = byte_array_value(frame, handle, "ReleaseByteArrayElements")?;
         let length = {
-            let buffers = frame.byte_arrays.borrow();
+            let buffers = frame.program.jni.native_buffers.borrow();
             let Some((owner, bytes)) = buffers.get(&address) else {
                 return Err(WinedroidError::new("unknown JNI byte array buffer"));
             };
-            if frame.value(*owner)? != array {
+            if *owner != array {
                 return Err(WinedroidError::new(
                     "JNI byte array buffer belongs to another array",
                 ));
@@ -432,7 +430,12 @@ fn release_byte_array_elements(context: &mut CallContext) {
             }
         }
         if mode != JNI_COMMIT {
-            frame.byte_arrays.borrow_mut().remove(&address);
+            frame
+                .program
+                .jni
+                .native_buffers
+                .borrow_mut()
+                .remove(&address);
         }
         Ok(())
     });
@@ -1006,10 +1009,15 @@ fn get_string_utf_chars(context: &mut CallContext) {
                 .ok_or_else(|| WinedroidError::new("JNI string object has no text"))?,
             _ => return Err(WinedroidError::new("JNI reference is not a string")),
         };
-        let mut bytes = super::super::java_serialization::modified_utf8(&value);
+        let mut bytes = value.into_bytes();
         bytes.push(0);
         let address = bytes.as_ptr() as usize;
-        frame.strings.borrow_mut().insert(address, (handle, bytes));
+        frame
+            .program
+            .jni
+            .native_buffers
+            .borrow_mut()
+            .insert(address, (reference, bytes));
         let is_copy = context.arg_ptr(2);
         if is_copy != 0 {
             write_value(is_copy, 1u8);
@@ -1023,16 +1031,16 @@ fn release_string_utf_chars(context: &mut CallContext) {
     // cite: art jni_internal.cc#ReleaseStringUTFChars
     with_env(context, |frame, context| {
         let address = context.arg_ptr(2);
-        let mut strings = frame.strings.borrow_mut();
-        let Some((handle, _)) = strings.get(&address) else {
+        if frame
+            .program
+            .jni
+            .native_buffers
+            .borrow_mut()
+            .remove(&address)
+            .is_none()
+        {
             return Err(WinedroidError::new("unknown JNI string buffer"));
-        };
-        if *handle != context.arg_ptr(1) {
-            return Err(WinedroidError::new(
-                "JNI string buffer belongs to another reference",
-            ));
         }
-        strings.remove(&address);
         Ok(())
     });
 }
