@@ -331,10 +331,16 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         "Ljava/lang/ref/Reference;" => Some("Ljava/lang/Object;"),
         "Lorg/json/JSONException;" => Some("Ljava/lang/Exception;"),
         "Ljava/io/FileNotFoundException;" => Some("Ljava/io/IOException;"),
+        // cite: libcore UnsupportedEncodingException.java#UnsupportedEncodingException
+        "Ljava/io/UnsupportedEncodingException;" => Some("Ljava/io/IOException;"),
         "Landroid/os/Bundle;" => Some("Landroid/os/BaseBundle;"),
         "Landroid/os/BaseBundle;" => Some("Ljava/lang/Object;"),
         // cite: frameworks-base SystemVibratorManager.java#SystemVibratorManager
         "Landroid/os/SystemVibratorManager;" => Some("Landroid/os/VibratorManager;"),
+        // cite: frameworks-base SystemVibrator.java#SystemVibrator
+        "Landroid/os/SystemVibrator;" => Some("Landroid/os/Vibrator;"),
+        // cite: frameworks-base Vibrator.java#Vibrator
+        "Landroid/os/Vibrator;" => Some("Ljava/lang/Object;"),
         "Landroid/app/Activity;" => Some("Landroid/view/ContextThemeWrapper;"),
         "Landroid/app/Application;" => Some("Landroid/content/ContextWrapper;"),
         "Landroid/content/ContextWrapper;" => Some("Landroid/content/Context;"),
@@ -414,6 +420,7 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         | "Ljava/util/concurrent/ConcurrentLinkedQueue;"
         | "Ljava/util/concurrent/LinkedBlockingQueue;"
         | "Ljava/util/concurrent/ArrayBlockingQueue;"
+        | "Ljava/util/concurrent/LinkedBlockingDeque;"
         | "Ljava/util/concurrent/ScheduledThreadPoolExecutor$DelayedWorkQueue;"
         | "Ljava/util/concurrent/SynchronousQueue;" => Some("Ljava/util/AbstractQueue;"),
         // cite: libcore ScheduledThreadPoolExecutor.java#ScheduledThreadPoolExecutor
@@ -579,6 +586,10 @@ pub(super) fn bootstrap_direct_interface_descriptors(
         "Ljava/util/Deque;" => &["Ljava/util/Queue;"],
         // cite: libcore BlockingQueue.java#BlockingQueue
         "Ljava/util/concurrent/BlockingQueue;" => &["Ljava/util/Queue;"],
+        // cite: libcore BlockingDeque.java#BlockingDeque
+        "Ljava/util/concurrent/BlockingDeque;" => {
+            &["Ljava/util/concurrent/BlockingQueue;", "Ljava/util/Deque;"]
+        }
         // cite: libcore TransferQueue.java#TransferQueue
         "Ljava/util/concurrent/TransferQueue;" => &["Ljava/util/concurrent/BlockingQueue;"],
         "Ljava/util/ArrayList;" | "Ljava/util/Arrays$ArrayList;" => &[
@@ -613,6 +624,11 @@ pub(super) fn bootstrap_direct_interface_descriptors(
         "Ljava/util/concurrent/LinkedBlockingQueue;"
         | "Ljava/util/concurrent/ArrayBlockingQueue;" => &[
             "Ljava/util/concurrent/BlockingQueue;",
+            "Ljava/io/Serializable;",
+        ],
+        // cite: libcore LinkedBlockingDeque.java#LinkedBlockingDeque
+        "Ljava/util/concurrent/LinkedBlockingDeque;" => &[
+            "Ljava/util/concurrent/BlockingDeque;",
             "Ljava/io/Serializable;",
         ],
         // cite: libcore LinkedTransferQueue.java#LinkedTransferQueue
@@ -738,6 +754,8 @@ pub(super) fn is_bootstrap_interface_descriptor(class_descriptor: &str) -> bool 
             | "Ljava/util/Deque;"
             // cite: libcore BlockingQueue.java#BlockingQueue
             | "Ljava/util/concurrent/BlockingQueue;"
+            // cite: libcore BlockingDeque.java#BlockingDeque
+            | "Ljava/util/concurrent/BlockingDeque;"
             // cite: libcore TransferQueue.java#TransferQueue
             | "Ljava/util/concurrent/TransferQueue;"
             | "Ljava/util/RandomAccess;"

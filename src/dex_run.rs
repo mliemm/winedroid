@@ -4545,12 +4545,15 @@ impl DexProgram {
             return None;
         };
 
-        self.runtime
-            .borrow_mut()
-            .intent_filter_actions
-            .entry(filter_key)
-            .or_default()
-            .push(action.clone().to_string());
+        // cite: frameworks-base IntentFilter.java#addAction, mActions
+        let mut runtime = self.runtime.borrow_mut();
+        let actions = runtime.intent_filter_actions.entry(filter_key).or_default();
+        if !actions
+            .iter()
+            .any(|known| known.as_str() == action.as_ref())
+        {
+            actions.push(action.to_string());
+        }
 
         Some(())
     }

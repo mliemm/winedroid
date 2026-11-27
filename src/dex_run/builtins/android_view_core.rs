@@ -4209,6 +4209,35 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        if method.class_descriptor == "Landroid/view/View;"
+            && matches!(
+                (method.name.as_str(), method.proto.descriptor().as_str()),
+                ("getFitsSystemWindows", "()Z") | ("setFitsSystemWindows", "(Z)V")
+            )
+            && !self.guest_overrides(method, invocation)
+        {
+            // cite: frameworks-base View.java#setFitsSystemWindows, getFitsSystemWindows
+            let invocation = invocation?;
+            let view = invocation.arguments.first()?;
+            if !dex_value_is_object_like(view) {
+                return None;
+            }
+            if method.name == "setFitsSystemWindows" {
+                let DexValue::Int(fits) = invocation.arguments.get(1)? else {
+                    return None;
+                };
+                self.write_stored_instance_field(
+                    view,
+                    &view_fits_system_windows_field(),
+                    DexValue::Int(i32::from(*fits != 0)),
+                );
+                return Some(DexExecutionResult::Void);
+            }
+            let fits = self.read_stored_instance_field(view, &view_fits_system_windows_field())
+                == Some(DexValue::Int(1));
+            return Some(DexExecutionResult::Int(i32::from(fits)));
+        }
+
         if let Some(result) = self.scroller_builtin(method, invocation) {
             return Some(result);
         }

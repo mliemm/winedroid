@@ -201,6 +201,27 @@ impl DexProgram {
         Some(())
     }
 
+    // cite: libcore AtomicLong.java#get, set, lazySet, getAndSet, compareAndSet, incrementAndGet, getAndIncrement, decrementAndGet, getAndDecrement, addAndGet, intValue, longValue
+    pub(in crate::dex_run) fn atomic_long_update(
+        &self,
+        invocation: &DexInvocation,
+        update: impl FnOnce(i64) -> (i64, i64),
+    ) -> Option<i64> {
+        let object = invocation.arguments.first()?;
+        if !dex_value_is_object_like(object) {
+            return None;
+        }
+        let mut runtime = self.runtime.borrow_mut();
+        let value = runtime
+            .atomic_long_values
+            .entry(map_identity_key(object))
+            .or_insert(0);
+        let (next, result) = update(*value);
+        *value = next;
+
+        Some(result)
+    }
+
     pub(in crate::dex_run) fn atomic_long_get_and_add(
         &self,
         invocation: &DexInvocation,

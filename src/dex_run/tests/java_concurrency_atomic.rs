@@ -3705,3 +3705,46 @@ fn libcore_atomic_integer_decrement_and_number_views_wrap_like_java() {
         ))))
     );
 }
+
+// cite: libcore AtomicLong.java#lazySet, getAndSet, compareAndSet, incrementAndGet, getAndDecrement, addAndGet
+#[test]
+fn libcore_atomic_long_updates_wrap_like_java() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Ljava/util/concurrent/atomic/AtomicLong;";
+    let atomic = program.allocate_object(class.to_owned());
+    let wide = |value: i64| [DexValue::Long(value), DexValue::Long(value)];
+    let call = |name: &str, ret: &str, params: &[&str], arguments: Vec<DexValue>| {
+        let mut values = vec![atomic.clone()];
+        values.extend(arguments);
+        program.invoke_builtin_method(
+            &builtin_method(class, name, ret, params),
+            Some(&test_invocation(values)),
+        )
+    };
+    let long = |value: i64| Some(DexExecutionResult::Value(DexValue::Long(value)));
+
+    assert_eq!(
+        call("lazySet", "V", &["J"], wide(i64::MAX).to_vec()),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(call("incrementAndGet", "J", &[], vec![]), long(i64::MIN));
+    assert_eq!(
+        call("getAndSet", "J", &["J"], wide(5).to_vec()),
+        long(i64::MIN)
+    );
+    let mut swap = wide(4).to_vec();
+    swap.extend(wide(9));
+    assert_eq!(
+        call("compareAndSet", "Z", &["J", "J"], swap),
+        Some(DexExecutionResult::Int(0))
+    );
+    let mut swap = wide(5).to_vec();
+    swap.extend(wide(9));
+    assert_eq!(
+        call("compareAndSet", "Z", &["J", "J"], swap),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(call("getAndDecrement", "J", &[], vec![]), long(9));
+    assert_eq!(call("addAndGet", "J", &["J"], wide(10).to_vec()), long(18));
+    assert_eq!(call("get", "J", &[], vec![]), long(18));
+}

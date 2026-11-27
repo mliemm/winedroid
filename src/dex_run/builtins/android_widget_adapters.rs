@@ -16,6 +16,24 @@ impl DexProgram {
                     | "(Landroid/content/Context;Landroid/util/AttributeSet;II)V"
             )
         {
+            // cite: frameworks-base View.java#View, fitsSystemWindows, FITS_SYSTEM_WINDOWS
+            if let Some(invocation) = invocation {
+                if let (Some(view), Some(attributes)) =
+                    (invocation.arguments.first(), invocation.arguments.get(2))
+                {
+                    let fits = self
+                        .attribute_set_current_element(attributes)
+                        .and_then(|element| element.attribute("fitsSystemWindows").cloned())
+                        .and_then(|attribute| attribute.value.as_bool());
+                    if let Some(fits) = fits {
+                        self.write_stored_instance_field(
+                            view,
+                            &view_fits_system_windows_field(),
+                            DexValue::Int(i32::from(fits)),
+                        );
+                    }
+                }
+            }
             return Some(DexExecutionResult::Void);
         }
 

@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PLATFORM_TAG="android-14.0.0_r1"
 
 FRAMEWORKS_BASE_PATHS=(core/java core/jni core/res graphics/java libs/androidfw native/android
-                       services/core/java)
+                       services/core/java telephony/java media/java)
 
 LIBCORE_PATHS=(ojluni/src/main luni/src/main json/src/main)
 

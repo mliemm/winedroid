@@ -2600,3 +2600,67 @@ fn string_buffer_append_object_uses_the_object_append_intrinsic() {
         ))
     );
 }
+
+// cite: libcore String.java#getBytes
+// cite: libcore StandardCharsets.java#UTF_8, UTF_16
+#[test]
+fn libcore_string_get_bytes_encodes_with_the_named_charset() {
+    let program = DexProgram::new(Vec::new());
+    let get_bytes = |parameters: &[&str], charset: Option<DexValue>| {
+        let mut arguments = vec![DexValue::String(std::rc::Rc::from("hé"))];
+        arguments.extend(charset);
+        let Some(DexExecutionResult::Value(array)) = program.invoke_builtin_method(
+            &builtin_method("Ljava/lang/String;", "getBytes", "[B", parameters),
+            Some(&test_invocation(arguments)),
+        ) else {
+            return None;
+        };
+        program
+            .runtime
+            .borrow()
+            .array_entries
+            .get(&map_identity_key(&array))
+            .cloned()
+    };
+    let bytes = |values: &[u8]| {
+        Some(
+            values
+                .iter()
+                .map(|byte| DexValue::Int(i32::from(*byte as i8)))
+                .collect::<Vec<_>>(),
+        )
+    };
+
+    assert_eq!(get_bytes(&[], None), bytes(&[b'h', 0xc3, 0xa9]));
+    assert_eq!(
+        get_bytes(
+            &["Ljava/nio/charset/Charset;"],
+            Some(DexValue::Reference(std::rc::Rc::from(
+                "Ljava/nio/charset/Charset;:UTF-16"
+            )))
+        ),
+        bytes(&[0xfe, 0xff, 0x00, b'h', 0x00, 0xe9])
+    );
+    assert_eq!(
+        get_bytes(
+            &["Ljava/lang/String;"],
+            Some(DexValue::String(std::rc::Rc::from("US-ASCII")))
+        ),
+        bytes(&[b'h', b'?'])
+    );
+    let Some(DexExecutionResult::Throw(error)) = program.invoke_builtin_method(
+        &builtin_method(
+            "Ljava/lang/String;",
+            "getBytes",
+            "[B",
+            &["Ljava/lang/String;"],
+        ),
+        Some(&test_invocation(vec![
+            DexValue::String(std::rc::Rc::from("x")),
+            DexValue::String(std::rc::Rc::from("no-such-charset")),
+        ])),
+    ) else {
+        panic!("an unknown charset name should throw");
+    };
+    assert!(program.value_matches_type(&error, "Ljava/io/IOException;"));
+}

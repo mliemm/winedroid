@@ -829,6 +829,76 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        if method.class_descriptor == "Ljava/util/concurrent/atomic/AtomicLong;"
+            && !self.guest_overrides(method, invocation)
+        {
+            let wide = |index: usize| match invocation?.arguments.get(index)? {
+                DexValue::Long(value) => Some(*value),
+                _ => None,
+            };
+            let long = |value: i64| DexExecutionResult::Value(DexValue::Long(value));
+            let result = match (method.name.as_str(), method.proto.descriptor().as_str()) {
+                ("get" | "longValue", "()J") => {
+                    Some(long(self.atomic_long_update(invocation?, |current| {
+                        (current, current)
+                    })?))
+                }
+                ("intValue", "()I") => Some(DexExecutionResult::Int(
+                    self.atomic_long_update(invocation?, |current| (current, current))? as i32,
+                )),
+                ("set" | "lazySet", "(J)V") => {
+                    let next = wide(1)?;
+                    self.atomic_long_update(invocation?, |_| (next, 0))?;
+                    Some(DexExecutionResult::Void)
+                }
+                ("getAndSet", "(J)J") => {
+                    let next = wide(1)?;
+                    Some(long(self.atomic_long_update(invocation?, |current| {
+                        (next, current)
+                    })?))
+                }
+                ("compareAndSet" | "weakCompareAndSet", "(JJ)Z") => {
+                    let (expected, next) = (wide(1)?, wide(3)?);
+                    Some(DexExecutionResult::Int(self.atomic_long_update(
+                        invocation?,
+                        |current| {
+                            if current == expected {
+                                (next, 1)
+                            } else {
+                                (current, 0)
+                            }
+                        },
+                    )? as i32))
+                }
+                (
+                    "incrementAndGet" | "decrementAndGet" | "getAndIncrement" | "getAndDecrement",
+                    "()J",
+                ) => {
+                    let delta = if method.name.contains("ncrement") {
+                        1
+                    } else {
+                        -1
+                    };
+                    let returns_previous = method.name.starts_with("getAnd");
+                    Some(long(self.atomic_long_update(invocation?, |current| {
+                        let next = current.wrapping_add(delta);
+                        (next, if returns_previous { current } else { next })
+                    })?))
+                }
+                ("addAndGet", "(J)J") => {
+                    let delta = wide(1)?;
+                    Some(long(self.atomic_long_update(invocation?, |current| {
+                        let next = current.wrapping_add(delta);
+                        (next, next)
+                    })?))
+                }
+                _ => None,
+            };
+            if result.is_some() {
+                return result;
+            }
+        }
+
         if method.matches_builtin_signature(
             "Ljava/util/concurrent/atomic/AtomicLong;",
             "getAndAdd",

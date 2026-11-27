@@ -3733,3 +3733,202 @@ fn libcore_bounded_blocking_queue_rejects_items_when_full() {
     assert!(program.value_matches_type(&error, "Ljava/lang/IllegalStateException;"));
     assert_eq!(call(&put, vec![item]), None);
 }
+
+// cite: libcore ArrayDeque.java#push, pop, peekLast, pollLast, size, removeFirst
+#[test]
+fn libcore_array_deque_supports_stack_and_queue_ends() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Ljava/util/ArrayDeque;";
+    let deque = program.allocate_object(class.to_owned());
+    let string = |value: &str| DexValue::String(std::rc::Rc::from(value));
+    let call = |name: &str, ret: &str, params: &[&str], arguments: Vec<DexValue>| {
+        let mut values = vec![deque.clone()];
+        values.extend(arguments);
+        program.invoke_builtin_method(
+            &builtin_method(class, name, ret, params),
+            Some(&test_invocation(values)),
+        )
+    };
+    let object = |value: &str| Some(DexExecutionResult::Value(string(value)));
+
+    call(
+        "addLast",
+        "V",
+        &["Ljava/lang/Object;"],
+        vec![string("tail")],
+    );
+    call("push", "V", &["Ljava/lang/Object;"], vec![string("head")]);
+    assert_eq!(
+        call("size", "I", &[], vec![]),
+        Some(DexExecutionResult::Int(2))
+    );
+    assert_eq!(
+        call("peekLast", "Ljava/lang/Object;", &[], vec![]),
+        object("tail")
+    );
+    assert_eq!(
+        call("pop", "Ljava/lang/Object;", &[], vec![]),
+        object("head")
+    );
+    assert_eq!(
+        call("pollLast", "Ljava/lang/Object;", &[], vec![]),
+        object("tail")
+    );
+    assert_eq!(
+        call("poll", "Ljava/lang/Object;", &[], vec![]),
+        Some(DexExecutionResult::Value(DexValue::Null))
+    );
+    let Some(DexExecutionResult::Throw(error)) =
+        call("removeFirst", "Ljava/lang/Object;", &[], vec![])
+    else {
+        panic!("removeFirst on an empty deque should throw");
+    };
+    assert!(program.value_matches_type(&error, "Ljava/util/NoSuchElementException;"));
+}
+
+// cite: libcore ConcurrentLinkedQueue.java#offer, peek, poll, size
+#[test]
+fn libcore_concurrent_linked_queue_peeks_and_polls_in_fifo_order() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Ljava/util/concurrent/ConcurrentLinkedQueue;";
+    let queue = program.allocate_object(class.to_owned());
+    let string = |value: &str| DexValue::String(std::rc::Rc::from(value));
+    let call = |name: &str, ret: &str, params: &[&str], arguments: Vec<DexValue>| {
+        let mut values = vec![queue.clone()];
+        values.extend(arguments);
+        program.invoke_builtin_method(
+            &builtin_method(class, name, ret, params),
+            Some(&test_invocation(values)),
+        )
+    };
+
+    assert_eq!(
+        call("peek", "Ljava/lang/Object;", &[], vec![]),
+        Some(DexExecutionResult::Value(DexValue::Null))
+    );
+    call("offer", "Z", &["Ljava/lang/Object;"], vec![string("a")]);
+    call("offer", "Z", &["Ljava/lang/Object;"], vec![string("b")]);
+    assert_eq!(
+        call("peek", "Ljava/lang/Object;", &[], vec![]),
+        Some(DexExecutionResult::Value(string("a")))
+    );
+    assert_eq!(
+        call("size", "I", &[], vec![]),
+        Some(DexExecutionResult::Int(2))
+    );
+    assert_eq!(
+        call("poll", "Ljava/lang/Object;", &[], vec![]),
+        Some(DexExecutionResult::Value(string("a")))
+    );
+}
+
+// cite: libcore LinkedBlockingDeque.java#LinkedBlockingDeque, offerFirst, pollLast
+#[test]
+fn libcore_linked_blocking_deque_is_a_blocking_deque() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Ljava/util/concurrent/LinkedBlockingDeque;";
+    let deque = program.allocate_object(class.to_owned());
+    let string = |value: &str| DexValue::String(std::rc::Rc::from(value));
+    let call = |name: &str, ret: &str, params: &[&str], arguments: Vec<DexValue>| {
+        let mut values = vec![deque.clone()];
+        values.extend(arguments);
+        program.invoke_builtin_method(
+            &builtin_method(class, name, ret, params),
+            Some(&test_invocation(values)),
+        )
+    };
+
+    assert_eq!(
+        call("<init>", "V", &[], vec![]),
+        Some(DexExecutionResult::Void)
+    );
+    call(
+        "offerFirst",
+        "Z",
+        &["Ljava/lang/Object;"],
+        vec![string("b")],
+    );
+    call(
+        "offerFirst",
+        "Z",
+        &["Ljava/lang/Object;"],
+        vec![string("a")],
+    );
+    assert_eq!(
+        call("pollLast", "Ljava/lang/Object;", &[], vec![]),
+        Some(DexExecutionResult::Value(string("b")))
+    );
+    assert!(program.value_matches_type(&deque, "Ljava/util/concurrent/BlockingDeque;"));
+    assert!(program.value_matches_type(&deque, "Ljava/util/Deque;"));
+}
+
+// cite: libcore LinkedBlockingDeque.java#putLast, takeFirst
+#[test]
+fn libcore_linked_blocking_deque_put_last_and_take_first_are_fifo() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Ljava/util/concurrent/LinkedBlockingDeque;";
+    let deque = program.allocate_object(class.to_owned());
+    let string = |value: &str| DexValue::String(std::rc::Rc::from(value));
+    let call = |name: &str, ret: &str, params: &[&str], arguments: Vec<DexValue>| {
+        let mut values = vec![deque.clone()];
+        values.extend(arguments);
+        program.invoke_builtin_method(
+            &builtin_method(class, name, ret, params),
+            Some(&test_invocation(values)),
+        )
+    };
+
+    call(
+        "putLast",
+        "V",
+        &["Ljava/lang/Object;"],
+        vec![string("first")],
+    );
+    call(
+        "putLast",
+        "V",
+        &["Ljava/lang/Object;"],
+        vec![string("second")],
+    );
+    assert_eq!(
+        call("takeFirst", "Ljava/lang/Object;", &[], vec![]),
+        Some(DexExecutionResult::Value(string("first")))
+    );
+    assert_eq!(
+        call("takeFirst", "Ljava/lang/Object;", &[], vec![]),
+        Some(DexExecutionResult::Value(string("second")))
+    );
+    assert_eq!(call("takeFirst", "Ljava/lang/Object;", &[], vec![]), None);
+}
+
+// cite: libcore LinkedList.java#descendingIterator, add
+#[test]
+fn libcore_linked_list_descending_iterator_walks_from_the_tail() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Ljava/util/LinkedList;";
+    let list = program.allocate_object(class.to_owned());
+    let string = |value: &str| DexValue::String(std::rc::Rc::from(value));
+    for value in ["a", "b", "c"] {
+        program.invoke_builtin_method(
+            &builtin_method(class, "add", "Z", &["Ljava/lang/Object;"]),
+            Some(&test_invocation(vec![list.clone(), string(value)])),
+        );
+    }
+    let Some(DexExecutionResult::Value(iterator)) = program.invoke_builtin_method(
+        &builtin_method(class, "descendingIterator", "Ljava/util/Iterator;", &[]),
+        Some(&test_invocation(vec![list])),
+    ) else {
+        panic!("descendingIterator should return an iterator");
+    };
+    let next = builtin_method("Ljava/util/Iterator;", "next", "Ljava/lang/Object;", &[]);
+    let seen: Vec<_> = (0..3)
+        .map(|_| {
+            program.invoke_builtin_method(&next, Some(&test_invocation(vec![iterator.clone()])))
+        })
+        .collect();
+
+    assert_eq!(
+        seen,
+        ["c", "b", "a"].map(|value| Some(DexExecutionResult::Value(string(value))))
+    );
+}

@@ -24,6 +24,27 @@ impl DexProgram {
             return self.number_value(method.name.as_str(), invocation);
         }
 
+        if method.class_descriptor == "Ljava/lang/Boolean;"
+            && matches!(
+                (method.name.as_str(), method.proto.descriptor().as_str()),
+                ("valueOf", "(Ljava/lang/String;)Ljava/lang/Boolean;")
+                    | ("parseBoolean", "(Ljava/lang/String;)Z")
+            )
+        {
+            // cite: libcore Boolean.java#valueOf, parseBoolean
+            let parsed = matches!(
+                invocation?.arguments.first()?,
+                DexValue::String(text) if text.eq_ignore_ascii_case("true")
+            );
+            return Some(if method.name == "parseBoolean" {
+                DexExecutionResult::Int(i32::from(parsed))
+            } else {
+                DexExecutionResult::Value(DexValue::Reference(std::rc::Rc::from(format!(
+                    "Ljava/lang/Boolean;:{parsed}"
+                ))))
+            });
+        }
+
         if method.matches_builtin_signature(
             "Ljava/lang/Boolean;",
             "valueOf",

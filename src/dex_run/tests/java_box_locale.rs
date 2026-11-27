@@ -1362,3 +1362,35 @@ fn libcore_number_accessors_convert_any_box() {
         Some(DexExecutionResult::Value(DexValue::Long(9007199254740993)))
     );
 }
+
+// cite: libcore Boolean.java#valueOf, parseBoolean
+#[test]
+fn libcore_boolean_value_of_string_is_true_only_for_true_ignoring_case() {
+    let program = DexProgram::new(Vec::new());
+    let value_of = |argument: DexValue| {
+        program.invoke_builtin_method(
+            &builtin_method(
+                "Ljava/lang/Boolean;",
+                "valueOf",
+                "Ljava/lang/Boolean;",
+                &["Ljava/lang/String;"],
+            ),
+            Some(&test_invocation(vec![argument])),
+        )
+    };
+    let boxed = |value: bool| {
+        Some(DexExecutionResult::Value(DexValue::Reference(
+            std::rc::Rc::from(format!("Ljava/lang/Boolean;:{value}")),
+        )))
+    };
+
+    assert_eq!(
+        value_of(DexValue::String(std::rc::Rc::from("TrUe"))),
+        boxed(true)
+    );
+    assert_eq!(
+        value_of(DexValue::String(std::rc::Rc::from("yes"))),
+        boxed(false)
+    );
+    assert_eq!(value_of(DexValue::Null), boxed(false));
+}

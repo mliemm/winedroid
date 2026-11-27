@@ -4991,3 +4991,39 @@ fn resource_value_cache_forgets_a_buffer_so_reused_bytes_resolve_fresh() {
     crate::resource_table::forget_table_caches(&table);
     assert_ne!(read(&table), first);
 }
+
+// cite: frameworks-base ContextThemeWrapper.java#ContextThemeWrapper, getTheme
+#[test]
+fn builtin_context_theme_wrapper_with_theme_returns_that_theme() {
+    let program = DexProgram::new(Vec::new());
+    let init = builtin_method(
+        "Landroid/view/ContextThemeWrapper;",
+        "<init>",
+        "V",
+        &[
+            "Landroid/content/Context;",
+            "Landroid/content/res/Resources$Theme;",
+        ],
+    );
+    let get_theme = builtin_method(
+        "Landroid/content/Context;",
+        "getTheme",
+        "Landroid/content/res/Resources$Theme;",
+        &[],
+    );
+    let wrapper = program.allocate_object("Lcom/example/Wrapper;".to_owned());
+    let base = DexValue::Reference(std::rc::Rc::from("Landroid/content/Context;.bootstrap"));
+    let theme = program.allocate_object("Landroid/content/res/Resources$Theme;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &init,
+            Some(&test_invocation(vec![wrapper.clone(), base, theme.clone()]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&get_theme, Some(&test_invocation(vec![wrapper]))),
+        Some(DexExecutionResult::Value(theme))
+    );
+}

@@ -382,3 +382,55 @@ fn frameworks_activity_manager_running_app_processes_lists_this_process() {
         )))
     );
 }
+
+// cite: frameworks-base SystemServiceRegistry.java#registerService, getSystemService
+#[test]
+fn frameworks_context_system_service_maps_names_to_managers_and_unknown_to_null() {
+    let program = DexProgram::new(Vec::new());
+    let get = |name: &str| {
+        program.invoke_builtin_method(
+            &builtin_method(
+                "Landroid/content/Context;",
+                "getSystemService",
+                "Ljava/lang/Object;",
+                &["Ljava/lang/String;"],
+            ),
+            Some(&test_invocation(vec![
+                DexValue::Reference(std::rc::Rc::from("Landroid/content/Context;.bootstrap")),
+                DexValue::String(std::rc::Rc::from(name)),
+            ])),
+        )
+    };
+
+    let Some(DexExecutionResult::Value(audio)) = get("audio") else {
+        panic!("audio should resolve");
+    };
+    assert!(program.value_matches_type(&audio, "Landroid/media/AudioManager;"));
+    assert_eq!(
+        get("no_such_service"),
+        Some(DexExecutionResult::Value(DexValue::Null))
+    );
+}
+
+// cite: frameworks-base SystemServiceRegistry.java#registerService
+// cite: frameworks-base SystemVibrator.java#SystemVibrator
+#[test]
+fn frameworks_vibrator_service_is_a_vibrator() {
+    let program = DexProgram::new(Vec::new());
+    let Some(DexExecutionResult::Value(vibrator)) = program.invoke_builtin_method(
+        &builtin_method(
+            "Landroid/content/Context;",
+            "getSystemService",
+            "Ljava/lang/Object;",
+            &["Ljava/lang/String;"],
+        ),
+        Some(&test_invocation(vec![
+            DexValue::Reference(std::rc::Rc::from("Landroid/content/Context;.bootstrap")),
+            DexValue::String(std::rc::Rc::from("vibrator")),
+        ])),
+    ) else {
+        panic!("vibrator should resolve");
+    };
+
+    assert!(program.value_matches_type(&vibrator, "Landroid/os/Vibrator;"));
+}

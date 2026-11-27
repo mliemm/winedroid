@@ -1055,3 +1055,29 @@ fn main_loop_runs_idle_handlers_and_drops_those_returning_false() {
     assert_eq!(calls(&once), Some(DexValue::Int(1)));
     assert_eq!(calls(&repeating), Some(DexValue::Int(2)));
 }
+
+// cite: frameworks-base Handler.java#hasMessages, removeMessages
+#[test]
+fn frameworks_handler_has_messages_tracks_queued_and_removed_messages() {
+    let program = DexProgram::new(Vec::new());
+    let handler = new_handler(&program, "Landroid/os/Handler;");
+    let message = obtain_message(&program, &handler, 4);
+    let has = handler_method("hasMessages", "Z", &["I"]);
+    let remove = handler_method("removeMessages", "V", &["I"]);
+    let has_what = |what: i32| {
+        program.invoke_builtin_method(
+            &has,
+            Some(&test_invocation(vec![handler.clone(), DexValue::Int(what)])),
+        )
+    };
+
+    assert_eq!(has_what(4), Some(DexExecutionResult::Int(0)));
+    send_message(&program, &handler, &message);
+    assert_eq!(has_what(4), Some(DexExecutionResult::Int(1)));
+    assert_eq!(has_what(5), Some(DexExecutionResult::Int(0)));
+    program.invoke_builtin_method(
+        &remove,
+        Some(&test_invocation(vec![handler.clone(), DexValue::Int(4)])),
+    );
+    assert_eq!(has_what(4), Some(DexExecutionResult::Int(0)));
+}

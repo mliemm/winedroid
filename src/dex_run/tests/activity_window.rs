@@ -350,10 +350,24 @@ fn builtin_activity_get_application_returns_bootstrap_application() {
             std::rc::Rc::from("Landroid/app/Application;.bootstrap")
         )))
     );
+    let activity = program.allocate_object("Lcom/example/MainActivity;".to_owned());
+    let Some(DexExecutionResult::Value(component)) =
+        program.invoke_builtin_method(&get_component_name, Some(&test_invocation(vec![activity])))
+    else {
+        panic!("getComponentName should return a component");
+    };
     assert_eq!(
-        program.invoke_builtin_method(&get_component_name, None),
-        Some(DexExecutionResult::Value(DexValue::Reference(
-            std::rc::Rc::from("Landroid/content/ComponentName;.bootstrap")
+        program.invoke_builtin_method(
+            &builtin_method(
+                "Landroid/content/ComponentName;",
+                "getClassName",
+                "Ljava/lang/String;",
+                &[]
+            ),
+            Some(&test_invocation(vec![component]))
+        ),
+        Some(DexExecutionResult::Value(DexValue::String(
+            std::rc::Rc::from("com.example.MainActivity")
         )))
     );
     assert_eq!(
@@ -2455,4 +2469,115 @@ fn builtin_activity_reports_a_single_fullscreen_window() {
             Some(DexExecutionResult::Int(0))
         );
     }
+}
+
+// cite: frameworks-base ActivityManager.java#getAppTasks, AppTask, getTaskInfo
+// cite: frameworks-base TaskInfo.java#numActivities, baseActivity
+#[test]
+fn builtin_activity_manager_app_task_reports_the_activity_stack() {
+    let program = DexProgram::new(Vec::new());
+    let activity = program.allocate_object("Lcom/example/MainActivity;".to_owned());
+    program
+        .runtime
+        .borrow_mut()
+        .activity_stack
+        .push(RuntimeActivity {
+            class_descriptor: "Lcom/example/MainActivity;".to_owned(),
+            receiver: activity,
+            method_signature: "onCreate(Landroid/os/Bundle;)V".to_owned(),
+            result: "void".to_owned(),
+            object_start: 0,
+            content_layout_start: 0,
+            inflated_layout_start: 0,
+            initial_inflated_layout_end: 0,
+            dialog_content_layout_start: 0,
+            runtime_view_root_start: 0,
+            view_lookup_start: 0,
+            saved_chrome: None,
+            result_target: None,
+            result_code: 0,
+            result_intent: None,
+            adapter_rows_snapshot: std::collections::HashMap::new(),
+            adapter_item_clicks_snapshot: std::collections::HashMap::new(),
+        });
+    let manager = DexValue::Reference(std::rc::Rc::from("Landroid/app/ActivityManager;:activity"));
+    let Some(DexExecutionResult::Value(tasks)) = program.invoke_builtin_method(
+        &builtin_method(
+            "Landroid/app/ActivityManager;",
+            "getAppTasks",
+            "Ljava/util/List;",
+            &[],
+        ),
+        Some(&test_invocation(vec![manager])),
+    ) else {
+        panic!("getAppTasks should return a list");
+    };
+    let task = program
+        .runtime
+        .borrow()
+        .list_entries
+        .get(&map_identity_key(&tasks))
+        .and_then(|tasks| tasks.first().cloned())
+        .expect("one app task");
+    let Some(DexExecutionResult::Value(info)) = program.invoke_builtin_method(
+        &builtin_method(
+            "Landroid/app/ActivityManager$AppTask;",
+            "getTaskInfo",
+            "Landroid/app/ActivityManager$RecentTaskInfo;",
+            &[],
+        ),
+        Some(&test_invocation(vec![task])),
+    ) else {
+        panic!("getTaskInfo should return task info");
+    };
+    let field = |name: &str, type_descriptor: &str| {
+        program.read_stored_instance_field(
+            &info,
+            &DexFieldId {
+                class_descriptor: "Landroid/app/ActivityManager$RecentTaskInfo;".to_owned(),
+                type_descriptor: type_descriptor.to_owned(),
+                name: name.to_owned(),
+            },
+        )
+    };
+
+    assert_eq!(field("numActivities", "I"), Some(DexValue::Int(1)));
+    let Some(base) = field("baseActivity", "Landroid/content/ComponentName;") else {
+        panic!("baseActivity should be set");
+    };
+    assert_eq!(
+        program.invoke_builtin_method(
+            &builtin_method(
+                "Landroid/content/ComponentName;",
+                "getClassName",
+                "Ljava/lang/String;",
+                &[]
+            ),
+            Some(&test_invocation(vec![base]))
+        ),
+        Some(DexExecutionResult::Value(DexValue::String(
+            std::rc::Rc::from("com.example.MainActivity")
+        )))
+    );
+}
+
+// cite: frameworks-base Activity.java#hasWindowFocus
+#[test]
+fn builtin_activity_has_window_focus_only_after_resume() {
+    let program = DexProgram::new(Vec::new());
+    let activity = program.allocate_object("Lcom/example/MainActivity;".to_owned());
+    let has_focus = || {
+        program.invoke_builtin_method(
+            &builtin_method("Landroid/app/Activity;", "hasWindowFocus", "Z", &[]),
+            Some(&test_invocation(vec![activity.clone()])),
+        )
+    };
+
+    assert_eq!(has_focus(), Some(DexExecutionResult::Int(0)));
+    program
+        .runtime
+        .borrow_mut()
+        .window_focused_activities
+        .insert(map_identity_key(&activity));
+    assert_eq!(has_focus(), Some(DexExecutionResult::Int(1)));
 }

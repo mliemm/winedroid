@@ -114,6 +114,15 @@ pub(in crate::dex_run) fn view_id_field() -> DexFieldId {
     }
 }
 
+// cite: frameworks-base View.java#setFitsSystemWindows, getFitsSystemWindows, FITS_SYSTEM_WINDOWS
+pub(in crate::dex_run) fn view_fits_system_windows_field() -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Landroid/view/View;".to_owned(),
+        type_descriptor: "Z".to_owned(),
+        name: "fitsSystemWindows".to_owned(),
+    }
+}
+
 pub(in crate::dex_run) fn view_visibility_field() -> DexFieldId {
     DexFieldId {
         class_descriptor: "Landroid/view/View;".to_owned(),

@@ -32,6 +32,13 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Ljava/lang/String;"
+            && method.name == "getBytes"
+            && method.proto.return_type == "[B"
+        {
+            return self.string_get_bytes(method, invocation?);
+        }
+
+        if method.class_descriptor == "Ljava/lang/String;"
             && method.name == "<init>"
             && method.proto.descriptor_is("([BLjava/lang/String;)V")
         {

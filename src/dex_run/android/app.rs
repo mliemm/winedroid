@@ -729,7 +729,14 @@ impl DexProgram {
             "onActivityPostResumed",
             None,
             depth + 1,
-        )
+        )?;
+        // cite: frameworks-base ViewRootImpl.java#handleWindowFocusChanged, mHasWindowFocus
+        self.runtime
+            .borrow_mut()
+            .window_focused_activities
+            .insert(map_identity_key(activity_receiver));
+
+        Ok(())
     }
 
     fn dispatch_optional_activity_lifecycle_callback(
@@ -1161,6 +1168,9 @@ impl DexProgram {
         runtime
             .finished_activities
             .insert(map_identity_key(&finished.receiver));
+        runtime
+            .window_focused_activities
+            .remove(&map_identity_key(&finished.receiver));
         runtime
             .pending_destroyed_activities
             .push(map_identity_key(&finished.receiver));

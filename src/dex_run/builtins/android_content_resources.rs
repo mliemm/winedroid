@@ -505,6 +505,44 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        if method.matches_builtin_signature(
+            "Landroid/view/ContextThemeWrapper;",
+            "<init>",
+            "(Landroid/content/Context;Landroid/content/res/Resources$Theme;)V",
+        ) {
+            // cite: frameworks-base ContextThemeWrapper.java#ContextThemeWrapper, mTheme
+            let invocation = invocation?;
+            let [wrapper, base, theme] = invocation.arguments.as_slice() else {
+                return None;
+            };
+            if !dex_value_is_object_like(wrapper)
+                || !dex_value_is_nullable_object_like(base)
+                || !dex_value_is_nullable_object_like(theme)
+            {
+                return None;
+            }
+            if dex_value_is_object_like(base) {
+                self.write_stored_instance_field(
+                    wrapper,
+                    &DexFieldId {
+                        class_descriptor: "Landroid/content/ContextWrapper;".to_owned(),
+                        type_descriptor: "Landroid/content/Context;".to_owned(),
+                        name: "mBase".to_owned(),
+                    },
+                    base.clone(),
+                );
+            }
+            if dex_value_is_object_like(theme) {
+                self.write_stored_instance_field(
+                    wrapper,
+                    &context_theme_wrapper_theme_field(),
+                    theme.clone(),
+                );
+            }
+
+            return Some(DexExecutionResult::Void);
+        }
+
         if matches!(
             method.class_descriptor.as_str(),
             "Landroid/content/ContextWrapper;" | "Landroid/content/MutableContextWrapper;"

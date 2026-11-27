@@ -73,10 +73,7 @@ impl DexProgram {
             && method.name == "<init>"
             && method.proto.descriptor_is("(Ljava/lang/String;)V")
         {
-            let invocation = invocation?;
-            self.init_json_object_from_string(invocation)?;
-
-            return Some(DexExecutionResult::Void);
+            return self.init_json_object_from_string(invocation?);
         }
 
         if method.class_descriptor == "Lorg/json/JSONObject;"
@@ -533,8 +530,11 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
-        if method.class_descriptor == "Ljava/util/concurrent/LinkedBlockingQueue;"
-            && method.name == "<init>"
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/util/concurrent/LinkedBlockingQueue;"
+                | "Ljava/util/concurrent/LinkedBlockingDeque;"
+        ) && method.name == "<init>"
             && method.proto.descriptor_is("()V")
         {
             // cite: libcore LinkedBlockingQueue.java#LinkedBlockingQueue
@@ -548,6 +548,7 @@ impl DexProgram {
             method.class_descriptor.as_str(),
             "Ljava/util/concurrent/LinkedBlockingQueue;"
                 | "Ljava/util/concurrent/ArrayBlockingQueue;"
+                | "Ljava/util/concurrent/LinkedBlockingDeque;"
         ) && method.name == "<init>"
             && method.proto.descriptor_is("(I)V")
         {
@@ -575,6 +576,8 @@ impl DexProgram {
             method.class_descriptor.as_str(),
             "Ljava/util/concurrent/LinkedBlockingQueue;"
                 | "Ljava/util/concurrent/ArrayBlockingQueue;"
+                | "Ljava/util/concurrent/ConcurrentLinkedQueue;"
+                | "Ljava/util/concurrent/LinkedTransferQueue;"
         ) && method.name != "<init>"
             && !self.guest_overrides(method, invocation)
         {
@@ -901,6 +904,8 @@ fn json_throwable_detail_message_field() -> DexFieldId {
 impl DexProgram {
     // cite: libcore LinkedBlockingQueue.java#put, offer, poll, take, peek, size, clear, remainingCapacity
     // cite: libcore ArrayBlockingQueue.java#put, offer, poll, take, peek, size, clear, remainingCapacity
+    // cite: libcore ConcurrentLinkedQueue.java#offer, add, poll, peek, size, isEmpty
+    // cite: libcore LinkedTransferQueue.java#offer, add, put, poll, take, peek, size, isEmpty
     // cite: libcore AbstractQueue.java#add
     fn blocking_queue_method(
         &self,

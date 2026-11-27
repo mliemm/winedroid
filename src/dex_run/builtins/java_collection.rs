@@ -1359,6 +1359,20 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/util/ArrayDeque;"
+                | "Ljava/util/LinkedList;"
+                | "Ljava/util/concurrent/ConcurrentLinkedDeque;"
+                | "Ljava/util/concurrent/LinkedBlockingDeque;"
+        ) && method.name != "<init>"
+            && !self.guest_overrides(method, invocation)
+        {
+            if let Some(result) = self.array_deque_method(method, invocation?) {
+                return Some(result);
+            }
+        }
+
         if method.class_descriptor == "Ljava/util/ArrayDeque;" {
             if method.name == "offer" && method.proto.descriptor_is("(Ljava/lang/Object;)Z") {
                 // cite: libcore ArrayDeque.java#offer, offerLast, addLast
@@ -1441,4 +1455,105 @@ fn random_uuid_string() -> Option<String> {
         bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
         bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
     ))
+}
+
+impl DexProgram {
+    // cite: libcore ArrayDeque.java#size, isEmpty, peek, peekFirst, peekLast, poll, pollFirst, pollLast, push, addFirst, offerFirst, pop, removeFirst, removeLast, clear
+    // cite: libcore ConcurrentLinkedDeque.java#size, isEmpty, peekFirst, peekLast, pollFirst, pollLast, push, addFirst, offerFirst, pop, removeFirst, removeLast, clear
+    // cite: libcore LinkedBlockingDeque.java#putFirst, putLast, offerLast, takeFirst, takeLast
+    // cite: libcore LinkedList.java#descendingIterator, peekLast, pollLast, push, pop, linkLast
+    fn array_deque_method(
+        &self,
+        method: &DexMethodId,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        let deque = invocation.arguments.first()?;
+        if !dex_value_is_object_like(deque) {
+            return None;
+        }
+        let key = map_identity_key(deque);
+        let descriptor = method.proto.descriptor();
+        let mut runtime = self.runtime.borrow_mut();
+        let values = runtime.list_entries.entry(key).or_default();
+        let value =
+            |found: Option<DexValue>| DexExecutionResult::Value(found.unwrap_or(DexValue::Null));
+        Some(match (method.name.as_str(), descriptor.as_str()) {
+            ("size", "()I") => DexExecutionResult::Int(i32::try_from(values.len()).ok()?),
+            ("isEmpty", "()Z") => DexExecutionResult::Int(i32::from(values.is_empty())),
+            ("peek" | "peekFirst", "()Ljava/lang/Object;") => value(values.first().cloned()),
+            ("peekLast", "()Ljava/lang/Object;") => value(values.last().cloned()),
+            ("poll" | "pollFirst", "()Ljava/lang/Object;") => {
+                value((!values.is_empty()).then(|| values.remove(0)))
+            }
+            ("pollLast", "()Ljava/lang/Object;") => value(values.pop()),
+            ("push" | "addFirst" | "putFirst" | "addLast" | "putLast", "(Ljava/lang/Object;)V")
+            | ("offerFirst" | "offerLast" | "offer" | "add", "(Ljava/lang/Object;)Z") => {
+                let item = invocation.arguments.get(1)?;
+                let permits_null = method.class_descriptor == "Ljava/util/LinkedList;";
+                if !permits_null && matches!(item, DexValue::Null | DexValue::Int(0)) {
+                    drop(runtime);
+                    return Some(self.null_pointer_exception_result());
+                }
+                let at_front = matches!(
+                    method.name.as_str(),
+                    "push" | "addFirst" | "putFirst" | "offerFirst"
+                );
+                if at_front {
+                    values.insert(0, item.clone());
+                } else {
+                    values.push(item.clone());
+                }
+                if method.proto.return_type == "Z" {
+                    DexExecutionResult::Int(1)
+                } else {
+                    DexExecutionResult::Void
+                }
+            }
+            ("takeFirst" | "takeLast", "()Ljava/lang/Object;") => {
+                if values.is_empty() {
+                    return None;
+                }
+                let taken = if method.name == "takeLast" {
+                    values.pop()
+                } else {
+                    Some(values.remove(0))
+                };
+                value(taken)
+            }
+            ("pop" | "removeFirst" | "remove", "()Ljava/lang/Object;")
+            | ("removeLast", "()Ljava/lang/Object;") => {
+                let removed = if values.is_empty() {
+                    None
+                } else if method.name == "removeLast" {
+                    values.pop()
+                } else {
+                    Some(values.remove(0))
+                };
+                match removed {
+                    Some(removed) => DexExecutionResult::Value(removed),
+                    None => {
+                        drop(runtime);
+                        return Some(DexExecutionResult::Throw(
+                            self.allocate_object("Ljava/util/NoSuchElementException;".to_owned()),
+                        ));
+                    }
+                }
+            }
+            ("clear", "()V") => {
+                values.clear();
+                DexExecutionResult::Void
+            }
+            ("descendingIterator", "()Ljava/util/Iterator;") => {
+                let reversed = values.iter().rev().cloned().collect();
+                drop(runtime);
+                DexExecutionResult::Value(self.create_value_iterator_with_position(
+                    reversed,
+                    0,
+                    "Ljava/util/Iterator;",
+                    None,
+                )?)
+            }
+            _ => return None,
+        })
+    }
 }

@@ -1672,7 +1672,7 @@ impl DexProgram {
             })
     }
 
-    fn create_value_iterator_with_position(
+    pub(super) fn create_value_iterator_with_position(
         &self,
         values: Vec<DexValue>,
         position: usize,
@@ -2890,6 +2890,25 @@ impl DexProgram {
 
         if source_values.is_empty() {
             return Ok(0);
+        }
+
+        // cite: libcore TreeSet.java#addAll
+        // cite: libcore AbstractCollection.java#addAll
+        if value_class_descriptor(&invocation.arguments[0]).is_some_and(is_sorted_set_class) {
+            let mut changed = 0;
+            for value in source_values {
+                let add = DexInvocation {
+                    arguments: smallvec::smallvec![invocation.arguments[0].clone(), value],
+                    ..invocation.clone()
+                };
+                if self.sorted_set_add_rejects_null(&add) {
+                    return Err(WinedroidError::new(
+                        "sorted Set.addAll reached a null element; NullPointerException propagation from addAll is not modeled",
+                    ));
+                }
+                changed |= self.tree_set_add_value(&add, depth + 1)?;
+            }
+            return Ok(changed);
         }
 
         let mut values = self
@@ -4439,25 +4458,49 @@ impl DexProgram {
         Some(())
     }
 
-    pub(super) fn init_json_object_from_string(&self, invocation: &DexInvocation) -> Option<()> {
-        if invocation.arguments.len() != 2 {
-            return None;
-        }
-
-        let DexValue::String(source) = &invocation.arguments[1] else {
+    // cite: libcore JSONObject.java#JSONObject
+    // cite: libcore JSONTokener.java#nextValue, syntaxError
+    pub(super) fn init_json_object_from_string(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        let [object, source] = invocation.arguments.as_slice() else {
             return None;
         };
-        let object_key = map_identity_key(&invocation.arguments[0]);
+        let source = match source {
+            DexValue::String(source) => source,
+            DexValue::Null | DexValue::Int(0) => return Some(self.null_pointer_exception_result()),
+            _ => return None,
+        };
+        let object_key = map_identity_key(object);
 
         let mut chars = source.chars().peekable();
         skip_json_whitespace(&mut chars);
+        let message = match chars.peek() {
+            None => Some(format!("End of input at character 0 of {source}")),
+            Some('{') => None,
+            Some(_) => Some(format!("Value {source} cannot be converted to JSONObject")),
+        };
+        if let Some(message) = message {
+            let exception = self.allocate_object("Lorg/json/JSONException;".to_owned());
+            self.write_stored_instance_field(
+                &exception,
+                &DexFieldId {
+                    class_descriptor: "Ljava/lang/Throwable;".to_owned(),
+                    type_descriptor: "Ljava/lang/String;".to_owned(),
+                    name: "detailMessage".to_owned(),
+                },
+                DexValue::String(std::rc::Rc::from(message)),
+            );
+            return Some(DexExecutionResult::Throw(exception));
+        }
         let entries = self.parse_json_object_body(&mut chars)?;
         let mut runtime = self.runtime.borrow_mut();
         for (entry_key, value) in entries {
             runtime.insert_json_entry(object_key.clone(), entry_key, value);
         }
 
-        Some(())
+        Some(DexExecutionResult::Void)
     }
 
     // cite: libcore JSONObject.java#JSONObject, wrap
@@ -4489,12 +4532,13 @@ impl DexProgram {
                 let key = runtime
                     .map_entry_keys
                     .get(&(map_key.clone(), entry_key.clone()))?;
-                copied.push((key.clone(), value.clone()));
+                copied.push((entry_key.clone(), key.clone(), value.clone()));
             }
         }
+        copied.sort_by(|left, right| left.0.cmp(&right.0));
 
         let mut wrapped = Vec::new();
-        for (key, value) in copied {
+        for (_, key, value) in copied {
             match key {
                 DexValue::String(key) => wrapped.push((key.to_string(), self.json_wrap(&value)?)),
                 DexValue::Null => {
@@ -6567,6 +6611,23 @@ impl DexProgram {
         {
             let value = self.java_add_list_value_if_absent(invocation, depth + 1)?;
             return Ok(Some(DexExecutionResult::Int(value)));
+        }
+
+        // cite: libcore TreeSet.java#TreeSet
+        // cite: libcore ConcurrentSkipListSet.java#ConcurrentSkipListSet
+        if is_sorted_set_class(&method.class_descriptor)
+            && method.name == "<init>"
+            && method.proto.descriptor_is("(Ljava/util/Collection;)V")
+        {
+            let empty = DexInvocation {
+                arguments: smallvec::smallvec![invocation.arguments[0].clone()],
+                ..invocation.clone()
+            };
+            if self.initialize_tree_set(&empty).is_none() {
+                return Ok(None);
+            }
+            self.java_add_all_set_values(invocation, depth + 1)?;
+            return Ok(Some(DexExecutionResult::Void));
         }
 
         if is_supported_set_class(&method.class_descriptor)

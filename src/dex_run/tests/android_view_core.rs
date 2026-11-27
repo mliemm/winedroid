@@ -8534,3 +8534,60 @@ fn builtin_view_stub_starts_gone_and_stores_its_layout() {
     );
     assert!(program.value_matches_type(&stub, "Landroid/view/View;"));
 }
+
+// cite: frameworks-base View.java#View, setFitsSystemWindows, getFitsSystemWindows
+#[test]
+fn builtin_view_fits_system_windows_comes_from_xml_and_setter() {
+    let program = DexProgram::new(Vec::new());
+    let get = builtin_method("Landroid/view/View;", "getFitsSystemWindows", "Z", &[]);
+    let set = builtin_method("Landroid/view/View;", "setFitsSystemWindows", "V", &["Z"]);
+    let init = builtin_method(
+        "Landroid/widget/FrameLayout;",
+        "<init>",
+        "V",
+        &["Landroid/content/Context;", "Landroid/util/AttributeSet;"],
+    );
+    let attributes = DexValue::Reference(std::rc::Rc::from("Landroid/util/AttributeSet;:test"));
+    program.runtime.borrow_mut().xml_parsers.insert(
+        map_identity_key(&attributes),
+        XmlParserState {
+            resource_id: 0,
+            events: vec![crate::binary_xml::XmlEvent::Start(
+                crate::binary_xml::XmlStartElement {
+                    name: "FrameLayout".to_owned(),
+                    namespace: None,
+                    attributes: vec![crate::binary_xml::XmlAttribute {
+                        name: "fitsSystemWindows".to_owned(),
+                        namespace: Some("http://schemas.android.com/apk/res/android".to_owned()),
+                        value: crate::binary_xml::XmlValue::Boolean(true),
+                    }],
+                },
+            )],
+            position: XmlParserPosition::Event(0),
+            closed: false,
+        },
+    );
+    let inflated = program.allocate_object("Landroid/widget/FrameLayout;".to_owned());
+    let context = DexValue::Reference(std::rc::Rc::from("Landroid/content/Context;.bootstrap"));
+    program.invoke_builtin_method(
+        &init,
+        Some(&test_invocation(vec![
+            inflated.clone(),
+            context,
+            attributes,
+        ])),
+    );
+    let plain = program.allocate_object("Landroid/view/View;".to_owned());
+    let call = |method: &DexMethodId, view: &DexValue, mut arguments: Vec<DexValue>| {
+        arguments.insert(0, view.clone());
+        program.invoke_builtin_method(method, Some(&test_invocation(arguments)))
+    };
+
+    assert_eq!(
+        call(&get, &inflated, vec![]),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(call(&get, &plain, vec![]), Some(DexExecutionResult::Int(0)));
+    call(&set, &plain, vec![DexValue::Int(1)]);
+    assert_eq!(call(&get, &plain, vec![]), Some(DexExecutionResult::Int(1)));
+}

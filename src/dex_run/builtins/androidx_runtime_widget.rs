@@ -36,6 +36,7 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Landroidx/lifecycle/LifecycleOwnerKt;"
+            && self.load_class(&method.class_descriptor).is_none()
             && method.name == "getLifecycleScope"
             && method.proto.descriptor()
                 == "(Landroidx/lifecycle/LifecycleOwner;)Landroidx/lifecycle/LifecycleCoroutineScope;"
@@ -46,6 +47,7 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Landroidx/lifecycle/LifecycleKt;"
+            && self.load_class(&method.class_descriptor).is_none()
             && method.name == "getCoroutineScope"
             && method.proto.descriptor()
                 == "(Landroidx/lifecycle/Lifecycle;)Landroidx/lifecycle/LifecycleCoroutineScope;"

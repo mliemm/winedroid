@@ -1360,6 +1360,21 @@ impl DexProgram {
         Ok(typed_value_from_xml_value(value).map(|value| (resource_id, value)))
     }
 
+    pub(in crate::dex_run) fn attribute_set_current_element(
+        &self,
+        attributes: &DexValue,
+    ) -> Option<binary_xml::XmlStartElement> {
+        let runtime = self.runtime.borrow();
+        let parser = runtime.xml_parsers.get(&map_identity_key(attributes))?;
+        let XmlParserPosition::Event(event_index) = parser.position else {
+            return None;
+        };
+        match parser.events.get(event_index)? {
+            XmlEvent::Start(element) => Some(element.clone()),
+            XmlEvent::End(_) => None,
+        }
+    }
+
     pub(in crate::dex_run) fn typed_array_xml_attribute_value(
         &self,
         typed_array: &DexValue,
@@ -3167,8 +3182,9 @@ pub(in crate::dex_run) fn context_system_service(invocation: &DexInvocation) -> 
     let DexValue::String(service_name) = &invocation.arguments[1] else {
         return None;
     };
-    let class_descriptor = system_service_runtime_descriptor(service_name)
-        .unwrap_or("Landroid/content/SystemService;");
+    let Some(class_descriptor) = system_service_runtime_descriptor(service_name) else {
+        return Some(DexValue::Null);
+    };
 
     Some(DexValue::Reference(std::rc::Rc::from(format!(
         "{class_descriptor}:{service_name}"
@@ -3196,38 +3212,76 @@ pub(in crate::dex_run) fn context_system_service_by_class(
 // cite: frameworks-base SystemServiceRegistry.java#ACTIVITY_SERVICE, ActivityManager, ACCESSIBILITY_SERVICE, AccessibilityManager, AUTOFILL_MANAGER_SERVICE, AutofillManager, CLIPBOARD_SERVICE, ClipboardManager, INPUT_METHOD_SERVICE, InputMethodManager, LAYOUT_INFLATER_SERVICE, LayoutInflater, VIBRATOR_MANAGER_SERVICE, VibratorManager, SystemVibratorManager, WINDOW_SERVICE, WindowManager, WindowManagerImpl
 // cite: frameworks-base Context.java#getSystemService, CONNECTIVITY_SERVICE, ACTIVITY_SERVICE
 fn system_service_runtime_descriptor(service_name: &str) -> Option<&'static str> {
-    match service_name {
-        "accessibility" => Some("Landroid/view/accessibility/AccessibilityManager;"),
-        "activity" => Some("Landroid/app/ActivityManager;"),
-        "autofill" => Some("Landroid/view/autofill/AutofillManager;"),
-        "clipboard" => Some("Landroid/content/ClipboardManager;"),
-        "connectivity" => Some("Landroid/net/ConnectivityManager;"),
-        "input_method" => Some("Landroid/view/inputmethod/InputMethodManager;"),
-        "layout_inflater" => Some("Landroid/view/LayoutInflater;"),
-        "vibrator_manager" => Some("Landroid/os/SystemVibratorManager;"),
-        "window" => Some("Landroid/view/WindowManagerImpl;"),
-        _ => None,
-    }
+    SYSTEM_SERVICES
+        .iter()
+        .find(|(name, _)| *name == service_name)
+        .map(|(_, descriptor)| *descriptor)
 }
 
 // cite: frameworks-base SystemServiceRegistry.java#registerService
 // cite: frameworks-base Context.java#CLIPBOARD_SERVICE, CONNECTIVITY_SERVICE, VIBRATOR_SERVICE, VIBRATOR_MANAGER_SERVICE
 fn system_service_name_for_class(class_descriptor: &str) -> Option<&'static str> {
     match class_descriptor {
-        "Landroid/content/ClipboardManager;" | "Landroid/text/ClipboardManager;" => {
-            Some("clipboard")
-        }
-        "Landroid/app/ActivityManager;" => Some("activity"),
-        "Landroid/net/ConnectivityManager;" => Some("connectivity"),
-        "Landroid/view/autofill/AutofillManager;" => Some("autofill"),
-        "Landroid/view/inputmethod/InputMethodManager;" => Some("input_method"),
-        "Landroid/view/LayoutInflater;" => Some("layout_inflater"),
+        "Landroid/text/ClipboardManager;" => Some("clipboard"),
         "Landroid/os/Vibrator;" => Some("vibrator"),
         "Landroid/os/VibratorManager;" => Some("vibrator_manager"),
         "Landroid/view/WindowManager;" => Some("window"),
-        _ => None,
+        _ => SYSTEM_SERVICES
+            .iter()
+            .find(|(_, descriptor)| *descriptor == class_descriptor)
+            .map(|(name, _)| *name),
     }
 }
+
+// cite: frameworks-base SystemServiceRegistry.java#registerService
+// cite: frameworks-base Context.java#ACCESSIBILITY_SERVICE, ACCOUNT_SERVICE, ACTIVITY_SERVICE, ALARM_SERVICE, APP_OPS_SERVICE, AUDIO_SERVICE, AUTOFILL_MANAGER_SERVICE, BATTERY_SERVICE, CAMERA_SERVICE, CLIPBOARD_SERVICE, CONNECTIVITY_SERVICE, DISPLAY_SERVICE, DOWNLOAD_SERVICE, INPUT_METHOD_SERVICE, JOB_SCHEDULER_SERVICE, KEYGUARD_SERVICE, LAYOUT_INFLATER_SERVICE, LOCATION_SERVICE, MEDIA_SESSION_SERVICE, NOTIFICATION_SERVICE, POWER_SERVICE, SENSOR_SERVICE, SHORTCUT_SERVICE, STORAGE_SERVICE, TELEPHONY_SERVICE, TELEPHONY_SUBSCRIPTION_SERVICE, UI_MODE_SERVICE, USAGE_STATS_SERVICE, USER_SERVICE, VIBRATOR_MANAGER_SERVICE, VIBRATOR_SERVICE, WIFI_SERVICE, WINDOW_SERVICE
+const SYSTEM_SERVICES: &[(&str, &str)] = &[
+    (
+        "accessibility",
+        "Landroid/view/accessibility/AccessibilityManager;",
+    ),
+    ("account", "Landroid/accounts/AccountManager;"),
+    ("activity", "Landroid/app/ActivityManager;"),
+    ("alarm", "Landroid/app/AlarmManager;"),
+    ("appops", "Landroid/app/AppOpsManager;"),
+    ("audio", "Landroid/media/AudioManager;"),
+    ("autofill", "Landroid/view/autofill/AutofillManager;"),
+    ("batterymanager", "Landroid/os/BatteryManager;"),
+    ("camera", "Landroid/hardware/camera2/CameraManager;"),
+    ("clipboard", "Landroid/content/ClipboardManager;"),
+    ("connectivity", "Landroid/net/ConnectivityManager;"),
+    ("display", "Landroid/hardware/display/DisplayManager;"),
+    ("download", "Landroid/app/DownloadManager;"),
+    (
+        "input_method",
+        "Landroid/view/inputmethod/InputMethodManager;",
+    ),
+    ("jobscheduler", "Landroid/app/job/JobScheduler;"),
+    ("keyguard", "Landroid/app/KeyguardManager;"),
+    ("layout_inflater", "Landroid/view/LayoutInflater;"),
+    ("location", "Landroid/location/LocationManager;"),
+    (
+        "media_session",
+        "Landroid/media/session/MediaSessionManager;",
+    ),
+    ("notification", "Landroid/app/NotificationManager;"),
+    ("phone", "Landroid/telephony/TelephonyManager;"),
+    ("power", "Landroid/os/PowerManager;"),
+    ("sensor", "Landroid/hardware/SensorManager;"),
+    ("shortcut", "Landroid/content/pm/ShortcutManager;"),
+    ("storage", "Landroid/os/storage/StorageManager;"),
+    (
+        "telephony_subscription_service",
+        "Landroid/telephony/SubscriptionManager;",
+    ),
+    ("uimode", "Landroid/app/UiModeManager;"),
+    ("usagestats", "Landroid/app/usage/UsageStatsManager;"),
+    ("user", "Landroid/os/UserManager;"),
+    ("vibrator", "Landroid/os/SystemVibrator;"),
+    ("vibrator_manager", "Landroid/os/SystemVibratorManager;"),
+    ("wifi", "Landroid/net/wifi/WifiManager;"),
+    ("window", "Landroid/view/WindowManagerImpl;"),
+];
 
 impl DexProgram {
     pub(in crate::dex_run) fn context_theme_wrapper_init(
@@ -4279,6 +4333,12 @@ impl DexProgram {
         if !dex_value_is_object_like(context) {
             return None;
         }
+        // cite: frameworks-base ContextThemeWrapper.java#getTheme, mTheme
+        if let Some(theme @ (DexValue::Object(_) | DexValue::Reference(_))) =
+            self.read_stored_instance_field(context, &context_theme_wrapper_theme_field())
+        {
+            return Some(theme);
+        }
 
         let theme = context_theme_reference(context)?;
         let theme_key = map_identity_key(&theme);
@@ -4484,6 +4544,14 @@ fn context_wrapper_base_field() -> DexFieldId {
         class_descriptor: "Landroid/content/ContextWrapper;".to_owned(),
         type_descriptor: "Landroid/content/Context;".to_owned(),
         name: "mBase".to_owned(),
+    }
+}
+
+pub(in crate::dex_run) fn context_theme_wrapper_theme_field() -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Landroid/view/ContextThemeWrapper;".to_owned(),
+        type_descriptor: "Landroid/content/res/Resources$Theme;".to_owned(),
+        name: "mTheme".to_owned(),
     }
 }
 

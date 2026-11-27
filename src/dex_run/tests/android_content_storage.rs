@@ -3183,3 +3183,140 @@ fn builtin_intent_typed_extras_return_defaults_on_missing_or_mismatched_types() 
         );
     }
 }
+
+// cite: frameworks-base ComponentName.java#ComponentName, getClassName, getShortClassName, flattenToShortString, toString
+#[test]
+fn builtin_component_name_stores_package_and_class_and_formats_like_aosp() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Landroid/content/ComponentName;";
+    let init = builtin_method(
+        class,
+        "<init>",
+        "V",
+        &["Ljava/lang/String;", "Ljava/lang/String;"],
+    );
+    let component = program.allocate_object(class.to_owned());
+    let string = |value: &str| DexValue::String(std::rc::Rc::from(value));
+    let text = |name: &str| {
+        program.invoke_builtin_method(
+            &builtin_method(class, name, "Ljava/lang/String;", &[]),
+            Some(&test_invocation(vec![component.clone()])),
+        )
+    };
+    program.invoke_builtin_method(
+        &init,
+        Some(&test_invocation(vec![
+            component.clone(),
+            string("com.example"),
+            string("com.example.ui.Main"),
+        ])),
+    );
+
+    assert_eq!(
+        text("getClassName"),
+        Some(DexExecutionResult::Value(string("com.example.ui.Main")))
+    );
+    assert_eq!(
+        text("getShortClassName"),
+        Some(DexExecutionResult::Value(string(".ui.Main")))
+    );
+    assert_eq!(
+        text("flattenToShortString"),
+        Some(DexExecutionResult::Value(string("com.example/.ui.Main")))
+    );
+    assert_eq!(
+        text("toString"),
+        Some(DexExecutionResult::Value(string(
+            "ComponentInfo{com.example/com.example.ui.Main}"
+        )))
+    );
+}
+
+// cite: frameworks-base IntentFilter.java#IntentFilter, countActions
+#[test]
+fn builtin_intent_filter_action_constructor_adds_the_action() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Landroid/content/IntentFilter;";
+    let filter = program.allocate_object(class.to_owned());
+    program.invoke_builtin_method(
+        &builtin_method(class, "<init>", "V", &["Ljava/lang/String;"]),
+        Some(&test_invocation(vec![
+            filter.clone(),
+            DexValue::String(std::rc::Rc::from("android.intent.action.SCREEN_OFF")),
+        ])),
+    );
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &builtin_method(class, "countActions", "I", &[]),
+            Some(&test_invocation(vec![filter]))
+        ),
+        Some(DexExecutionResult::Int(1))
+    );
+}
+
+// cite: frameworks-base IntentFilter.java#addAction, getAction, hasAction, matchAction, countActions
+#[test]
+fn builtin_intent_filter_actions_are_unique_and_indexed() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Landroid/content/IntentFilter;";
+    let filter = program.allocate_object(class.to_owned());
+    let string = |value: &str| DexValue::String(std::rc::Rc::from(value));
+    let call = |name: &str, ret: &str, params: &[&str], arguments: Vec<DexValue>| {
+        let mut values = vec![filter.clone()];
+        values.extend(arguments);
+        program.invoke_builtin_method(
+            &builtin_method(class, name, ret, params),
+            Some(&test_invocation(values)),
+        )
+    };
+    for action in ["a", "b", "a"] {
+        call(
+            "addAction",
+            "V",
+            &["Ljava/lang/String;"],
+            vec![string(action)],
+        );
+    }
+
+    assert_eq!(
+        call("countActions", "I", &[], vec![]),
+        Some(DexExecutionResult::Int(2))
+    );
+    assert_eq!(
+        call(
+            "getAction",
+            "Ljava/lang/String;",
+            &["I"],
+            vec![DexValue::Int(1)]
+        ),
+        Some(DexExecutionResult::Value(string("b")))
+    );
+    assert!(matches!(
+        call(
+            "getAction",
+            "Ljava/lang/String;",
+            &["I"],
+            vec![DexValue::Int(2)]
+        ),
+        Some(DexExecutionResult::Throw(_))
+    ));
+    assert_eq!(
+        call(
+            "matchAction",
+            "Z",
+            &["Ljava/lang/String;"],
+            vec![string("a")]
+        ),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(
+        call(
+            "hasAction",
+            "Z",
+            &["Ljava/lang/String;"],
+            vec![DexValue::Null]
+        ),
+        Some(DexExecutionResult::Int(0))
+    );
+}

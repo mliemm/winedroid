@@ -2246,6 +2246,18 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Landroid/os/Handler;"
+            && method.name == "hasMessages"
+            && (method.proto.descriptor_is("(I)Z")
+                || method.proto.descriptor_is("(ILjava/lang/Object;)Z"))
+            && !self.guest_overrides(method, invocation)
+        {
+            let invocation = invocation?;
+            let value = self.handler_has_messages(invocation)?;
+
+            return Some(DexExecutionResult::Int(value));
+        }
+
+        if method.class_descriptor == "Landroid/os/Handler;"
             && method.name == "removeMessages"
             && (method.proto.descriptor_is("(I)V")
                 || method.proto.descriptor_is("(ILjava/lang/Object;)V"))

@@ -667,6 +667,45 @@ impl DexProgram {
         Some(())
     }
 
+    // cite: libcore String.java#getBytes
+    pub(super) fn string_get_bytes(
+        &self,
+        method: &DexMethodId,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        let text = self.string_text(invocation.arguments.first()?)?;
+        let charset = match (
+            method.proto.descriptor().as_str(),
+            invocation.arguments.get(1),
+        ) {
+            ("()[B", None) => "UTF-8".to_owned(),
+            ("(Ljava/lang/String;)[B", Some(name)) => self.string_text(name)?,
+            ("(Ljava/nio/charset/Charset;)[B", Some(DexValue::Reference(reference))) => reference
+                .strip_prefix("Ljava/nio/charset/Charset;:")?
+                .to_owned(),
+            (_, Some(DexValue::Null | DexValue::Int(0))) => {
+                return Some(self.null_pointer_exception_result());
+            }
+            _ => return None,
+        };
+        let Some(bytes) = encode_charset_text(&text, &charset) else {
+            if method.proto.descriptor() == "(Ljava/lang/String;)[B" {
+                return Some(DexExecutionResult::Throw(self.allocate_object(
+                    "Ljava/io/UnsupportedEncodingException;".to_owned(),
+                )));
+            }
+            return None;
+        };
+        let values = bytes
+            .into_iter()
+            .map(|byte| DexValue::Int(i32::from(byte as i8)))
+            .collect();
+
+        Some(DexExecutionResult::Value(
+            self.allocate_filled_array("[B".to_owned(), values),
+        ))
+    }
+
     fn byte_array_contents(&self, value: &DexValue) -> Option<Vec<u8>> {
         let key = map_identity_key(value);
         let runtime = self.runtime.borrow();
@@ -3705,6 +3744,37 @@ pub(super) fn decode_charset_bytes(bytes: &[u8], charset: &str) -> Option<String
         }
         _ => None,
     }
+}
+
+// cite: libcore String.java#getBytes
+// cite: libcore StandardCharsets.java#UTF_8, US_ASCII, ISO_8859_1, UTF_16, UTF_16BE, UTF_16LE
+pub(super) fn encode_charset_text(text: &str, charset: &str) -> Option<Vec<u8>> {
+    let charset = charset.to_ascii_uppercase().replace('_', "-");
+    let units = || text.encode_utf16();
+    Some(match charset.as_str() {
+        "UTF-8" | "UTF8" => text.as_bytes().to_vec(),
+        "US-ASCII" | "ASCII" | "ANSI-X3.4-1968" => text
+            .chars()
+            .map(|character| {
+                if character.is_ascii() {
+                    character as u8
+                } else {
+                    b'?'
+                }
+            })
+            .collect(),
+        "ISO-8859-1" | "ISO8859-1" | "ISO8859-1:1987" | "LATIN1" => text
+            .chars()
+            .map(|character| u8::try_from(u32::from(character)).unwrap_or(b'?'))
+            .collect(),
+        "UTF-16" => [0xfe, 0xff]
+            .into_iter()
+            .chain(units().flat_map(u16::to_be_bytes))
+            .collect(),
+        "UTF-16BE" => units().flat_map(u16::to_be_bytes).collect(),
+        "UTF-16LE" => units().flat_map(u16::to_le_bytes).collect(),
+        _ => return None,
+    })
 }
 
 pub(super) fn boxed_reference_display_value(reference: &str) -> Option<String> {

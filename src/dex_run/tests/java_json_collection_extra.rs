@@ -928,3 +928,34 @@ fn libcore_json_object_copy_constructor_keeps_named_present_keys_in_name_order()
         )))
     );
 }
+
+// cite: libcore JSONObject.java#JSONObject
+// cite: libcore JSONTokener.java#nextValue, syntaxError
+#[test]
+fn libcore_json_object_string_constructor_rejects_empty_and_non_object_input() {
+    let program = DexProgram::new(Vec::new());
+    let init = builtin_method(
+        "Lorg/json/JSONObject;",
+        "<init>",
+        "V",
+        &["Ljava/lang/String;"],
+    );
+    let construct = |source: &str| {
+        let object = program.allocate_object("Lorg/json/JSONObject;".to_owned());
+        program.invoke_builtin_method(
+            &init,
+            Some(&test_invocation(vec![
+                object,
+                DexValue::String(std::rc::Rc::from(source)),
+            ])),
+        )
+    };
+
+    for source in ["", "  ", "[1]"] {
+        let Some(DexExecutionResult::Throw(error)) = construct(source) else {
+            panic!("{source:?} should throw");
+        };
+        assert!(program.value_matches_type(&error, "Lorg/json/JSONException;"));
+    }
+    assert_eq!(construct("{}"), Some(DexExecutionResult::Void));
+}

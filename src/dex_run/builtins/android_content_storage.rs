@@ -374,13 +374,54 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Landroid/content/IntentFilter;"
-            && method.name == "addAction"
+            && matches!(method.name.as_str(), "addAction" | "<init>")
             && method.proto.descriptor_is("(Ljava/lang/String;)V")
         {
+            // cite: frameworks-base IntentFilter.java#IntentFilter, addAction
             let invocation = invocation?;
             self.add_intent_filter_action(invocation)?;
 
             return Some(DexExecutionResult::Void);
+        }
+
+        if method.class_descriptor == "Landroid/content/IntentFilter;"
+            && matches!(
+                (method.name.as_str(), method.proto.descriptor().as_str()),
+                ("getAction", "(I)Ljava/lang/String;")
+                    | ("hasAction" | "matchAction", "(Ljava/lang/String;)Z")
+            )
+            && !self.guest_overrides(method, invocation)
+        {
+            // cite: frameworks-base IntentFilter.java#getAction, hasAction, matchAction
+            let invocation = invocation?;
+            let filter = invocation.arguments.first()?;
+            let actions = self
+                .runtime
+                .borrow()
+                .intent_filter_actions
+                .get(&map_identity_key(filter))
+                .cloned()
+                .unwrap_or_default();
+            return Some(match invocation.arguments.get(1)? {
+                DexValue::Int(index) => match usize::try_from(*index)
+                    .ok()
+                    .and_then(|index| actions.get(index))
+                {
+                    Some(action) => DexExecutionResult::Value(DexValue::String(std::rc::Rc::from(
+                        action.as_str(),
+                    ))),
+                    None => DexExecutionResult::Throw(
+                        self.allocate_object("Ljava/lang/IndexOutOfBoundsException;".to_owned()),
+                    ),
+                },
+                DexValue::String(action) => DexExecutionResult::Int(i32::from(
+                    actions
+                        .iter()
+                        .any(|known| known.as_str() == action.as_ref()),
+                )),
+                DexValue::Null if method.name != "getAction" => DexExecutionResult::Int(0),
+                _ => return None,
+            });
         }
 
         if method.class_descriptor == "Landroid/content/IntentFilter;"
@@ -401,12 +442,11 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Landroid/content/ComponentName;"
-            && method.name == "<init>"
-            && method
-                .proto
-                .descriptor_is("(Landroid/content/Context;Ljava/lang/Class;)V")
+            && !self.guest_overrides(method, invocation)
         {
-            return Some(DexExecutionResult::Void);
+            if let Some(result) = self.component_name_method(method, invocation?) {
+                return Some(result);
+            }
         }
 
         if method.class_descriptor == "Landroid/content/Context;"
@@ -1445,5 +1485,104 @@ impl DexProgram {
                 _ => return None,
             },
         )
+    }
+}
+
+fn component_name_field(name: &str) -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Landroid/content/ComponentName;".to_owned(),
+        type_descriptor: "Ljava/lang/String;".to_owned(),
+        name: name.to_owned(),
+    }
+}
+
+// cite: frameworks-base ComponentName.java#getShortClassName, appendShortClassName
+fn component_short_class_name(package: &str, class: &str) -> String {
+    match class.strip_prefix(package) {
+        Some(rest) if rest.starts_with('.') && rest.len() > 1 => rest.to_owned(),
+        _ => class.to_owned(),
+    }
+}
+
+impl DexProgram {
+    // cite: frameworks-base ComponentName.java#ComponentName, mPackage, mClass
+    pub(in crate::dex_run) fn new_component_name(&self, package: &str, class: &str) -> DexValue {
+        let component = self.allocate_object("Landroid/content/ComponentName;".to_owned());
+        self.write_component_name(&component, package, class);
+        component
+    }
+
+    fn write_component_name(&self, component: &DexValue, package: &str, class: &str) {
+        for (field, value) in [("mPackage", package), ("mClass", class)] {
+            self.write_stored_instance_field(
+                component,
+                &component_name_field(field),
+                DexValue::String(std::rc::Rc::from(value)),
+            );
+        }
+    }
+
+    // cite: frameworks-base ComponentName.java#ComponentName, getPackageName, getClassName, getShortClassName, flattenToString, flattenToShortString, toString
+    fn component_name_method(
+        &self,
+        method: &DexMethodId,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        let arguments = invocation.arguments.as_slice();
+        let component = arguments.first()?;
+        if !dex_value_is_object_like(component) {
+            return None;
+        }
+        let descriptor = method.proto.descriptor();
+        if method.name == "<init>" {
+            let package_name = || self.package_name.clone().unwrap_or_default();
+            let (package, class) = match (descriptor.as_str(), arguments.get(1), arguments.get(2)) {
+                (
+                    "(Ljava/lang/String;Ljava/lang/String;)V",
+                    Some(DexValue::String(package)),
+                    Some(DexValue::String(class)),
+                ) => (package.to_string(), class.to_string()),
+                (
+                    "(Landroid/content/Context;Ljava/lang/String;)V",
+                    Some(_),
+                    Some(DexValue::String(class)),
+                ) => (package_name(), class.to_string()),
+                ("(Landroid/content/Context;Ljava/lang/Class;)V", Some(_), Some(class)) => {
+                    let descriptor = class_reference_descriptor_from_value(class)?;
+                    (package_name(), descriptor_to_java_name(descriptor)?)
+                }
+                (_, _, Some(DexValue::Null | DexValue::Int(0))) => {
+                    return Some(self.null_pointer_exception_result());
+                }
+                _ => return None,
+            };
+            self.write_component_name(component, &package, &class);
+            return Some(DexExecutionResult::Void);
+        }
+
+        let read = |name: &str| match self
+            .read_stored_instance_field(component, &component_name_field(name))
+        {
+            Some(DexValue::String(value)) => Some(value.to_string()),
+            _ => None,
+        };
+        let (package, class) = (read("mPackage")?, read("mClass")?);
+        let text = match (method.name.as_str(), descriptor.as_str()) {
+            ("getPackageName", "()Ljava/lang/String;") => package,
+            ("getClassName", "()Ljava/lang/String;") => class,
+            ("getShortClassName", "()Ljava/lang/String;") => {
+                component_short_class_name(&package, &class)
+            }
+            ("flattenToString", "()Ljava/lang/String;") => format!("{package}/{class}"),
+            ("flattenToShortString", "()Ljava/lang/String;") => {
+                format!("{package}/{}", component_short_class_name(&package, &class))
+            }
+            ("toString", "()Ljava/lang/String;") => format!("ComponentInfo{{{package}/{class}}}"),
+            _ => return None,
+        };
+
+        Some(DexExecutionResult::Value(DexValue::String(
+            std::rc::Rc::from(text),
+        )))
     }
 }

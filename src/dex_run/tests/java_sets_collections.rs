@@ -2115,3 +2115,38 @@ fn builtin_collections_unmodifiable_set_returns_same_set_reference() {
         Some(DexExecutionResult::Value(set))
     );
 }
+
+// cite: libcore ConcurrentSkipListSet.java#ConcurrentSkipListSet
+// cite: libcore TreeSet.java#addAll
+#[test]
+fn libcore_sorted_set_collection_constructor_sorts_its_elements() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Ljava/util/concurrent/ConcurrentSkipListSet;";
+    let source = program.allocate_object("Ljava/util/ArrayList;".to_owned());
+    let string = |value: &str| DexValue::String(std::rc::Rc::from(value));
+    program.runtime.borrow_mut().list_entries.insert(
+        map_identity_key(&source),
+        vec![string("c"), string("a"), string("b"), string("a")],
+    );
+    let set = program.allocate_object(class.to_owned());
+
+    assert_eq!(
+        program
+            .invoke_java_collection_equality_method(
+                &builtin_method(class, "<init>", "V", &["Ljava/util/Collection;"]),
+                &test_invocation(vec![set.clone(), source]),
+                0
+            )
+            .unwrap(),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program
+            .runtime
+            .borrow()
+            .list_entries
+            .get(&map_identity_key(&set))
+            .cloned(),
+        Some(vec![string("a"), string("b"), string("c")])
+    );
+}

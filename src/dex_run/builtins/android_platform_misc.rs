@@ -438,6 +438,30 @@ impl DexProgram {
             return Some(DexExecutionResult::Int(value));
         }
 
+        if method.class_descriptor == "Landroid/graphics/Color;" {
+            // cite: frameworks-base Color.java#alpha, red, green, blue, rgb
+            let int = |index: usize| match invocation?.arguments.get(index)? {
+                DexValue::Int(value) => Some(*value),
+                _ => None,
+            };
+            let channel = match (method.name.as_str(), method.proto.descriptor().as_str()) {
+                ("alpha", "(I)I") => int(0).map(|color| ((color as u32) >> 24) as i32),
+                ("red", "(I)I") => int(0).map(|color| (color >> 16) & 0xff),
+                ("green", "(I)I") => int(0).map(|color| (color >> 8) & 0xff),
+                ("blue", "(I)I") => int(0).map(|color| color & 0xff),
+                ("rgb", "(III)I") => match (int(0), int(1), int(2)) {
+                    (Some(red), Some(green), Some(blue)) => {
+                        Some((0xff00_0000u32 as i32) | (red << 16) | (green << 8) | blue)
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(value) = channel {
+                return Some(DexExecutionResult::Int(value));
+            }
+        }
+
         if method.class_descriptor == "Landroid/graphics/Color;"
             && method.name == "argb"
             && method.proto.descriptor_is("(IIII)I")
@@ -1335,6 +1359,96 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(
                 self.allocate_tracked_list(Vec::new()),
             ));
+        }
+
+        // cite: frameworks-base TelephonyManager.java#getSimCountryIso, getSimOperatorName, getNetworkOperator, getNetworkOperatorName, getNetworkOperatorForPhone, getTelephonyProperty
+        let telephony_property = match method.name.as_str() {
+            "getSimCountryIso" => Some("gsm.sim.operator.iso-country"),
+            "getSimOperatorName" => Some("gsm.sim.operator.alpha"),
+            "getNetworkOperator" => Some("gsm.operator.numeric"),
+            "getNetworkOperatorName" => Some("gsm.operator.alpha"),
+            _ => None,
+        };
+        if let Some(property) = telephony_property.filter(|_| {
+            method.class_descriptor == "Landroid/telephony/TelephonyManager;"
+                && method.proto.descriptor_is("()Ljava/lang/String;")
+                && !self.guest_overrides(method, invocation)
+        }) {
+            let receiver = invocation?.arguments.first()?;
+            if !dex_value_is_object_like(receiver) {
+                return None;
+            }
+            let value = crate::native::bionic::props::get(property)
+                .and_then(|list| list.split(',').next().map(str::to_owned))
+                .unwrap_or_default();
+            return Some(DexExecutionResult::Value(DexValue::String(
+                std::rc::Rc::from(value),
+            )));
+        }
+
+        if method.class_descriptor == "Landroid/media/AudioManager;"
+            && matches!(
+                method.name.as_str(),
+                "getStreamMaxVolume" | "getStreamVolume"
+            )
+            && method.proto.descriptor_is("(I)I")
+            && !self.guest_overrides(method, invocation)
+        {
+            // cite: frameworks-base AudioManager.java#getStreamMaxVolume, getStreamVolume
+            let [receiver, DexValue::Int(stream)] = invocation?.arguments.as_slice() else {
+                return None;
+            };
+            if !dex_value_is_object_like(receiver) {
+                return None;
+            }
+            let Some((max, default)) = audio_stream_volume_limits(*stream) else {
+                return Some(DexExecutionResult::Throw(
+                    self.allocate_generated_exception(DexGeneratedException {
+                        class_descriptor: "Ljava/lang/IllegalArgumentException;".to_owned(),
+                        detail_message: Some(format!("Bad stream type {stream}")),
+                    }),
+                ));
+            };
+            return Some(DexExecutionResult::Int(
+                if method.name == "getStreamMaxVolume" {
+                    max
+                } else {
+                    default
+                },
+            ));
+        }
+
+        // cite: frameworks-base ActivityManager.java#getAppTasks, AppTask, getTaskInfo
+        if method.matches_builtin_signature(
+            "Landroid/app/ActivityManager;",
+            "getAppTasks",
+            "()Ljava/util/List;",
+        ) {
+            let receiver = invocation?.arguments.first()?;
+            if !dex_value_is_object_like(receiver) {
+                return None;
+            }
+            let has_task = !self.runtime.borrow().activity_stack.is_empty();
+            let tasks = if has_task {
+                vec![self.allocate_object("Landroid/app/ActivityManager$AppTask;".to_owned())]
+            } else {
+                Vec::new()
+            };
+
+            return Some(DexExecutionResult::Value(self.allocate_tracked_list(tasks)));
+        }
+
+        if method.matches_builtin_signature(
+            "Landroid/app/ActivityManager$AppTask;",
+            "getTaskInfo",
+            "()Landroid/app/ActivityManager$RecentTaskInfo;",
+        ) {
+            let task = invocation?.arguments.first()?;
+            if !dex_value_is_object_like(task) {
+                return None;
+            }
+
+            return Some(DexExecutionResult::Value(self.recent_task_info()?));
         }
 
         if method.class_descriptor == "Landroid/app/ActivityManager;"
@@ -3683,6 +3797,81 @@ const RUNNING_APP_PROCESS_INFO: &str = "Landroid/app/ActivityManager$RunningAppP
 const ACTIVITY_MANAGER_IMPORTANCE_FOREGROUND: i32 = 100;
 
 impl DexProgram {
+    // cite: frameworks-base TaskInfo.java#taskId, isRunning, baseIntent, baseActivity, topActivity, realActivity, numActivities
+    // cite: frameworks-base ActivityManager.java#RecentTaskInfo, id, persistentId
+    fn recent_task_info(&self) -> Option<DexValue> {
+        let (root, top, count) = {
+            let runtime = self.runtime.borrow();
+            let root = runtime.activity_stack.first()?.receiver.clone();
+            let top = runtime.activity_stack.last()?.receiver.clone();
+            (root, top, runtime.activity_stack.len())
+        };
+        let package = self.package_name.clone().unwrap_or_default();
+        let component = |activity: &DexValue| {
+            let class = descriptor_to_java_name(value_class_descriptor(activity)?)?;
+            Some(self.new_component_name(&package, &class))
+        };
+        let (root_component, top_component) = (component(&root)?, component(&top)?);
+        let base_intent = self
+            .read_stored_instance_field(
+                &root,
+                &DexFieldId {
+                    class_descriptor: "Landroid/app/Activity;".to_owned(),
+                    type_descriptor: "Landroid/content/Intent;".to_owned(),
+                    name: "mIntent".to_owned(),
+                },
+            )
+            .unwrap_or_else(|| {
+                DexValue::Reference(std::rc::Rc::from("Landroid/content/Intent;.bootstrap"))
+            });
+        let info = self.allocate_object("Landroid/app/ActivityManager$RecentTaskInfo;".to_owned());
+        let fields = [
+            ("taskId", "I", DexValue::Int(1)),
+            ("id", "I", DexValue::Int(1)),
+            ("persistentId", "I", DexValue::Int(1)),
+            ("isRunning", "Z", DexValue::Int(1)),
+            (
+                "numActivities",
+                "I",
+                DexValue::Int(i32::try_from(count).ok()?),
+            ),
+            ("baseIntent", "Landroid/content/Intent;", base_intent),
+            (
+                "baseActivity",
+                "Landroid/content/ComponentName;",
+                root_component.clone(),
+            ),
+            (
+                "realActivity",
+                "Landroid/content/ComponentName;",
+                root_component,
+            ),
+            (
+                "topActivity",
+                "Landroid/content/ComponentName;",
+                top_component,
+            ),
+        ];
+        for (name, type_descriptor, value) in fields {
+            for owner in [
+                "Landroid/app/ActivityManager$RecentTaskInfo;",
+                "Landroid/app/TaskInfo;",
+            ] {
+                self.write_stored_instance_field(
+                    &info,
+                    &DexFieldId {
+                        class_descriptor: owner.to_owned(),
+                        type_descriptor: type_descriptor.to_owned(),
+                        name: name.to_owned(),
+                    },
+                    value.clone(),
+                );
+            }
+        }
+
+        Some(info)
+    }
+
     fn activity_manager_running_app_processes(
         &self,
         invocation: &DexInvocation,
@@ -3728,4 +3917,42 @@ impl DexProgram {
 
         Some(self.allocate_tracked_list(vec![info]))
     }
+}
+
+// cite: frameworks-base AudioService.java#MAX_STREAM_VOLUME, ensureValidStreamType
+// cite: frameworks-base AudioSystem.java#DEFAULT_STREAM_VOLUME
+fn audio_stream_volume_limits(stream: i32) -> Option<(i32, i32)> {
+    const MAX_STREAM_VOLUME: [i32; 12] = [5, 7, 7, 15, 7, 7, 15, 7, 15, 15, 15, 15];
+    const DEFAULT_STREAM_VOLUME: [i32; 12] = [4, 7, 5, 5, 6, 5, 7, 7, 5, 5, 5, 5];
+    let index = usize::try_from(stream).ok()?;
+    let property = |name: &str| {
+        crate::native::bionic::props::get(name)
+            .and_then(|value| value.trim().parse::<i32>().ok())
+            .filter(|value| *value != -1)
+    };
+    let max_property = match stream {
+        0 => property("ro.config.vc_call_vol_steps"),
+        1 => property("ro.config.system_vol_steps"),
+        3 => property("ro.config.media_vol_steps"),
+        4 => property("ro.config.alarm_vol_steps"),
+        _ => None,
+    };
+    let max = max_property.unwrap_or(*MAX_STREAM_VOLUME.get(index)?);
+    let default = match stream {
+        0 => property("ro.config.vc_call_vol_default")
+            .filter(|value| (0..=max).contains(value))
+            .unwrap_or(max * 3 / 4),
+        1 => property("ro.config.system_vol_default")
+            .filter(|value| *value <= max)
+            .unwrap_or(max),
+        3 => property("ro.config.media_vol_default")
+            .filter(|value| (0..=max).contains(value))
+            .unwrap_or(max / 3),
+        4 => property("ro.config.alarm_vol_default")
+            .filter(|value| *value <= max)
+            .unwrap_or(6 * max / 7),
+        _ => DEFAULT_STREAM_VOLUME[index],
+    };
+
+    Some((max, default))
 }

@@ -639,10 +639,15 @@ impl DexProgram {
             && method
                 .proto
                 .descriptor_is("()Landroid/content/ComponentName;")
+            && !self.guest_overrides(method, invocation)
         {
-            return Some(DexExecutionResult::Value(DexValue::Reference(
-                std::rc::Rc::from("Landroid/content/ComponentName;.bootstrap"),
-            )));
+            // cite: frameworks-base Activity.java#getComponentName, mComponent
+            let activity = invocation?.arguments.first()?;
+            let class = descriptor_to_java_name(value_class_descriptor(activity)?)?;
+            let package = self.package_name.clone().unwrap_or_default();
+            return Some(DexExecutionResult::Value(
+                self.new_component_name(&package, &class),
+            ));
         }
 
         // cite: frameworks-base Dialog.java#getOnBackInvokedDispatcher
@@ -699,6 +704,19 @@ impl DexProgram {
             && method.proto.descriptor_is("()Ljava/lang/Object;")
         {
             return Some(DexExecutionResult::Value(DexValue::Null));
+        }
+
+        if method.matches_builtin_signature("Landroid/app/Activity;", "hasWindowFocus", "()Z")
+            && !self.guest_overrides(method, invocation)
+        {
+            // cite: frameworks-base Activity.java#hasWindowFocus
+            let activity = invocation?.arguments.first()?;
+            let focused = self
+                .runtime
+                .borrow()
+                .window_focused_activities
+                .contains(&map_identity_key(activity));
+            return Some(DexExecutionResult::Int(i32::from(focused)));
         }
 
         if method.class_descriptor == "Landroid/app/Activity;"

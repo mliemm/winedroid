@@ -1976,3 +1976,115 @@ fn bundle_get_string_returns_the_default_for_missing_or_non_string_values() {
         Some(DexExecutionResult::Value(string("fallback")))
     );
 }
+
+// cite: frameworks-base Color.java#alpha, red, green, blue, rgb
+#[test]
+fn builtin_color_channels_follow_aosp_bit_layout() {
+    let program = DexProgram::new(Vec::new());
+    let channel = |name: &str, color: i32| {
+        program.invoke_builtin_method(
+            &builtin_method("Landroid/graphics/Color;", name, "I", &["I"]),
+            Some(&test_invocation(vec![DexValue::Int(color)])),
+        )
+    };
+    let color = 0x80_12_34_56u32 as i32;
+
+    assert_eq!(channel("alpha", color), Some(DexExecutionResult::Int(0x80)));
+    assert_eq!(channel("red", color), Some(DexExecutionResult::Int(0x12)));
+    assert_eq!(channel("green", color), Some(DexExecutionResult::Int(0x34)));
+    assert_eq!(channel("blue", color), Some(DexExecutionResult::Int(0x56)));
+    assert_eq!(
+        program.invoke_builtin_method(
+            &builtin_method("Landroid/graphics/Color;", "rgb", "I", &["I", "I", "I"]),
+            Some(&test_invocation(vec![
+                DexValue::Int(0x12),
+                DexValue::Int(0x34),
+                DexValue::Int(0x56)
+            ]))
+        ),
+        Some(DexExecutionResult::Int(0xff12_3456u32 as i32))
+    );
+}
+
+// cite: frameworks-base TelephonyManager.java#getSimCountryIso, getTelephonyProperty
+#[test]
+fn builtin_telephony_sim_country_iso_reads_the_sim_property_or_empty() {
+    let program = DexProgram::new(Vec::new());
+    let value = program.invoke_builtin_method(
+        &builtin_method(
+            "Landroid/telephony/TelephonyManager;",
+            "getSimCountryIso",
+            "Ljava/lang/String;",
+            &[],
+        ),
+        Some(&test_invocation(vec![DexValue::Reference(
+            std::rc::Rc::from("Landroid/telephony/TelephonyManager;:phone"),
+        )])),
+    );
+    let expected = crate::native::bionic::props::get("gsm.sim.operator.iso-country")
+        .and_then(|list| list.split(',').next().map(str::to_owned))
+        .unwrap_or_default();
+
+    assert_eq!(
+        value,
+        Some(DexExecutionResult::Value(DexValue::String(
+            std::rc::Rc::from(expected)
+        )))
+    );
+}
+
+// cite: frameworks-base AudioService.java#MAX_STREAM_VOLUME, ensureValidStreamType
+#[test]
+fn builtin_audio_manager_stream_max_volume_follows_audio_service_defaults() {
+    let program = DexProgram::new(Vec::new());
+    let max = |stream: i32| {
+        program.invoke_builtin_method(
+            &builtin_method(
+                "Landroid/media/AudioManager;",
+                "getStreamMaxVolume",
+                "I",
+                &["I"],
+            ),
+            Some(&test_invocation(vec![
+                DexValue::Reference(std::rc::Rc::from("Landroid/media/AudioManager;:audio")),
+                DexValue::Int(stream),
+            ])),
+        )
+    };
+
+    if crate::native::bionic::props::get("ro.config.media_vol_steps").is_none() {
+        assert_eq!(max(3), Some(DexExecutionResult::Int(15)));
+    }
+    assert_eq!(max(1), Some(DexExecutionResult::Int(7)));
+    assert!(matches!(max(99), Some(DexExecutionResult::Throw(_))));
+}
+
+// cite: frameworks-base AudioService.java#MAX_STREAM_VOLUME
+// cite: frameworks-base AudioSystem.java#DEFAULT_STREAM_VOLUME
+#[test]
+fn builtin_audio_manager_stream_volume_uses_audio_service_defaults() {
+    let program = DexProgram::new(Vec::new());
+    let volume = |stream: i32| {
+        program.invoke_builtin_method(
+            &builtin_method(
+                "Landroid/media/AudioManager;",
+                "getStreamVolume",
+                "I",
+                &["I"],
+            ),
+            Some(&test_invocation(vec![
+                DexValue::Reference(std::rc::Rc::from("Landroid/media/AudioManager;:audio")),
+                DexValue::Int(stream),
+            ])),
+        )
+    };
+    let no_override = |name: &str| crate::native::bionic::props::get(name).is_none();
+
+    if no_override("ro.config.media_vol_steps") && no_override("ro.config.media_vol_default") {
+        assert_eq!(volume(3), Some(DexExecutionResult::Int(5)));
+    }
+    if no_override("ro.config.alarm_vol_steps") && no_override("ro.config.alarm_vol_default") {
+        assert_eq!(volume(4), Some(DexExecutionResult::Int(6)));
+    }
+    assert_eq!(volume(2), Some(DexExecutionResult::Int(5)));
+}

@@ -325,12 +325,10 @@ impl DexProgram {
         Some(DexExecutionResult::Int(1))
     }
 
-    // cite: frameworks-base Handler.java#removeMessages, getPostMessage
-    // cite: frameworks-base MessageQueue.java#removeMessages
-    pub(in crate::dex_run) fn handler_remove_messages(
+    fn handler_message_query(
         &self,
         invocation: &DexInvocation,
-    ) -> Option<()> {
+    ) -> Option<(String, i32, Option<String>)> {
         let (handler, what, object) = match invocation.arguments.as_slice() {
             [handler, DexValue::Int(what)] => (handler, *what, &DexValue::Null),
             [handler, DexValue::Int(what), object] => (handler, *what, object),
@@ -345,18 +343,48 @@ impl DexProgram {
             _ => return None,
         };
 
-        let handler_key = map_identity_key(handler);
+        Some((map_identity_key(handler), what, object_key))
+    }
+
+    fn queued_post_matches(
+        &self,
+        post: &HandlerPost,
+        handler_key: &str,
+        what: i32,
+        object_key: Option<&String>,
+    ) -> bool {
+        if post.handler_key != handler_key {
+            return false;
+        }
+        let (post_what, post_object) = self.queued_post_what_and_obj(&post.runnable);
+
+        post_what == what && object_key.is_none_or(|key| post_object.as_ref() == Some(key))
+    }
+
+    // cite: frameworks-base Handler.java#hasMessages
+    // cite: frameworks-base MessageQueue.java#hasMessages
+    pub(in crate::dex_run) fn handler_has_messages(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<i32> {
+        let (handler_key, what, object_key) = self.handler_message_query(invocation)?;
+        let posts = self.runtime.borrow().handler_posts.clone();
+
+        Some(i32::from(posts.iter().any(|post| {
+            self.queued_post_matches(post, &handler_key, what, object_key.as_ref())
+        })))
+    }
+
+    // cite: frameworks-base Handler.java#removeMessages, getPostMessage
+    // cite: frameworks-base MessageQueue.java#removeMessages
+    pub(in crate::dex_run) fn handler_remove_messages(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<()> {
+        let (handler_key, what, object_key) = self.handler_message_query(invocation)?;
         let posts = std::mem::take(&mut self.runtime.borrow_mut().handler_posts);
         let (removed, kept): (Vec<_>, Vec<_>) = posts.into_iter().partition(|post| {
-            if post.handler_key != handler_key {
-                return false;
-            }
-            let (post_what, post_object) = self.queued_post_what_and_obj(&post.runnable);
-
-            post_what == what
-                && object_key
-                    .as_ref()
-                    .is_none_or(|key| post_object.as_ref() == Some(key))
+            self.queued_post_matches(post, &handler_key, what, object_key.as_ref())
         });
         self.runtime.borrow_mut().handler_posts = kept;
         for post in removed {
