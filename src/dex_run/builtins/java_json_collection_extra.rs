@@ -543,8 +543,24 @@ impl DexProgram {
                 ));
             }
             self.initialize_empty_list(invocation)?;
+            self.runtime.borrow_mut().queue_capacities.insert(
+                map_identity_key(invocation.arguments.first()?),
+                usize::try_from(*capacity).ok()?,
+            );
 
             return Some(DexExecutionResult::Void);
+        }
+
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/util/concurrent/LinkedBlockingQueue;"
+                | "Ljava/util/concurrent/ArrayBlockingQueue;"
+        ) && method.name != "<init>"
+            && !self.guest_overrides(method, invocation)
+        {
+            if let Some(result) = self.blocking_queue_method(method, invocation?) {
+                return Some(result);
+            }
         }
 
         if method.class_descriptor == "Ljava/util/concurrent/SynchronousQueue;"
@@ -859,5 +875,117 @@ fn json_throwable_detail_message_field() -> DexFieldId {
         class_descriptor: "Ljava/lang/Throwable;".to_owned(),
         type_descriptor: "Ljava/lang/String;".to_owned(),
         name: "detailMessage".to_owned(),
+    }
+}
+
+impl DexProgram {
+    // cite: libcore LinkedBlockingQueue.java#put, offer, poll, take, peek, size, clear, remainingCapacity
+    // cite: libcore ArrayBlockingQueue.java#put, offer, poll, take, peek, size, clear, remainingCapacity
+    // cite: libcore AbstractQueue.java#add
+    fn blocking_queue_method(
+        &self,
+        method: &DexMethodId,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        let queue = invocation.arguments.first()?;
+        if !dex_value_is_object_like(queue) {
+            return None;
+        }
+        let key = map_identity_key(queue);
+        let descriptor = method.proto.descriptor();
+        match (method.name.as_str(), descriptor.as_str()) {
+            ("put", "(Ljava/lang/Object;)V")
+            | ("offer" | "add", "(Ljava/lang/Object;)Z")
+            | ("offer", "(Ljava/lang/Object;JLjava/util/concurrent/TimeUnit;)Z") => {
+                let value = invocation.arguments.get(1)?;
+                if matches!(value, DexValue::Null | DexValue::Int(0)) {
+                    return Some(self.null_pointer_exception_result());
+                }
+                let full = {
+                    let runtime = self.runtime.borrow();
+                    runtime.queue_capacities.get(&key).is_some_and(|capacity| {
+                        runtime.list_entries.get(&key).map_or(0, Vec::len) >= *capacity
+                    })
+                };
+                if full {
+                    return match method.name.as_str() {
+                        "offer" => Some(DexExecutionResult::Int(0)),
+                        "add" => Some(DexExecutionResult::Throw(
+                            self.allocate_generated_exception(DexGeneratedException {
+                                class_descriptor: "Ljava/lang/IllegalStateException;".to_owned(),
+                                detail_message: Some("Queue full".to_owned()),
+                            }),
+                        )),
+                        _ => None,
+                    };
+                }
+                self.runtime
+                    .borrow_mut()
+                    .list_entries
+                    .entry(key)
+                    .or_default()
+                    .push(value.clone());
+                Some(if method.name == "put" {
+                    DexExecutionResult::Void
+                } else {
+                    DexExecutionResult::Int(1)
+                })
+            }
+            ("poll", "()Ljava/lang/Object;")
+            | ("poll", "(JLjava/util/concurrent/TimeUnit;)Ljava/lang/Object;")
+            | ("take", "()Ljava/lang/Object;") => {
+                let head = {
+                    let mut runtime = self.runtime.borrow_mut();
+                    let values = runtime.list_entries.entry(key).or_default();
+                    (!values.is_empty()).then(|| values.remove(0))
+                };
+                match (head, method.name.as_str()) {
+                    (Some(head), _) => Some(DexExecutionResult::Value(head)),
+                    (None, "take") => None,
+                    (None, _) => Some(DexExecutionResult::Value(DexValue::Null)),
+                }
+            }
+            ("peek", "()Ljava/lang/Object;") => Some(DexExecutionResult::Value(
+                self.runtime
+                    .borrow()
+                    .list_entries
+                    .get(&key)
+                    .and_then(|values| values.first().cloned())
+                    .unwrap_or(DexValue::Null),
+            )),
+            ("size", "()I") | ("isEmpty", "()Z") => {
+                let size = self
+                    .runtime
+                    .borrow()
+                    .list_entries
+                    .get(&key)
+                    .map_or(0, Vec::len);
+                let size = i32::try_from(size).ok()?;
+                Some(DexExecutionResult::Int(if method.name == "size" {
+                    size
+                } else {
+                    i32::from(size == 0)
+                }))
+            }
+            ("remainingCapacity", "()I") => {
+                let runtime = self.runtime.borrow();
+                let remaining = runtime
+                    .queue_capacities
+                    .get(&key)
+                    .map_or(i32::MAX, |capacity| {
+                        let used = runtime.list_entries.get(&key).map_or(0, Vec::len);
+                        i32::try_from(capacity.saturating_sub(used)).unwrap_or(i32::MAX)
+                    });
+                Some(DexExecutionResult::Int(remaining))
+            }
+            ("clear", "()V") => {
+                self.runtime
+                    .borrow_mut()
+                    .list_entries
+                    .insert(key, Vec::new());
+                Some(DexExecutionResult::Void)
+            }
+            _ => None,
+        }
     }
 }

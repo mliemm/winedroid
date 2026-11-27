@@ -403,13 +403,10 @@ impl DexRunInvocationHandler<'_> {
             return Ok(DexInvocationResult::Value(value));
         }
 
-        if matches!(
-            method.class_descriptor.as_str(),
-            "Ljava/util/concurrent/FutureTask;" | "Ljava/util/concurrent/Future;"
-        ) && method.name == "get"
-            && proto_descriptor == "()Ljava/lang/Object;"
+        if let Some(result) = self
+            .program
+            .future_get_intrinsic(&method, &invocation, self.depth)?
         {
-            let result = self.program.future_task_get(&invocation, self.depth)?;
             return Ok(invocation_result_from_execution(result));
         }
 
@@ -498,10 +495,7 @@ impl DexRunInvocationHandler<'_> {
             )));
         }
 
-        if method.class_descriptor == "Ljava/lang/StringBuilder;"
-            && method.name == "append"
-            && proto_descriptor == "(Ljava/lang/Object;)Ljava/lang/StringBuilder;"
-        {
+        if is_string_builder_append_object(&method) {
             let value = self.append_string_builder_object(&invocation)?;
             return Ok(DexInvocationResult::Value(value));
         }
@@ -891,5 +885,48 @@ impl DexRunInvocationHandler<'_> {
         }
 
         self.invoke(invocation.materialize()?)
+    }
+}
+
+// cite: libcore StringBuilder.java#append
+// cite: libcore StringBuffer.java#append
+pub(super) fn is_string_builder_append_object(method: &DexMethodId) -> bool {
+    method.name == "append"
+        && match method.class_descriptor.as_str() {
+            "Ljava/lang/StringBuilder;" => method
+                .proto
+                .descriptor_is("(Ljava/lang/Object;)Ljava/lang/StringBuilder;"),
+            "Ljava/lang/StringBuffer;" => method
+                .proto
+                .descriptor_is("(Ljava/lang/Object;)Ljava/lang/StringBuffer;"),
+            _ => false,
+        }
+}
+
+impl DexProgram {
+    // cite: libcore FutureTask.java#get, awaitDone
+    pub(super) fn future_get_intrinsic(
+        &self,
+        method: &DexMethodId,
+        invocation: &DexInvocation,
+        depth: usize,
+    ) -> Result<Option<DexExecutionResult>> {
+        let future_class = matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/util/concurrent/FutureTask;" | "Ljava/util/concurrent/Future;"
+        );
+        let descriptor = method.proto.descriptor();
+        let timed = descriptor == "(JLjava/util/concurrent/TimeUnit;)Ljava/lang/Object;";
+        if !future_class
+            || method.name != "get"
+            || !(timed || descriptor == "()Ljava/lang/Object;")
+            || self.guest_overrides(method, Some(invocation))
+        {
+            return Ok(None);
+        }
+        let mut untimed = invocation.clone();
+        untimed.arguments.truncate(1);
+
+        self.future_task_get(&untimed, depth).map(Some)
     }
 }

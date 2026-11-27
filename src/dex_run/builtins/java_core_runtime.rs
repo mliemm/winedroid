@@ -1800,6 +1800,42 @@ impl DexProgram {
             )));
         }
 
+        if method.class_descriptor == "Landroid/os/MessageQueue;"
+            && matches!(method.name.as_str(), "addIdleHandler" | "removeIdleHandler")
+            && method
+                .proto
+                .descriptor_is("(Landroid/os/MessageQueue$IdleHandler;)V")
+        {
+            return self.message_queue_idle_handler(invocation?, method.name == "addIdleHandler");
+        }
+
+        if method.matches_builtin_signature(
+            "Landroid/os/Looper;",
+            "getQueue",
+            "()Landroid/os/MessageQueue;",
+        ) {
+            // cite: frameworks-base Looper.java#getQueue, mQueue
+            let looper = invocation?.arguments.first()?;
+            if !dex_value_is_object_like(looper) {
+                return None;
+            }
+            let field = DexFieldId {
+                class_descriptor: "Landroid/os/Looper;".to_owned(),
+                type_descriptor: "Landroid/os/MessageQueue;".to_owned(),
+                name: "mQueue".to_owned(),
+            };
+            if let Some(queue @ (DexValue::Object(_) | DexValue::Reference(_))) =
+                self.read_stored_instance_field(looper, &field)
+            {
+                return Some(DexExecutionResult::Value(queue));
+            }
+            let queue = self.allocate_object("Landroid/os/MessageQueue;".to_owned());
+            self.write_stored_instance_field(looper, &field, queue.clone())
+                .then_some(())?;
+
+            return Some(DexExecutionResult::Value(queue));
+        }
+
         if method.class_descriptor == "Landroid/os/Looper;"
             && method.name == "getThread"
             && method.proto.descriptor_is("()Ljava/lang/Thread;")
@@ -2241,6 +2277,16 @@ impl DexProgram {
             return Some(DexExecutionResult::Parked(DexParkedExecution::empty()));
         }
 
+        if method.matches_builtin_signature("Landroid/os/Message;", "<init>", "()V") {
+            // cite: frameworks-base Message.java#Message
+            let invocation = invocation?;
+            let [message] = invocation.arguments.as_slice() else {
+                return None;
+            };
+
+            return dex_value_is_object_like(message).then_some(DexExecutionResult::Void);
+        }
+
         if method.class_descriptor == "Landroid/os/Message;"
             && method.name == "obtain"
             && method
@@ -2317,10 +2363,12 @@ impl DexProgram {
 
     fn initialize_thread(&self, invocation: &DexInvocation, descriptor: &str) -> Option<()> {
         match descriptor {
-            "()V" if invocation.arguments.len() == 1 => Some(()),
+            "()V" if invocation.arguments.len() == 1 => {
+                self.thread_store_generated_name(invocation)
+            }
             "(Ljava/lang/Runnable;)V" if invocation.arguments.len() == 2 => {
                 self.thread_store_target(invocation)?;
-                Some(())
+                self.thread_store_generated_name(invocation)
             }
             "(Ljava/lang/String;)V" if invocation.arguments.len() >= 2 => {
                 self.thread_store_name(invocation)?;
@@ -2455,6 +2503,26 @@ impl DexProgram {
             &invocation.arguments[0],
             &thread_target_field(),
             invocation.arguments[1].clone(),
+        )
+        .then_some(())
+    }
+
+    // cite: libcore Thread.java#Thread, nextThreadNum
+    fn thread_store_generated_name(&self, invocation: &DexInvocation) -> Option<()> {
+        let thread = invocation.arguments.first()?;
+        if !dex_value_is_object_like(thread) {
+            return None;
+        }
+        let number = {
+            let mut runtime = self.runtime.borrow_mut();
+            let number = runtime.next_thread_number;
+            runtime.next_thread_number += 1;
+            number
+        };
+        self.write_stored_instance_field(
+            thread,
+            &thread_name_field(),
+            DexValue::String(std::rc::Rc::from(format!("Thread-{number}"))),
         )
         .then_some(())
     }

@@ -22,6 +22,9 @@ mod java_date;
 mod java_io;
 mod java_json_collection_extra;
 mod java_locale;
+#[cfg(test)]
+pub(in crate::dex_run) use java_locale::java_locale_parts;
+pub(in crate::dex_run) use java_locale::locale_language_tag;
 mod java_math;
 mod java_math_regex_reflection_io;
 mod java_native_library;
@@ -158,6 +161,13 @@ impl DexProgram {
         method: &DexMethodId,
         invocation: Option<&DexInvocation>,
     ) -> Option<DexExecutionResult> {
+        if method.class_descriptor == STRING_BUFFER {
+            return self.invoke_builtin_method_hinted(
+                hint_key,
+                &string_buffer_as_string_builder(method),
+                invocation,
+            );
+        }
         let method_metric_start = crate::method_metrics::start_timing();
         if let Some(key) = hint_key {
             let hint = self.caches.borrow().builtin_family_hints.get(&key).copied();
@@ -183,5 +193,60 @@ impl DexProgram {
             }
         }
         None
+    }
+}
+
+const STRING_BUFFER: &str = "Ljava/lang/StringBuffer;";
+
+// cite: libcore StringBuffer.java#StringBuffer, append, toString
+// cite: libcore AbstractStringBuilder.java#append
+pub(super) fn string_buffer_as_string_builder(method: &DexMethodId) -> DexMethodId {
+    let builder = |descriptor: &String| {
+        if descriptor == STRING_BUFFER {
+            "Ljava/lang/StringBuilder;".to_owned()
+        } else {
+            descriptor.clone()
+        }
+    };
+    DexMethodId {
+        class_descriptor: "Ljava/lang/StringBuilder;".to_owned(),
+        name: method.name.clone(),
+        proto: crate::dex::DexProto {
+            shorty: method.proto.shorty.clone(),
+            return_type: builder(&method.proto.return_type),
+            parameters: method.proto.parameters.iter().map(builder).collect(),
+        },
+    }
+}
+
+impl DexProgram {
+    // cite: art interpreter_common.h#DoInvoke, FindMethodToCall
+    pub(super) fn guest_overrides(
+        &self,
+        method: &DexMethodId,
+        invocation: Option<&DexInvocation>,
+    ) -> bool {
+        let Some(invocation) = invocation else {
+            return false;
+        };
+        let Some(receiver @ DexValue::Object(_)) = invocation.arguments.first() else {
+            return false;
+        };
+        if !matches!(
+            invocation.kind,
+            crate::dex_interpreter::DexInvokeKind::Virtual
+                | crate::dex_interpreter::DexInvokeKind::Interface
+        ) {
+            return false;
+        }
+        let Some(class_descriptor) = value_class_descriptor(receiver) else {
+            return false;
+        };
+        let receiver_method = DexMethodId {
+            class_descriptor: class_descriptor.to_owned(),
+            ..method.clone()
+        };
+        self.resolve_exact_method_in_class_hierarchy(class_descriptor, &receiver_method)
+            .is_ok_and(|resolved| resolved.is_some())
     }
 }

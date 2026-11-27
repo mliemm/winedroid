@@ -1251,11 +1251,17 @@ impl DexProgram {
 
         if method.class_descriptor == "Landroid/os/Process;"
             && method.name == "setThreadPriority"
-            && method.proto.descriptor_is("(II)V")
+            && matches!(method.proto.descriptor().as_str(), "(II)V" | "(I)V")
         {
             let invocation = invocation?;
 
             return self.process_set_thread_priority(invocation);
+        }
+
+        if method.matches_builtin_signature("Landroid/os/Process;", "getThreadPriority", "(I)I") {
+            let invocation = invocation?;
+
+            return self.process_get_thread_priority(invocation);
         }
 
         if method.class_descriptor == "Landroid/os/Process;"

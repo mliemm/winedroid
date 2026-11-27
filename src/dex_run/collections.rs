@@ -473,6 +473,28 @@ impl DexProgram {
         Some(collection)
     }
 
+    // cite: libcore ConcurrentHashMap.java#keys, elements
+    // cite: libcore Hashtable.java#keys, elements
+    pub(super) fn map_enumeration(
+        &self,
+        invocation: &DexInvocation,
+        keys: bool,
+    ) -> Option<DexValue> {
+        let view = if keys {
+            self.map_key_set(invocation)?
+        } else {
+            self.map_values(invocation)?
+        };
+        let values = self
+            .runtime
+            .borrow_mut()
+            .list_entries
+            .remove(&map_identity_key(&view))
+            .unwrap_or_default();
+
+        self.create_value_iterator_with_position(values, 0, "Ljava/util/Enumeration;", None)
+    }
+
     pub(super) fn map_key_set(&self, invocation: &DexInvocation) -> Option<DexValue> {
         if invocation.arguments.len() != 1 {
             return None;
@@ -6588,7 +6610,14 @@ impl DexProgram {
         }
 
         // cite: libcore AbstractCollection.java#contains
-        if method.class_descriptor == "Ljava/util/AbstractCollection;"
+        // cite: libcore Collection.java#contains
+        if (method.class_descriptor == "Ljava/util/AbstractCollection;"
+            || method.class_descriptor == "Ljava/util/Collection;"
+                && invocation.arguments.first().is_some_and(|receiver| {
+                    matches!(receiver, DexValue::Reference(_))
+                        || value_class_descriptor(receiver)
+                            .is_some_and(is_bootstrap_class_descriptor)
+                }))
             && method.name == "contains"
             && method.proto.descriptor_is("(Ljava/lang/Object;)Z")
         {
@@ -6679,6 +6708,7 @@ fn iterator_storage_key(reference: &str) -> Option<&str> {
     reference
         .strip_prefix("Ljava/util/Iterator;:")
         .or_else(|| reference.strip_prefix("Ljava/util/ListIterator;:"))
+        .or_else(|| reference.strip_prefix("Ljava/util/Enumeration;:"))
 }
 
 const SIMPLE_ENTRY: &str = "Ljava/util/AbstractMap$SimpleEntry;";

@@ -293,9 +293,19 @@ impl DexProgram {
 
                 Some(DexExecutionResult::Value(locale))
             }
-            ("toLanguageTags", "()Ljava/lang/String;") if size == 0 => Some(
-                DexExecutionResult::Value(DexValue::String(std::rc::Rc::from(""))),
-            ),
+            ("toLanguageTags", "()Ljava/lang/String;") => {
+                let mut tags = Vec::new();
+                for index in 0..size {
+                    let locale = self.read_array_value(array, index)?;
+                    tags.push(super::builtins::locale_language_tag(
+                        &self.locale_parts_of(&locale)?,
+                    ));
+                }
+
+                Some(DexExecutionResult::Value(DexValue::String(
+                    std::rc::Rc::from(tags.join(",")),
+                )))
+            }
             _ => None,
         }
     }

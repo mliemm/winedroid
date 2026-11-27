@@ -338,6 +338,10 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         "Landroid/app/Activity;" => Some("Landroid/view/ContextThemeWrapper;"),
         "Landroid/app/Application;" => Some("Landroid/content/ContextWrapper;"),
         "Landroid/content/ContextWrapper;" => Some("Landroid/content/Context;"),
+        // cite: frameworks-base LayoutInflater.java#FactoryMerger
+        "Landroid/view/LayoutInflater$FactoryMerger;" => Some("Ljava/lang/Object;"),
+        // cite: frameworks-base MutableContextWrapper.java#MutableContextWrapper
+        "Landroid/content/MutableContextWrapper;" => Some("Landroid/content/ContextWrapper;"),
         "Landroid/app/ContextImpl;" => Some("Landroid/content/Context;"),
         "Landroid/content/Context;" => Some("Ljava/lang/Object;"),
         // cite: frameworks-base ClipboardManager.java#ClipboardManager

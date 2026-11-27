@@ -830,6 +830,37 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/util/concurrent/ConcurrentHashMap;" | "Ljava/util/Hashtable;"
+        ) && matches!(method.name.as_str(), "keys" | "elements")
+            && method.proto.descriptor_is("()Ljava/util/Enumeration;")
+        {
+            let invocation = invocation?;
+            let value = self.map_enumeration(invocation, method.name == "keys")?;
+
+            return Some(DexExecutionResult::Value(value));
+        }
+
+        let enumeration = invocation
+            .and_then(|invocation| invocation.arguments.first())
+            .is_some_and(|value| {
+                matches!(value, DexValue::Reference(reference)
+                    if reference.starts_with("Ljava/util/Enumeration;:iterator:"))
+            });
+        if enumeration && method.class_descriptor == "Ljava/util/Enumeration;" {
+            // cite: libcore Enumeration.java#hasMoreElements, nextElement
+            match (method.name.as_str(), method.proto.descriptor().as_str()) {
+                ("hasMoreElements", "()Z") => {
+                    return Some(DexExecutionResult::Int(self.iterator_has_next(invocation)?));
+                }
+                ("nextElement", "()Ljava/lang/Object;") => {
+                    return Some(DexExecutionResult::Value(self.iterator_next(invocation?)?));
+                }
+                _ => {}
+            }
+        }
+
         if method.class_descriptor == "Ljava/util/Iterator;"
             && method.name == "hasNext"
             && method.proto.descriptor_is("()Z")

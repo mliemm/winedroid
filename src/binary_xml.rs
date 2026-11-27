@@ -11,6 +11,9 @@ const RES_XML_END_ELEMENT_TYPE: u16 = 0x0103;
 const RES_XML_CDATA_TYPE: u16 = 0x0104;
 const RES_XML_RESOURCE_MAP_TYPE: u16 = 0x0180;
 
+const ANDROID_NAMESPACE: &str = "http://schemas.android.com/apk/res/android";
+const RES_AUTO_NAMESPACE: &str = "http://schemas.android.com/apk/res-auto";
+
 const UTF8_FLAG: u32 = 0x0000_0100;
 const NO_INDEX: u32 = 0xffff_ffff;
 
@@ -138,6 +141,7 @@ pub fn parse_binary_xml(data: &[u8]) -> Result<Vec<XmlEvent>> {
     let document_end = checked_chunk_end(data, 0, root.size)?;
     let mut offset = root.header_size as usize;
     let mut string_pool = None;
+    let mut resource_map = Vec::new();
     let mut events = Vec::new();
 
     while offset < document_end {
@@ -151,17 +155,27 @@ pub fn parse_binary_xml(data: &[u8]) -> Result<Vec<XmlEvent>> {
             RES_XML_START_ELEMENT_TYPE => {
                 let strings = require_string_pool(&string_pool)?;
                 events.push(parse_start_element(
-                    data, offset, chunk_end, header, strings,
+                    data,
+                    offset,
+                    chunk_end,
+                    header,
+                    strings,
+                    &resource_map,
                 )?);
             }
             RES_XML_END_ELEMENT_TYPE => {
                 let strings = require_string_pool(&string_pool)?;
                 events.push(parse_end_element(data, offset, chunk_end, header, strings)?);
             }
-            RES_XML_START_NAMESPACE_TYPE
-            | RES_XML_END_NAMESPACE_TYPE
-            | RES_XML_CDATA_TYPE
-            | RES_XML_RESOURCE_MAP_TYPE => {}
+            // cite: frameworks-base ResourceTypes.h#RES_XML_RESOURCE_MAP_TYPE
+            RES_XML_RESOURCE_MAP_TYPE => {
+                let start = offset + header.header_size as usize;
+                resource_map = (start..chunk_end.saturating_sub(3))
+                    .step_by(4)
+                    .map(|entry| read_u32(data, entry))
+                    .collect::<Result<_>>()?;
+            }
+            RES_XML_START_NAMESPACE_TYPE | RES_XML_END_NAMESPACE_TYPE | RES_XML_CDATA_TYPE => {}
             unsupported_type => {
                 return Err(WinedroidError::new(format!(
                     "unsupported binary XML chunk type 0x{unsupported_type:04x} at offset {offset}"
@@ -406,6 +420,7 @@ fn parse_start_element(
     chunk_end: usize,
     header: ChunkHeader,
     strings: &StringPool,
+    resource_map: &[u32],
 ) -> Result<XmlEvent> {
     if header.header_size < 16 {
         return Err(WinedroidError::new(format!(
@@ -440,7 +455,12 @@ fn parse_start_element(
             )));
         }
 
-        attributes.push(parse_attribute(data, attribute_offset, strings)?);
+        attributes.push(parse_attribute(
+            data,
+            attribute_offset,
+            strings,
+            resource_map,
+        )?);
     }
 
     Ok(XmlEvent::Start(XmlStartElement {
@@ -450,9 +470,29 @@ fn parse_start_element(
     }))
 }
 
-fn parse_attribute(data: &[u8], offset: usize, strings: &StringPool) -> Result<XmlAttribute> {
-    let namespace = strings.optional(read_u32(data, offset)?)?;
-    let name = strings.required(read_u32(data, offset + 4)?)?;
+fn parse_attribute(
+    data: &[u8],
+    offset: usize,
+    strings: &StringPool,
+    resource_map: &[u32],
+) -> Result<XmlAttribute> {
+    let mut namespace = strings.optional(read_u32(data, offset)?)?;
+    let name_index = read_u32(data, offset + 4)?;
+    let mut name = strings.required(name_index)?;
+    // cite: frameworks-base ResourceTypes.cpp#getAttributeNameResID
+    if let Some(&resource_id) = resource_map.get(name_index as usize) {
+        if name.is_empty() {
+            if let Some(framework_name) =
+                crate::android_framework_attrs::framework_attr_name(resource_id)
+            {
+                name = framework_name.to_owned();
+                namespace.get_or_insert_with(|| ANDROID_NAMESPACE.to_owned());
+            }
+        }
+        if resource_id >> 24 == 0x7f {
+            namespace.get_or_insert_with(|| RES_AUTO_NAMESPACE.to_owned());
+        }
+    }
     let raw_value = strings.optional(read_u32(data, offset + 8)?)?;
     let value_size = read_u16(data, offset + 12)?;
     let data_type = read_u8(data, offset + 15)?;
@@ -820,5 +860,58 @@ mod tests {
         let decoded = decode_utf16_string(&data).expect("UTF-16 string should decode");
 
         assert_eq!(decoded, "test");
+    }
+
+    fn chunk(chunk_type: u16, header_size: u16, body: &[u8]) -> Vec<u8> {
+        let mut chunk = Vec::new();
+        chunk.extend_from_slice(&chunk_type.to_le_bytes());
+        chunk.extend_from_slice(&header_size.to_le_bytes());
+        chunk.extend_from_slice(&((8 + body.len()) as u32).to_le_bytes());
+        chunk.extend_from_slice(body);
+        chunk
+    }
+
+    fn le(values: &[u32]) -> Vec<u8> {
+        values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect()
+    }
+
+    // cite: frameworks-base ResourceTypes.cpp#getAttributeNameResID
+    #[test]
+    fn nameless_attribute_takes_its_name_from_the_resource_map() {
+        let mut strings = le(&[2, 0, UTF8_FLAG, 28 + 8, 0]);
+        strings.extend(le(&[0, 3]));
+        strings.extend_from_slice(&[0, 0, 0, 4, 4, b'V', b'i', b'e', b'w', 0, 0, 0]);
+        let mut start = le(&[0, NO_INDEX, NO_INDEX, 1]);
+        start.extend_from_slice(&[20, 0, 20, 0, 2, 0, 0, 0, 0, 0, 0, 0]);
+        for (name, id) in [(0u32, 0x7f0a_00cfu32), (1, 0)] {
+            start.extend(le(&[NO_INDEX, name, NO_INDEX]));
+            start.extend_from_slice(&[8, 0, 0, TYPE_REFERENCE]);
+            start.extend(le(&[id]));
+        }
+        let mut body = chunk(RES_STRING_POOL_TYPE, 28, &strings);
+        body.extend(chunk(RES_XML_RESOURCE_MAP_TYPE, 8, &le(&[0x0101_00d0])));
+        body.extend(chunk(RES_XML_START_ELEMENT_TYPE, 16, &start));
+        body.extend(chunk(
+            RES_XML_END_ELEMENT_TYPE,
+            16,
+            &le(&[0, NO_INDEX, NO_INDEX, 1]),
+        ));
+        let document = chunk(RES_XML_TYPE, 8, &body);
+
+        let events = parse_binary_xml(&document).expect("binary XML should parse");
+        let XmlEvent::Start(element) = &events[0] else {
+            panic!("expected a start element");
+        };
+
+        assert_eq!(element.name, "View");
+        let id = element
+            .attribute("id")
+            .expect("android:id should be recovered");
+        assert_eq!(id.namespace.as_deref(), Some(ANDROID_NAMESPACE));
+        assert_eq!(id.value, XmlValue::Reference(0x7f0a_00cf));
+        assert_eq!(element.attributes[1].name, "View");
     }
 }

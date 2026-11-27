@@ -260,7 +260,7 @@ fn builtin_activity_get_window_returns_activity_scoped_window() {
 }
 
 #[test]
-fn builtin_activity_get_layout_inflater_returns_bootstrap_inflater() {
+fn builtin_activity_get_layout_inflater_returns_the_activity_inflater() {
     let program = DexProgram::new(Vec::new());
     let method = DexMethodId {
         class_descriptor: "Landroid/app/Activity;".to_owned(),
@@ -272,11 +272,23 @@ fn builtin_activity_get_layout_inflater_returns_bootstrap_inflater() {
         },
     };
 
+    let activity = program.allocate_object("Lcom/example/MainActivity;".to_owned());
+    let get_context = builtin_method(
+        "Landroid/view/LayoutInflater;",
+        "getContext",
+        "Landroid/content/Context;",
+        &[],
+    );
+
+    let Some(DexExecutionResult::Value(inflater)) =
+        program.invoke_builtin_method(&method, Some(&test_invocation(vec![activity.clone()])))
+    else {
+        panic!("getLayoutInflater should return an inflater");
+    };
+    assert!(program.value_matches_type(&inflater, "Landroid/view/LayoutInflater;"));
     assert_eq!(
-        program.invoke_builtin_method(&method, None),
-        Some(DexExecutionResult::Value(DexValue::Reference(
-            std::rc::Rc::from("Landroid/view/LayoutInflater;.bootstrap")
-        )))
+        program.invoke_builtin_method(&get_context, Some(&test_invocation(vec![inflater]))),
+        Some(DexExecutionResult::Value(activity))
     );
 }
 
@@ -2314,4 +2326,117 @@ fn builtin_activity_set_intent_replaces_get_intent() {
         program.invoke_builtin_method(&get_intent, Some(&test_invocation(vec![activity]))),
         Some(DexExecutionResult::Value(intent))
     );
+}
+
+// cite: frameworks-base Activity.java#isDestroyed, isFinishing, finish, performDestroy
+#[test]
+fn builtin_activity_is_finishing_after_finish_and_destroyed_after_the_next_loop_pass() {
+    let program = DexProgram::new(Vec::new());
+    let is_destroyed = builtin_method("Landroid/app/Activity;", "isDestroyed", "Z", &[]);
+    let is_finishing = builtin_method("Landroid/app/Activity;", "isFinishing", "Z", &[]);
+    let activity = DexValue::Reference(std::rc::Rc::from("Lexample/MainActivity;:activity"));
+    program
+        .runtime
+        .borrow_mut()
+        .activity_stack
+        .push(RuntimeActivity {
+            class_descriptor: "Lexample/MainActivity;".to_owned(),
+            receiver: activity.clone(),
+            method_signature: "onCreate(Landroid/os/Bundle;)V".to_owned(),
+            result: "void".to_owned(),
+            object_start: 0,
+            content_layout_start: 0,
+            inflated_layout_start: 0,
+            initial_inflated_layout_end: 0,
+            dialog_content_layout_start: 0,
+            runtime_view_root_start: 0,
+            view_lookup_start: 0,
+            saved_chrome: None,
+            result_target: None,
+            result_code: 0,
+            result_intent: None,
+            adapter_rows_snapshot: std::collections::HashMap::new(),
+            adapter_item_clicks_snapshot: std::collections::HashMap::new(),
+        });
+    let call = |method: &DexMethodId| {
+        program.invoke_builtin_method(method, Some(&test_invocation(vec![activity.clone()])))
+    };
+
+    assert_eq!(call(&is_finishing), Some(DexExecutionResult::Int(0)));
+    program
+        .finish_activity(&test_invocation(vec![activity.clone()]), 0)
+        .expect("finish should succeed");
+    assert_eq!(call(&is_finishing), Some(DexExecutionResult::Int(1)));
+    assert_eq!(call(&is_destroyed), Some(DexExecutionResult::Int(0)));
+    program
+        .dispatch_pending_main_loop(320, 480, 0)
+        .expect("main loop should run");
+    assert_eq!(call(&is_destroyed), Some(DexExecutionResult::Int(1)));
+}
+
+// cite: frameworks-base Activity.java#getReferrer, mReferrer
+// cite: frameworks-base Intent.java#EXTRA_REFERRER, EXTRA_REFERRER_NAME
+#[test]
+fn builtin_activity_get_referrer_prefers_uri_extra_then_name_then_launcher() {
+    let program = DexProgram::new(Vec::new());
+    let get_referrer = builtin_method(
+        "Landroid/app/Activity;",
+        "getReferrer",
+        "Landroid/net/Uri;",
+        &[],
+    );
+    let set_intent = builtin_method(
+        "Landroid/app/Activity;",
+        "setIntent",
+        "V",
+        &["Landroid/content/Intent;"],
+    );
+    let uri_to_string = builtin_method("Landroid/net/Uri;", "toString", "Ljava/lang/String;", &[]);
+    let parse = |uri: &str| {
+        program
+            .parse_uri(&test_invocation(vec![DexValue::String(std::rc::Rc::from(
+                uri,
+            ))]))
+            .expect("Uri should parse")
+    };
+    let text = |uri: DexValue| {
+        program.invoke_builtin_method(&uri_to_string, Some(&test_invocation(vec![uri])))
+    };
+    let activity = program.allocate_object("Lcom/example/MainActivity;".to_owned());
+    let intent = program.allocate_object("Landroid/content/Intent;".to_owned());
+    let referrer = || match program.invoke_builtin_method(
+        &get_referrer,
+        Some(&test_invocation(vec![activity.clone()])),
+    ) {
+        Some(DexExecutionResult::Value(uri)) => text(uri),
+        other => panic!("getReferrer should return a Uri, got {other:?}"),
+    };
+    let put_extra = |name: &str, value: DexValue| {
+        program
+            .runtime
+            .borrow_mut()
+            .intent_extras
+            .insert((map_identity_key(&intent), name.to_owned()), value);
+    };
+    let expected = |uri: &str| {
+        Some(DexExecutionResult::Value(DexValue::String(
+            std::rc::Rc::from(uri),
+        )))
+    };
+
+    assert_eq!(referrer(), expected("android-app://com.android.launcher3"));
+    program.invoke_builtin_method(
+        &set_intent,
+        Some(&test_invocation(vec![activity.clone(), intent.clone()])),
+    );
+    put_extra(
+        "android.intent.extra.REFERRER_NAME",
+        DexValue::String(std::rc::Rc::from("android-app://com.example.source")),
+    );
+    assert_eq!(referrer(), expected("android-app://com.example.source"));
+    put_extra(
+        "android.intent.extra.REFERRER",
+        parse("https://example.com/"),
+    );
+    assert_eq!(referrer(), expected("https://example.com/"));
 }

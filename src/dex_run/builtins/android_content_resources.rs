@@ -505,12 +505,16 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
-        if method.matches_builtin_signature(
-            "Landroid/content/ContextWrapper;",
-            "<init>",
-            "(Landroid/content/Context;)V",
-        ) {
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Landroid/content/ContextWrapper;" | "Landroid/content/MutableContextWrapper;"
+        ) && (method.name == "<init>"
+            || method.class_descriptor == "Landroid/content/MutableContextWrapper;"
+                && method.name == "setBaseContext")
+            && method.proto.descriptor_is("(Landroid/content/Context;)V")
+        {
             // cite: frameworks-base ContextWrapper.java#ContextWrapper, mBase
+            // cite: frameworks-base MutableContextWrapper.java#MutableContextWrapper, setBaseContext
             let invocation = invocation?;
             let [receiver, base] = invocation.arguments.as_slice() else {
                 return None;
@@ -518,16 +522,15 @@ impl DexProgram {
             if !dex_value_is_object_like(receiver) || !dex_value_is_nullable_object_like(base) {
                 return None;
             }
+            let base_field = DexFieldId {
+                class_descriptor: "Landroid/content/ContextWrapper;".to_owned(),
+                type_descriptor: "Landroid/content/Context;".to_owned(),
+                name: "mBase".to_owned(),
+            };
             if dex_value_is_object_like(base) {
-                self.write_stored_instance_field(
-                    receiver,
-                    &DexFieldId {
-                        class_descriptor: "Landroid/content/ContextWrapper;".to_owned(),
-                        type_descriptor: "Landroid/content/Context;".to_owned(),
-                        name: "mBase".to_owned(),
-                    },
-                    base.clone(),
-                );
+                self.write_stored_instance_field(receiver, &base_field, base.clone());
+            } else {
+                self.remove_stored_instance_field(receiver, &base_field);
             }
 
             return Some(DexExecutionResult::Void);
@@ -1416,6 +1419,12 @@ impl DexProgram {
                 .descriptor_is("(Ljava/lang/String;)Ljava/lang/Object;")
         {
             let invocation = invocation?;
+            if matches!(invocation.arguments.get(1), Some(DexValue::String(name)) if name.as_ref() == "layout_inflater")
+            {
+                return Some(DexExecutionResult::Value(
+                    self.layout_inflater_for_context(invocation.arguments.first()?),
+                ));
+            }
             let value = context_system_service(invocation)?;
 
             return Some(DexExecutionResult::Value(value));
@@ -1428,6 +1437,16 @@ impl DexProgram {
                 .descriptor_is("(Ljava/lang/Class;)Ljava/lang/Object;")
         {
             let invocation = invocation?;
+            if invocation
+                .arguments
+                .get(1)
+                .and_then(class_reference_descriptor_from_value)
+                == Some("Landroid/view/LayoutInflater;")
+            {
+                return Some(DexExecutionResult::Value(
+                    self.layout_inflater_for_context(invocation.arguments.first()?),
+                ));
+            }
             let value = context_system_service_by_class(invocation)?;
 
             return Some(DexExecutionResult::Value(value));

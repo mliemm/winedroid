@@ -3557,3 +3557,179 @@ fn libcore_tree_map_comparator_constructor_accepts_null_and_rejects_primitive() 
         None
     );
 }
+
+// cite: libcore ConcurrentHashMap.java#keys
+// cite: libcore Enumeration.java#hasMoreElements, nextElement
+#[test]
+fn libcore_concurrent_hash_map_keys_enumerates_each_key() {
+    let program = DexProgram::new(Vec::new());
+    let map_class = "Ljava/util/concurrent/ConcurrentHashMap;";
+    let put = builtin_method(
+        map_class,
+        "put",
+        "Ljava/lang/Object;",
+        &["Ljava/lang/Object;", "Ljava/lang/Object;"],
+    );
+    let keys = builtin_method(map_class, "keys", "Ljava/util/Enumeration;", &[]);
+    let has_more = builtin_method("Ljava/util/Enumeration;", "hasMoreElements", "Z", &[]);
+    let next = builtin_method(
+        "Ljava/util/Enumeration;",
+        "nextElement",
+        "Ljava/lang/Object;",
+        &[],
+    );
+    let map = program.allocate_object(map_class.to_owned());
+    let string = |value: &str| DexValue::String(std::rc::Rc::from(value));
+    for key in ["a", "b"] {
+        program.invoke_builtin_method(
+            &put,
+            Some(&test_invocation(vec![
+                map.clone(),
+                string(key),
+                DexValue::Int(1),
+            ])),
+        );
+    }
+
+    let Some(DexExecutionResult::Value(enumeration)) =
+        program.invoke_builtin_method(&keys, Some(&test_invocation(vec![map])))
+    else {
+        panic!("keys() should return an Enumeration");
+    };
+    let mut seen = Vec::new();
+    while program
+        .invoke_builtin_method(&has_more, Some(&test_invocation(vec![enumeration.clone()])))
+        == Some(DexExecutionResult::Int(1))
+    {
+        let Some(DexExecutionResult::Value(DexValue::String(key))) =
+            program.invoke_builtin_method(&next, Some(&test_invocation(vec![enumeration.clone()])))
+        else {
+            panic!("nextElement should return a key");
+        };
+        seen.push(key.to_string());
+    }
+    seen.sort();
+
+    assert_eq!(seen, ["a", "b"]);
+}
+
+// cite: libcore Collection.java#contains
+#[test]
+fn libcore_collection_contains_uses_equals_for_runtime_lists_and_skips_guest_collections() {
+    let program = DexProgram::new(Vec::new());
+    let contains = builtin_method(
+        "Ljava/util/Collection;",
+        "contains",
+        "Z",
+        &["Ljava/lang/Object;"],
+    );
+    let list = program.allocate_object("Ljava/util/ArrayList;".to_owned());
+    let string = |value: &str| DexValue::String(std::rc::Rc::from(value));
+    program
+        .runtime
+        .borrow_mut()
+        .list_entries
+        .insert(map_identity_key(&list), vec![string("a")]);
+    let guest = program.allocate_object("Lcom/example/GuestCollection;".to_owned());
+
+    assert_eq!(
+        program
+            .invoke_java_collection_equality_method(
+                &contains,
+                &test_invocation(vec![list, string("a")]),
+                0
+            )
+            .unwrap(),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(
+        program
+            .invoke_java_collection_equality_method(
+                &contains,
+                &test_invocation(vec![guest, string("a")]),
+                0
+            )
+            .unwrap(),
+        None
+    );
+}
+
+// cite: libcore LinkedBlockingQueue.java#put, poll, take, peek, size
+#[test]
+fn libcore_linked_blocking_queue_is_fifo_and_take_on_empty_stays_a_gap() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Ljava/util/concurrent/LinkedBlockingQueue;";
+    let put = builtin_method(class, "put", "V", &["Ljava/lang/Object;"]);
+    let poll = builtin_method(class, "poll", "Ljava/lang/Object;", &[]);
+    let take = builtin_method(class, "take", "Ljava/lang/Object;", &[]);
+    let size = builtin_method(class, "size", "I", &[]);
+    let queue = program.allocate_object(class.to_owned());
+    let string = |value: &str| DexValue::String(std::rc::Rc::from(value));
+    let call = |method: &DexMethodId, mut arguments: Vec<DexValue>| {
+        arguments.insert(0, queue.clone());
+        program.invoke_builtin_method(method, Some(&test_invocation(arguments)))
+    };
+
+    assert_eq!(
+        call(&put, vec![string("a")]),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        call(&put, vec![string("b")]),
+        Some(DexExecutionResult::Void)
+    );
+    assert!(matches!(
+        call(&put, vec![DexValue::Null]),
+        Some(DexExecutionResult::Throw(_))
+    ));
+    assert_eq!(call(&size, vec![]), Some(DexExecutionResult::Int(2)));
+    assert_eq!(
+        call(&take, vec![]),
+        Some(DexExecutionResult::Value(string("a")))
+    );
+    assert_eq!(
+        call(&poll, vec![]),
+        Some(DexExecutionResult::Value(string("b")))
+    );
+    assert_eq!(
+        call(&poll, vec![]),
+        Some(DexExecutionResult::Value(DexValue::Null))
+    );
+    assert_eq!(call(&take, vec![]), None);
+}
+
+// cite: libcore ArrayBlockingQueue.java#offer, put, remainingCapacity
+// cite: libcore AbstractQueue.java#add
+#[test]
+fn libcore_bounded_blocking_queue_rejects_items_when_full() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Ljava/util/concurrent/ArrayBlockingQueue;";
+    let init = builtin_method(class, "<init>", "V", &["I"]);
+    let offer = builtin_method(class, "offer", "Z", &["Ljava/lang/Object;"]);
+    let add = builtin_method(class, "add", "Z", &["Ljava/lang/Object;"]);
+    let put = builtin_method(class, "put", "V", &["Ljava/lang/Object;"]);
+    let remaining = builtin_method(class, "remainingCapacity", "I", &[]);
+    let queue = program.allocate_object(class.to_owned());
+    let item = DexValue::String(std::rc::Rc::from("job"));
+    let call = |method: &DexMethodId, mut arguments: Vec<DexValue>| {
+        arguments.insert(0, queue.clone());
+        program.invoke_builtin_method(method, Some(&test_invocation(arguments)))
+    };
+
+    call(&init, vec![DexValue::Int(1)]);
+    assert_eq!(call(&remaining, vec![]), Some(DexExecutionResult::Int(1)));
+    assert_eq!(
+        call(&offer, vec![item.clone()]),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(call(&remaining, vec![]), Some(DexExecutionResult::Int(0)));
+    assert_eq!(
+        call(&offer, vec![item.clone()]),
+        Some(DexExecutionResult::Int(0))
+    );
+    let Some(DexExecutionResult::Throw(error)) = call(&add, vec![item.clone()]) else {
+        panic!("add on a full queue should throw");
+    };
+    assert!(program.value_matches_type(&error, "Ljava/lang/IllegalStateException;"));
+    assert_eq!(call(&put, vec![item]), None);
+}

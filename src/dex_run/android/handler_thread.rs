@@ -32,28 +32,69 @@ impl DexProgram {
         *runtime.guest_thread_ids.entry(thread).or_insert(next)
     }
 
-    // cite: frameworks-base Process.java#setThreadPriority
-    pub(in crate::dex_run) fn process_set_thread_priority(
-        &self,
-        invocation: &DexInvocation,
-    ) -> Option<DexExecutionResult> {
-        let [DexValue::Int(tid), DexValue::Int(_priority)] = invocation.arguments.as_slice() else {
-            return None;
-        };
-        let known = *tid == BOOTSTRAP_PROCESS_ID
+    fn known_guest_tid(&self, tid: i32) -> bool {
+        tid == BOOTSTRAP_PROCESS_ID
             || self
                 .runtime
                 .borrow()
                 .guest_thread_ids
                 .values()
-                .any(|known_tid| known_tid == tid);
-        if !known {
+                .any(|known_tid| *known_tid == tid)
+    }
+
+    // cite: frameworks-base Process.java#setThreadPriority
+    pub(in crate::dex_run) fn process_set_thread_priority(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        let (tid, priority) = match invocation.arguments.as_slice() {
+            [DexValue::Int(0), DexValue::Int(priority)] => {
+                (self.current_guest_thread_tid(), *priority)
+            }
+            [DexValue::Int(tid), DexValue::Int(priority)] => (*tid, *priority),
+            [DexValue::Int(priority)] => (self.current_guest_thread_tid(), *priority),
+            _ => return None,
+        };
+        if !self.known_guest_tid(tid) {
             return Some(DexExecutionResult::Throw(
                 self.allocate_object("Ljava/lang/IllegalArgumentException;".to_owned()),
             ));
         }
+        self.runtime
+            .borrow_mut()
+            .thread_priorities
+            .insert(tid, priority);
 
         Some(DexExecutionResult::Void)
+    }
+
+    // cite: frameworks-base Process.java#getThreadPriority, THREAD_PRIORITY_DEFAULT
+    pub(in crate::dex_run) fn process_get_thread_priority(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        let [DexValue::Int(tid)] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        let tid = if *tid == 0 {
+            self.current_guest_thread_tid()
+        } else {
+            *tid
+        };
+        if !self.known_guest_tid(tid) {
+            return Some(DexExecutionResult::Throw(
+                self.allocate_object("Ljava/lang/IllegalArgumentException;".to_owned()),
+            ));
+        }
+        let priority = self
+            .runtime
+            .borrow()
+            .thread_priorities
+            .get(&tid)
+            .copied()
+            .unwrap_or(0);
+
+        Some(DexExecutionResult::Int(priority))
     }
 
     // cite: frameworks-base HandlerThread.java#getThreadId, mTid
@@ -74,11 +115,22 @@ impl DexProgram {
         thread: &DexValue,
         depth: usize,
     ) -> Result<()> {
-        self.write_stored_instance_field(
-            thread,
-            &handler_thread_tid_field(),
-            DexValue::Int(self.current_guest_thread_tid()),
-        );
+        let tid = self.current_guest_thread_tid();
+        self.write_stored_instance_field(thread, &handler_thread_tid_field(), DexValue::Int(tid));
+        // cite: frameworks-base HandlerThread.java#run, mPriority
+        let priority_field = DexFieldId {
+            class_descriptor: "Landroid/os/HandlerThread;".to_owned(),
+            type_descriptor: "I".to_owned(),
+            name: "mPriority".to_owned(),
+        };
+        if let Some(DexValue::Int(priority)) =
+            self.read_stored_instance_field(thread, &priority_field)
+        {
+            self.runtime
+                .borrow_mut()
+                .thread_priorities
+                .insert(tid, priority);
+        }
         let looper = self.allocate_object(LOOPER.to_owned());
         if !self.write_stored_instance_field(thread, &handler_thread_looper_field(), looper.clone())
         {

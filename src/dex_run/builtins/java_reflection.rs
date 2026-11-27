@@ -252,6 +252,17 @@ impl DexProgram {
             return self.proxy_is_proxy_class(invocation);
         }
 
+        if method.matches_builtin_signature(
+            "Ljava/lang/reflect/Constructor;",
+            "getModifiers",
+            "()I",
+        ) {
+            let invocation = invocation?;
+            let value = self.constructor_get_modifiers(invocation)?;
+
+            return Some(DexExecutionResult::Int(value));
+        }
+
         if method.class_descriptor == "Ljava/lang/reflect/Constructor;"
             && method.name == "getParameterTypes"
             && method.proto.descriptor_is("()[Ljava/lang/Class;")

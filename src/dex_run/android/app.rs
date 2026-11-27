@@ -1159,6 +1159,12 @@ impl DexProgram {
             .activity_lifecycle_callbacks
             .remove(&map_identity_key(&finished.receiver));
         runtime
+            .finished_activities
+            .insert(map_identity_key(&finished.receiver));
+        runtime
+            .pending_destroyed_activities
+            .push(map_identity_key(&finished.receiver));
+        runtime
             .content_layouts
             .truncate(finished.content_layout_start);
         runtime

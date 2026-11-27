@@ -3584,3 +3584,124 @@ fn libcore_condition_await_parks_and_signal_all_resumes_the_waiter() {
         Some(DexExecutionResult::Void)
     );
 }
+
+// cite: libcore AtomicInteger.java#getAndSet, compareAndSet, incrementAndGet
+#[test]
+fn libcore_atomic_integer_get_and_set_compare_and_set_and_wrapping_increment() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Ljava/util/concurrent/atomic/AtomicInteger;";
+    let init = builtin_method(class, "<init>", "V", &["I"]);
+    let get_and_set = builtin_method(class, "getAndSet", "I", &["I"]);
+    let compare_and_set = builtin_method(class, "compareAndSet", "Z", &["I", "I"]);
+    let increment_and_get = builtin_method(class, "incrementAndGet", "I", &[]);
+    let get = builtin_method(class, "get", "I", &[]);
+    let atomic = program.allocate_object(class.to_owned());
+    let call = |method: &DexMethodId, mut arguments: Vec<DexValue>| {
+        arguments.insert(0, atomic.clone());
+        program.invoke_builtin_method(method, Some(&test_invocation(arguments)))
+    };
+
+    call(&init, vec![DexValue::Int(5)]);
+    assert_eq!(
+        call(&get_and_set, vec![DexValue::Int(9)]),
+        Some(DexExecutionResult::Int(5))
+    );
+    assert_eq!(
+        call(&compare_and_set, vec![DexValue::Int(1), DexValue::Int(2)]),
+        Some(DexExecutionResult::Int(0))
+    );
+    assert_eq!(
+        call(
+            &compare_and_set,
+            vec![DexValue::Int(9), DexValue::Int(i32::MAX)]
+        ),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(
+        call(&increment_and_get, vec![]),
+        Some(DexExecutionResult::Int(i32::MIN))
+    );
+    assert_eq!(call(&get, vec![]), Some(DexExecutionResult::Int(i32::MIN)));
+}
+
+// cite: libcore FutureTask.java#get
+#[test]
+fn future_get_intrinsic_routes_timed_get_to_the_task_outcome() {
+    let program = DexProgram::new(Vec::new());
+    let task = program.allocate_object("Ljava/util/concurrent/FutureTask;".to_owned());
+    let field = |name: &str, type_descriptor: &str| DexFieldId {
+        class_descriptor: "Ljava/util/concurrent/FutureTask;".to_owned(),
+        type_descriptor: type_descriptor.to_owned(),
+        name: name.to_owned(),
+    };
+    let value = DexValue::String(std::rc::Rc::from("done"));
+    program.write_stored_instance_field(&task, &field("done", "Z"), DexValue::Int(1));
+    program.write_stored_instance_field(
+        &task,
+        &field("outcome", "Ljava/lang/Object;"),
+        value.clone(),
+    );
+    let timed = builtin_method(
+        "Ljava/util/concurrent/Future;",
+        "get",
+        "Ljava/lang/Object;",
+        &["J", "Ljava/util/concurrent/TimeUnit;"],
+    );
+    let other = builtin_method("Ljava/util/concurrent/Future;", "isDone", "Z", &[]);
+    let invocation = test_invocation(vec![
+        task,
+        DexValue::Long(5),
+        DexValue::Long(5),
+        DexValue::Reference(std::rc::Rc::from("Ljava/util/concurrent/TimeUnit;:SECONDS")),
+    ]);
+
+    assert_eq!(
+        program
+            .future_get_intrinsic(&timed, &invocation, 0)
+            .unwrap(),
+        Some(DexExecutionResult::Value(value))
+    );
+    assert_eq!(
+        program
+            .future_get_intrinsic(&other, &invocation, 0)
+            .unwrap(),
+        None
+    );
+}
+
+// cite: libcore AtomicInteger.java#getAndDecrement, intValue, longValue, decrementAndGet
+#[test]
+fn libcore_atomic_integer_decrement_and_number_views_wrap_like_java() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Ljava/util/concurrent/atomic/AtomicInteger;";
+    let init = builtin_method(class, "<init>", "V", &["I"]);
+    let get_and_decrement = builtin_method(class, "getAndDecrement", "I", &[]);
+    let decrement_and_get = builtin_method(class, "decrementAndGet", "I", &[]);
+    let int_value = builtin_method(class, "intValue", "I", &[]);
+    let long_value = builtin_method(class, "longValue", "J", &[]);
+    let atomic = program.allocate_object(class.to_owned());
+    let call = |method: &DexMethodId, mut arguments: Vec<DexValue>| {
+        arguments.insert(0, atomic.clone());
+        program.invoke_builtin_method(method, Some(&test_invocation(arguments)))
+    };
+
+    call(&init, vec![DexValue::Int(i32::MIN + 1)]);
+    assert_eq!(
+        call(&get_and_decrement, vec![]),
+        Some(DexExecutionResult::Int(i32::MIN + 1))
+    );
+    assert_eq!(
+        call(&decrement_and_get, vec![]),
+        Some(DexExecutionResult::Int(i32::MAX))
+    );
+    assert_eq!(
+        call(&int_value, vec![]),
+        Some(DexExecutionResult::Int(i32::MAX))
+    );
+    assert_eq!(
+        call(&long_value, vec![]),
+        Some(DexExecutionResult::Value(DexValue::Long(i64::from(
+            i32::MAX
+        ))))
+    );
+}

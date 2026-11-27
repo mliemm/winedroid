@@ -238,8 +238,8 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
-        if (method.matches_builtin_signature("Ljava/util/Random;", "nextInt", "()I")
-            || method.matches_builtin_signature("Ljava/security/SecureRandom;", "nextInt", "()I"))
+        if method.matches_builtin_signature("Ljava/util/Random;", "nextInt", "()I")
+            || method.matches_builtin_signature("Ljava/security/SecureRandom;", "nextInt", "()I")
         {
             let invocation = invocation?;
             // cite: libcore Random.java#nextInt, next
@@ -248,8 +248,8 @@ impl DexProgram {
             return Some(DexExecutionResult::Int(value));
         }
 
-        if (method.matches_builtin_signature("Ljava/util/Random;", "nextFloat", "()F")
-            || method.matches_builtin_signature("Ljava/security/SecureRandom;", "nextFloat", "()F"))
+        if method.matches_builtin_signature("Ljava/util/Random;", "nextFloat", "()F")
+            || method.matches_builtin_signature("Ljava/security/SecureRandom;", "nextFloat", "()F")
         {
             let invocation = invocation?;
             // cite: libcore Random.java#nextFloat, next
@@ -270,8 +270,8 @@ impl DexProgram {
             )));
         }
 
-        if (method.matches_builtin_signature("Ljava/util/Random;", "nextInt", "(I)I")
-            || method.matches_builtin_signature("Ljava/security/SecureRandom;", "nextInt", "(I)I"))
+        if method.matches_builtin_signature("Ljava/util/Random;", "nextInt", "(I)I")
+            || method.matches_builtin_signature("Ljava/security/SecureRandom;", "nextInt", "(I)I")
         {
             let invocation = invocation?;
             // cite: libcore Random.java#nextInt, next

@@ -2548,3 +2548,55 @@ fn libcore_string_byte_array_charset_constructor_decodes_utf8_and_latin1() {
     );
     assert_eq!(decode(vec![DexValue::Int(233)], "ISO-8859-1"), "é");
 }
+
+// cite: libcore StringBuffer.java#StringBuffer, append, toString
+#[test]
+fn libcore_string_buffer_shares_string_builder_semantics() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Ljava/lang/StringBuffer;";
+    let init = builtin_method(class, "<init>", "V", &[]);
+    let append_string = builtin_method(class, "append", class, &["Ljava/lang/String;"]);
+    let append_int = builtin_method(class, "append", class, &["I"]);
+    let to_string = builtin_method(class, "toString", "Ljava/lang/String;", &[]);
+    let buffer = program.allocate_object(class.to_owned());
+    let call = |method: &DexMethodId, mut arguments: Vec<DexValue>| {
+        arguments.insert(0, buffer.clone());
+        program.invoke_builtin_method(method, Some(&test_invocation(arguments)))
+    };
+
+    assert_eq!(call(&init, vec![]), Some(DexExecutionResult::Void));
+    assert_eq!(
+        call(
+            &append_string,
+            vec![DexValue::String(std::rc::Rc::from("id="))]
+        ),
+        Some(DexExecutionResult::Value(buffer.clone()))
+    );
+    call(&append_int, vec![DexValue::Int(7)]);
+    assert_eq!(
+        call(&to_string, vec![]),
+        Some(DexExecutionResult::Value(DexValue::String(
+            std::rc::Rc::from("id=7")
+        )))
+    );
+}
+
+// cite: libcore StringBuffer.java#append
+#[test]
+fn string_buffer_append_object_uses_the_object_append_intrinsic() {
+    let append =
+        |class: &str, ret: &str| builtin_method(class, "append", ret, &["Ljava/lang/Object;"]);
+
+    assert!(crate::dex_run::invocation::is_string_builder_append_object(
+        &append("Ljava/lang/StringBuffer;", "Ljava/lang/StringBuffer;")
+    ));
+    assert!(crate::dex_run::invocation::is_string_builder_append_object(
+        &append("Ljava/lang/StringBuilder;", "Ljava/lang/StringBuilder;")
+    ));
+    assert!(
+        !crate::dex_run::invocation::is_string_builder_append_object(&append(
+            "Ljava/lang/StringBuffer;",
+            "Ljava/lang/StringBuilder;"
+        ))
+    );
+}

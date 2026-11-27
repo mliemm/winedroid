@@ -275,3 +275,75 @@ fn is_variant(subtag: &str) -> bool {
         _ => false,
     }
 }
+
+// cite: libcore LanguageTag.java#parseLocale, isPrivateuseSubtag, PRIVUSE_VARIANT_PREFIX
+// cite: libcore Locale.java#toLanguageTag
+pub(in crate::dex_run) fn locale_language_tag(parts: &LocaleParts) -> String {
+    let mut language = match parts.language.to_ascii_lowercase().as_str() {
+        "iw" => "he".to_owned(),
+        "ji" => "yi".to_owned(),
+        "in" => "id".to_owned(),
+        language if is_language(language) => language.to_owned(),
+        _ => String::new(),
+    };
+    let script = is_script(&parts.script).then(|| canonical_script(&parts.script));
+    let region = is_region(&parts.region).then(|| parts.region.to_ascii_uppercase());
+    let mut variant = parts.variant.as_str();
+    if language == "no" && region.as_deref() == Some("NO") && variant == "NY" {
+        language = "nn".to_owned();
+        variant = "";
+    }
+    let mut subtags = variant
+        .split('_')
+        .filter(|subtag| !subtag.is_empty())
+        .peekable();
+    let mut variants = Vec::new();
+    while let Some(subtag) = subtags.next_if(|subtag| is_variant(subtag)) {
+        variants.push(subtag);
+    }
+    let private_use: Vec<&str> = subtags
+        .take_while(|subtag| {
+            (1..=8).contains(&subtag.len())
+                && subtag.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        })
+        .collect();
+    let has_subtag = script.is_some() || region.is_some() || !variants.is_empty();
+    if language.is_empty() && (has_subtag || private_use.is_empty()) {
+        language = "und".to_owned();
+    }
+
+    let mut tag: Vec<String> = [Some(language), script, region]
+        .into_iter()
+        .flatten()
+        .filter(|subtag| !subtag.is_empty())
+        .collect();
+    tag.extend(variants.into_iter().map(str::to_owned));
+    if !private_use.is_empty() {
+        tag.push(format!("x-lvariant-{}", private_use.join("-")));
+    }
+
+    tag.join("-")
+}
+
+fn canonical_script(script: &str) -> String {
+    let lower = script.to_ascii_lowercase();
+    let mut chars = lower.chars();
+    chars
+        .next()
+        .map(|first| first.to_ascii_uppercase().to_string() + chars.as_str())
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+pub(in crate::dex_run) fn java_locale_parts(
+    language: &str,
+    region: &str,
+    variant: &str,
+) -> LocaleParts {
+    LocaleParts {
+        language: language.to_owned(),
+        script: String::new(),
+        region: region.to_owned(),
+        variant: variant.to_owned(),
+    }
+}

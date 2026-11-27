@@ -363,6 +363,139 @@ pub(in crate::dex_run) fn bootstrap_declared_fields(
                 access_flags: ACCESS_PRIVATE,
             },
         ]),
+        // cite: frameworks-base LayoutInflater.java#TAG, DEBUG, COMPILED_VIEW_DEX_FILE_NAME, USE_PRECOMPILED_LAYOUT, EMPTY_STACK_TRACE, mContext, mFactorySet, mFactory, mFactory2, mPrivateFactory, mFilter, mUseCompiledView, mPrecompiledClassLoader, mConstructorArgs, mConstructorSignature, sConstructorMap, mFilterMap, mTempValue, TAG_MERGE, TAG_INCLUDE, TAG_1995, TAG_REQUEST_FOCUS, TAG_TAG, ATTR_LAYOUT, ATTRS_THEME, BOOT_CLASS_LOADER
+        "Landroid/view/LayoutInflater;" => Some(&[
+            BootstrapDeclaredField {
+                name: "TAG",
+                type_descriptor: "Ljava/lang/String;",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "DEBUG",
+                type_descriptor: "Z",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "COMPILED_VIEW_DEX_FILE_NAME",
+                type_descriptor: "Ljava/lang/String;",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "USE_PRECOMPILED_LAYOUT",
+                type_descriptor: "Ljava/lang/String;",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "EMPTY_STACK_TRACE",
+                type_descriptor: "[Ljava/lang/StackTraceElement;",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "mContext",
+                type_descriptor: "Landroid/content/Context;",
+                access_flags: 0x0014,
+            },
+            BootstrapDeclaredField {
+                name: "mFactorySet",
+                type_descriptor: "Z",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mFactory",
+                type_descriptor: "Landroid/view/LayoutInflater$Factory;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mFactory2",
+                type_descriptor: "Landroid/view/LayoutInflater$Factory2;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mPrivateFactory",
+                type_descriptor: "Landroid/view/LayoutInflater$Factory2;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mFilter",
+                type_descriptor: "Landroid/view/LayoutInflater$Filter;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mUseCompiledView",
+                type_descriptor: "Z",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mPrecompiledClassLoader",
+                type_descriptor: "Ljava/lang/ClassLoader;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mConstructorArgs",
+                type_descriptor: "[Ljava/lang/Object;",
+                access_flags: ACCESS_PACKAGE_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "mConstructorSignature",
+                type_descriptor: "[Ljava/lang/Class;",
+                access_flags: ACCESS_PACKAGE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "sConstructorMap",
+                type_descriptor: "Ljava/util/HashMap;",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "mFilterMap",
+                type_descriptor: "Ljava/util/HashMap;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "mTempValue",
+                type_descriptor: "Landroid/util/TypedValue;",
+                access_flags: ACCESS_PRIVATE,
+            },
+            BootstrapDeclaredField {
+                name: "TAG_MERGE",
+                type_descriptor: "Ljava/lang/String;",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "TAG_INCLUDE",
+                type_descriptor: "Ljava/lang/String;",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "TAG_1995",
+                type_descriptor: "Ljava/lang/String;",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "TAG_REQUEST_FOCUS",
+                type_descriptor: "Ljava/lang/String;",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "TAG_TAG",
+                type_descriptor: "Ljava/lang/String;",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "ATTR_LAYOUT",
+                type_descriptor: "Ljava/lang/String;",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "ATTRS_THEME",
+                type_descriptor: "[I",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+            BootstrapDeclaredField {
+                name: "BOOT_CLASS_LOADER",
+                type_descriptor: "Ljava/lang/ClassLoader;",
+                access_flags: ACCESS_PRIVATE_STATIC_FINAL,
+            },
+        ]),
         // cite: frameworks-base Looper.java#TAG, sThreadLocal, sMainLooper, sObserver, mQueue, mThread, mInLoop, mLogging, mTraceTag, mSlowDispatchThresholdMs, mSlowDeliveryThresholdMs, mSlowDeliveryDetected
         "Landroid/os/Looper;" => Some(&[
             BootstrapDeclaredField {

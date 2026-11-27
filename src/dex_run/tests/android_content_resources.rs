@@ -4815,3 +4815,108 @@ fn builtin_context_wrapper_constructor_sets_base_context() {
         Some(DexExecutionResult::Value(base))
     );
 }
+
+// cite: frameworks-base MutableContextWrapper.java#MutableContextWrapper, setBaseContext
+#[test]
+fn builtin_mutable_context_wrapper_replaces_base_context() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Landroid/content/MutableContextWrapper;";
+    let init = builtin_method(class, "<init>", "V", &["Landroid/content/Context;"]);
+    let set_base = builtin_method(class, "setBaseContext", "V", &["Landroid/content/Context;"]);
+    let get_base = builtin_method(
+        "Landroid/content/ContextWrapper;",
+        "getBaseContext",
+        "Landroid/content/Context;",
+        &[],
+    );
+    let wrapper = program.allocate_object(class.to_owned());
+    let first = DexValue::Reference(std::rc::Rc::from("Landroid/content/Context;.bootstrap"));
+    let second = program.allocate_object("Lcom/example/OtherContext;".to_owned());
+    let call = |method: &DexMethodId, mut arguments: Vec<DexValue>| {
+        arguments.insert(0, wrapper.clone());
+        program.invoke_builtin_method(method, Some(&test_invocation(arguments)))
+    };
+
+    assert_eq!(call(&init, vec![first]), Some(DexExecutionResult::Void));
+    assert_eq!(
+        call(&set_base, vec![second.clone()]),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        call(&get_base, vec![]),
+        Some(DexExecutionResult::Value(second))
+    );
+    assert!(program.value_matches_type(&wrapper, "Landroid/content/ContextWrapper;"));
+}
+
+// cite: frameworks-base LocaleList.java#toLanguageTags
+// cite: libcore Locale.java#toLanguageTag
+#[test]
+fn frameworks_base_locale_list_to_language_tags_uses_bcp47_tags() {
+    let program = DexProgram::new(Vec::new());
+    let configuration = DexValue::Reference(std::rc::Rc::from("configuration"));
+
+    for (language, country, expected) in [
+        ("en", "US", "en-US"),
+        ("iw", "IL", "he-IL"),
+        ("", "", "und"),
+    ] {
+        let locale = constructed_locale(&program, language, country);
+        set_locale(&program, &configuration, &locale);
+        let list = configuration_locales(&program, &configuration);
+
+        assert_eq!(
+            locale_list_call(&program, "toLanguageTags", "Ljava/lang/String;", vec![list]),
+            Some(DexExecutionResult::Value(DexValue::String(
+                std::rc::Rc::from(expected)
+            )))
+        );
+    }
+}
+
+// cite: libcore LanguageTag.java#parseLocale
+// cite: libcore Locale.java#toLanguageTag
+#[test]
+fn libcore_locale_language_tag_matches_parse_locale_edge_cases() {
+    let tag = |language: &str, region: &str, variant: &str| {
+        crate::dex_run::builtins::locale_language_tag(&crate::dex_run::builtins::java_locale_parts(
+            language, region, variant,
+        ))
+    };
+
+    assert_eq!(tag("de", "DE", "1901_ab"), "de-DE-1901-x-lvariant-ab");
+    assert_eq!(tag("en", "US", "WINDOWSXPPRO"), "en-US");
+    assert_eq!(tag("", "", "abc"), "x-lvariant-abc");
+    assert_eq!(tag("no", "NO", "NY"), "nn-NO");
+    assert_eq!(tag("iw", "IL", ""), "he-IL");
+    assert_eq!(tag("", "", ""), "und");
+}
+
+// cite: frameworks-base MutableContextWrapper.java#setBaseContext
+#[test]
+fn builtin_mutable_context_wrapper_set_base_context_null_clears_the_base() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Landroid/content/MutableContextWrapper;";
+    let init = builtin_method(class, "<init>", "V", &["Landroid/content/Context;"]);
+    let set_base = builtin_method(class, "setBaseContext", "V", &["Landroid/content/Context;"]);
+    let base_field = DexFieldId {
+        class_descriptor: "Landroid/content/ContextWrapper;".to_owned(),
+        type_descriptor: "Landroid/content/Context;".to_owned(),
+        name: "mBase".to_owned(),
+    };
+    let wrapper = program.allocate_object(class.to_owned());
+    let base = DexValue::Reference(std::rc::Rc::from("Landroid/content/Context;.bootstrap"));
+    program.invoke_builtin_method(&init, Some(&test_invocation(vec![wrapper.clone(), base])));
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &set_base,
+            Some(&test_invocation(vec![wrapper.clone(), DexValue::Null]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&wrapper, &base_field),
+        None
+    );
+}

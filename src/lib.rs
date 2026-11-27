@@ -10,6 +10,7 @@ mod activity_runtime;
 #[path = "activity_runtime_emscripten.rs"]
 mod activity_runtime;
 mod android_framework;
+mod android_framework_attrs;
 mod apk;
 mod art_probe;
 mod automation;

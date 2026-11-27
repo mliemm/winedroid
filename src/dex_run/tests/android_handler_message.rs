@@ -872,3 +872,186 @@ fn frameworks_handler_send_message_at_front_of_queue_sets_post_flag() {
         .iter()
         .any(|post| post.runnable == message && post.at_front && post.delay_millis == 0));
 }
+
+// cite: frameworks-base Message.java#Message
+#[test]
+fn message_constructor_accepts_object_receiver_only() {
+    let program = DexProgram::new(Vec::new());
+    let init = builtin_method("Landroid/os/Message;", "<init>", "V", &[]);
+    let message = program.allocate_object("Landroid/os/Message;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(&init, Some(&test_invocation(vec![message]))),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&init, Some(&test_invocation(vec![DexValue::Null]))),
+        None
+    );
+}
+
+// cite: frameworks-base Looper.java#getQueue
+#[test]
+fn looper_get_queue_returns_the_same_queue_each_call() {
+    let program = DexProgram::new(Vec::new());
+    let get_queue = builtin_method(
+        "Landroid/os/Looper;",
+        "getQueue",
+        "Landroid/os/MessageQueue;",
+        &[],
+    );
+    let main = DexValue::Reference(std::rc::Rc::from("Landroid/os/Looper;:main"));
+    let call =
+        || program.invoke_builtin_method(&get_queue, Some(&test_invocation(vec![main.clone()])));
+
+    let Some(DexExecutionResult::Value(first)) = call() else {
+        panic!("getQueue should return a queue");
+    };
+    assert!(program.value_matches_type(&first, "Landroid/os/MessageQueue;"));
+    assert_eq!(call(), Some(DexExecutionResult::Value(first)));
+}
+
+// cite: frameworks-base MessageQueue.java#addIdleHandler, removeIdleHandler
+#[test]
+fn message_queue_registers_and_removes_idle_handlers() {
+    let program = DexProgram::new(Vec::new());
+    let add = builtin_method(
+        "Landroid/os/MessageQueue;",
+        "addIdleHandler",
+        "V",
+        &["Landroid/os/MessageQueue$IdleHandler;"],
+    );
+    let remove = builtin_method(
+        "Landroid/os/MessageQueue;",
+        "removeIdleHandler",
+        "V",
+        &["Landroid/os/MessageQueue$IdleHandler;"],
+    );
+    let queue = program.allocate_object("Landroid/os/MessageQueue;".to_owned());
+    let handler = program.allocate_object("Lcom/example/Idle;".to_owned());
+    let call = |method: &DexMethodId, value: DexValue| {
+        program.invoke_builtin_method(method, Some(&test_invocation(vec![queue.clone(), value])))
+    };
+
+    assert_eq!(call(&add, handler.clone()), Some(DexExecutionResult::Void));
+    assert_eq!(program.runtime.borrow().idle_handlers.len(), 1);
+    assert!(matches!(
+        call(&add, DexValue::Null),
+        Some(DexExecutionResult::Throw(_))
+    ));
+    assert_eq!(call(&remove, handler), Some(DexExecutionResult::Void));
+    assert!(program.runtime.borrow().idle_handlers.is_empty());
+}
+
+// cite: frameworks-base HandlerThread.java#run, mPriority
+// cite: frameworks-base Process.java#getThreadPriority
+#[test]
+fn handler_thread_run_applies_its_priority() {
+    let program = DexProgram::new(Vec::new());
+    let thread = program.allocate_object("Landroid/os/HandlerThread;".to_owned());
+    let priority_field = DexFieldId {
+        class_descriptor: "Landroid/os/HandlerThread;".to_owned(),
+        type_descriptor: "I".to_owned(),
+        name: "mPriority".to_owned(),
+    };
+    program.write_stored_instance_field(&thread, &priority_field, DexValue::Int(10));
+    let get = builtin_method("Landroid/os/Process;", "getThreadPriority", "I", &["I"]);
+
+    let tid = program.with_current_guest_thread(thread.clone(), || {
+        let _ = program.run_handler_thread(&thread, 0);
+        program.current_guest_thread_tid()
+    });
+
+    assert_eq!(
+        program.invoke_builtin_method(&get, Some(&test_invocation(vec![DexValue::Int(tid)]))),
+        Some(DexExecutionResult::Int(10))
+    );
+}
+
+// cite: frameworks-base MessageQueue.java#removeIdleHandler
+#[test]
+fn message_queue_remove_idle_handler_ignores_null() {
+    let program = DexProgram::new(Vec::new());
+    let remove = builtin_method(
+        "Landroid/os/MessageQueue;",
+        "removeIdleHandler",
+        "V",
+        &["Landroid/os/MessageQueue$IdleHandler;"],
+    );
+    let queue = program.allocate_object("Landroid/os/MessageQueue;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(&remove, Some(&test_invocation(vec![queue, DexValue::Null]))),
+        Some(DexExecutionResult::Void)
+    );
+}
+
+fn idle_contract_program() -> DexProgram {
+    let dex_file = crate::dex::parse_dex_file(
+        "idle_contract.dex",
+        include_bytes!("fixtures/idle_contract.dex").to_vec(),
+    )
+    .expect("idle contract DEX should parse");
+    DexProgram::new(vec![dex_file])
+}
+
+fn idle_contract_field(name: &str, type_descriptor: &str) -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Lwinedroid/tests/IdleContract;".to_owned(),
+        type_descriptor: type_descriptor.to_owned(),
+        name: name.to_owned(),
+    }
+}
+
+// cite: frameworks-base MessageQueue.java#next, addIdleHandler, IdleHandler
+#[test]
+fn main_loop_runs_idle_handlers_and_drops_those_returning_false() {
+    let program = idle_contract_program();
+    let get_queue = builtin_method(
+        "Landroid/os/Looper;",
+        "getQueue",
+        "Landroid/os/MessageQueue;",
+        &[],
+    );
+    let add = builtin_method(
+        "Landroid/os/MessageQueue;",
+        "addIdleHandler",
+        "V",
+        &["Landroid/os/MessageQueue$IdleHandler;"],
+    );
+    let main = DexValue::Reference(std::rc::Rc::from("Landroid/os/Looper;:main"));
+    let Some(DexExecutionResult::Value(queue)) =
+        program.invoke_builtin_method(&get_queue, Some(&test_invocation(vec![main])))
+    else {
+        panic!("main looper should have a queue");
+    };
+    let once = program.allocate_object("Lwinedroid/tests/IdleContract;".to_owned());
+    let repeating = program.allocate_object("Lwinedroid/tests/IdleContract;".to_owned());
+    program.write_stored_instance_field(
+        &repeating,
+        &idle_contract_field("keep", "Z"),
+        DexValue::Int(1),
+    );
+    for handler in [&once, &repeating] {
+        program.invoke_builtin_method(
+            &add,
+            Some(&test_invocation(vec![queue.clone(), handler.clone()])),
+        );
+    }
+    let calls = |handler: &DexValue| {
+        program.read_stored_instance_field(handler, &idle_contract_field("calls", "I"))
+    };
+
+    program
+        .dispatch_pending_main_loop(320, 480, 0)
+        .expect("main loop should run");
+    assert_eq!(calls(&once), Some(DexValue::Int(1)));
+    assert_eq!(calls(&repeating), Some(DexValue::Int(1)));
+    assert_eq!(program.runtime.borrow().idle_handlers.len(), 1);
+
+    program
+        .dispatch_pending_main_loop(320, 480, 0)
+        .expect("main loop should run");
+    assert_eq!(calls(&once), Some(DexValue::Int(1)));
+    assert_eq!(calls(&repeating), Some(DexValue::Int(2)));
+}

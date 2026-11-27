@@ -550,3 +550,124 @@ pub(in crate::dex_run) fn looper_thread_field() -> DexFieldId {
         name: "mThread".to_owned(),
     }
 }
+
+fn looper_queue_field() -> DexFieldId {
+    DexFieldId {
+        class_descriptor: LOOPER.to_owned(),
+        type_descriptor: "Landroid/os/MessageQueue;".to_owned(),
+        name: "mQueue".to_owned(),
+    }
+}
+
+impl DexProgram {
+    // cite: frameworks-base MessageQueue.java#addIdleHandler, removeIdleHandler, mIdleHandlers
+    pub(in crate::dex_run) fn message_queue_idle_handler(
+        &self,
+        invocation: &DexInvocation,
+        add: bool,
+    ) -> Option<DexExecutionResult> {
+        let [queue, handler] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        if !dex_value_is_object_like(queue) {
+            return None;
+        }
+        if is_android_null_value(handler) {
+            return Some(if add {
+                self.null_pointer_exception_result()
+            } else {
+                DexExecutionResult::Void
+            });
+        }
+        let entry = (map_identity_key(queue), handler.clone());
+        let mut runtime = self.runtime.borrow_mut();
+        if add {
+            runtime.idle_handlers.push(entry);
+        } else if let Some(index) = runtime
+            .idle_handlers
+            .iter()
+            .position(|known| *known == entry)
+        {
+            runtime.idle_handlers.remove(index);
+        }
+
+        Some(DexExecutionResult::Void)
+    }
+
+    // cite: frameworks-base MessageQueue.java#next, queueIdle, pendingIdleHandlerCount
+    pub(in crate::dex_run) fn run_main_idle_handlers(&self, depth: usize) -> Result<bool> {
+        let main_looper = DexValue::Reference(std::rc::Rc::from("Landroid/os/Looper;:main"));
+        let Some(queue) = self.read_stored_instance_field(&main_looper, &looper_queue_field())
+        else {
+            return Ok(false);
+        };
+        let queue_key = map_identity_key(&queue);
+        let handlers: Vec<DexValue> = self
+            .runtime
+            .borrow()
+            .idle_handlers
+            .iter()
+            .filter(|(owner, _)| *owner == queue_key)
+            .map(|(_, handler)| handler.clone())
+            .collect();
+        if handlers.is_empty() {
+            return Ok(false);
+        }
+
+        let queue_idle = DexMethodId {
+            class_descriptor: "Landroid/os/MessageQueue$IdleHandler;".to_owned(),
+            name: "queueIdle".to_owned(),
+            proto: crate::dex::DexProto {
+                shorty: "Z".to_owned(),
+                return_type: "Z".to_owned(),
+                parameters: Vec::new(),
+            },
+        };
+        for handler in handlers {
+            let Some(class_descriptor) = value_class_descriptor(&handler) else {
+                continue;
+            };
+            let receiver_method = DexMethodId {
+                class_descriptor: class_descriptor.to_owned(),
+                ..queue_idle.clone()
+            };
+            let Some(resolved) =
+                self.resolve_exact_method_in_class_hierarchy(class_descriptor, &receiver_method)?
+            else {
+                return Err(WinedroidError::new(format!(
+                    "MessageQueue.IdleHandler.queueIdle was not found\nhandler: {handler}"
+                )));
+            };
+            let keep = match self.execute_method(
+                None,
+                &resolved,
+                Some(&[handler.clone()]),
+                depth + 1,
+            )? {
+                DexExecutionResult::Int(keep) => keep != 0,
+                DexExecutionResult::Parked(execution) => {
+                    self.discard_parked_execution(&execution);
+                    return Err(WinedroidError::new(format!(
+                        "MessageQueue.IdleHandler.queueIdle parked instead of returning\nhandler: {handler}\nnext missing primitive: blocking wait inside an idle handler"
+                    )));
+                }
+                DexExecutionResult::Void
+                | DexExecutionResult::Value(_)
+                | DexExecutionResult::Throw(_) => false,
+            };
+            if !keep {
+                let entry = (queue_key.clone(), handler);
+                let mut runtime = self.runtime.borrow_mut();
+                if let Some(index) = runtime
+                    .idle_handlers
+                    .iter()
+                    .position(|known| *known == entry)
+                {
+                    runtime.idle_handlers.remove(index);
+                }
+            }
+        }
+
+        Ok(true)
+    }
+}

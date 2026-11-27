@@ -316,11 +316,16 @@ fn builtin_layout_inflater_from_returns_bootstrap_reference() {
         )),
     ]);
 
+    let context = DexValue::Reference(std::rc::Rc::from("Landroid/content/Context;.bootstrap"));
+    let Some(DexExecutionResult::Value(from_inflater)) =
+        program.invoke_builtin_method(&from, Some(&test_invocation(vec![context.clone()])))
+    else {
+        panic!("LayoutInflater.from should return an inflater");
+    };
+    assert!(program.value_matches_type(&from_inflater, "Landroid/view/LayoutInflater;"));
     assert_eq!(
-        program.invoke_builtin_method(&from, None),
-        Some(DexExecutionResult::Value(DexValue::Reference(
-            std::rc::Rc::from("Landroid/view/LayoutInflater;.bootstrap")
-        )))
+        program.invoke_builtin_method(&from, Some(&test_invocation(vec![context]))),
+        Some(DexExecutionResult::Value(from_inflater))
     );
     assert_eq!(
         program.invoke_builtin_method(&get_factory, None),
@@ -334,9 +339,12 @@ fn builtin_layout_inflater_from_returns_bootstrap_reference() {
                 DexValue::Reference(std::rc::Rc::from("Landroid/content/Context;.bootstrap")),
             ])),
         ),
-        Some(DexExecutionResult::Value(DexValue::Reference(
-            std::rc::Rc::from("Landroid/view/LayoutInflater;.bootstrap")
-        )))
+        program.invoke_builtin_method(
+            &from,
+            Some(&test_invocation(vec![DexValue::Reference(
+                std::rc::Rc::from("Landroid/content/Context;.bootstrap")
+            )]))
+        )
     );
     assert_eq!(
         program.invoke_builtin_method(&set_factory2, Some(&factory_invocation)),
@@ -628,5 +636,182 @@ fn builtin_menu_item_get_item_id_decodes_synthetic_action_bar_item() {
     assert_eq!(
         program.invoke_builtin_method(&method, Some(&test_invocation(vec![item]))),
         Some(DexExecutionResult::Int(2131034113))
+    );
+}
+
+// cite: frameworks-base LayoutInflater.java#setFactory2, getFactory, getFactory2
+#[test]
+fn builtin_layout_inflater_set_factory2_is_read_back_by_both_getters() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Landroid/view/LayoutInflater;";
+    let set = builtin_method(
+        class,
+        "setFactory2",
+        "V",
+        &["Landroid/view/LayoutInflater$Factory2;"],
+    );
+    let get = builtin_method(
+        class,
+        "getFactory",
+        "Landroid/view/LayoutInflater$Factory;",
+        &[],
+    );
+    let get2 = builtin_method(
+        class,
+        "getFactory2",
+        "Landroid/view/LayoutInflater$Factory2;",
+        &[],
+    );
+    let inflater =
+        DexValue::Reference(std::rc::Rc::from("Landroid/view/LayoutInflater;.bootstrap"));
+    let factory = program.allocate_object("Lcom/example/Factory;".to_owned());
+    let call = |method: &DexMethodId, mut arguments: Vec<DexValue>| {
+        arguments.insert(0, inflater.clone());
+        program.invoke_builtin_method(method, Some(&test_invocation(arguments)))
+    };
+
+    assert_eq!(
+        call(&get2, vec![]),
+        Some(DexExecutionResult::Value(DexValue::Null))
+    );
+    assert!(matches!(
+        call(&set, vec![DexValue::Null]),
+        Some(DexExecutionResult::Throw(_))
+    ));
+    assert_eq!(
+        call(&set, vec![factory.clone()]),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        call(&get, vec![]),
+        Some(DexExecutionResult::Value(factory.clone()))
+    );
+    assert_eq!(
+        call(&get2, vec![]),
+        Some(DexExecutionResult::Value(factory))
+    );
+}
+
+// cite: frameworks-base LayoutInflater.java#getContext
+#[test]
+fn builtin_layout_inflater_get_context_returns_the_current_activity() {
+    let program = DexProgram::new(Vec::new());
+    let get_context = builtin_method(
+        "Landroid/view/LayoutInflater;",
+        "getContext",
+        "Landroid/content/Context;",
+        &[],
+    );
+    let inflater =
+        DexValue::Reference(std::rc::Rc::from("Landroid/view/LayoutInflater;.bootstrap"));
+    let activity = program.allocate_object("Lcom/example/MainActivity;".to_owned());
+    program.runtime.borrow_mut().activity_receiver = Some(activity.clone());
+
+    assert_eq!(
+        program.invoke_builtin_method(&get_context, Some(&test_invocation(vec![inflater]))),
+        Some(DexExecutionResult::Value(activity))
+    );
+}
+
+// cite: frameworks-base LayoutInflater.java#setFactory, setFactory2, cloneInContext, LayoutInflater
+#[test]
+fn builtin_layout_inflater_factories_are_set_once_per_context_and_copied_by_clone() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Landroid/view/LayoutInflater;";
+    let from = builtin_method(class, "from", class, &["Landroid/content/Context;"]);
+    let set = builtin_method(
+        class,
+        "setFactory",
+        "V",
+        &["Landroid/view/LayoutInflater$Factory;"],
+    );
+    let set2 = builtin_method(
+        class,
+        "setFactory2",
+        "V",
+        &["Landroid/view/LayoutInflater$Factory2;"],
+    );
+    let get = builtin_method(
+        class,
+        "getFactory",
+        "Landroid/view/LayoutInflater$Factory;",
+        &[],
+    );
+    let get2 = builtin_method(
+        class,
+        "getFactory2",
+        "Landroid/view/LayoutInflater$Factory2;",
+        &[],
+    );
+    let clone = builtin_method(
+        class,
+        "cloneInContext",
+        class,
+        &["Landroid/content/Context;"],
+    );
+    let call = |method: &DexMethodId, arguments: Vec<DexValue>| {
+        program.invoke_builtin_method(method, Some(&test_invocation(arguments)))
+    };
+    let inflater_for = |context: &DexValue| match call(&from, vec![context.clone()]) {
+        Some(DexExecutionResult::Value(inflater)) => inflater,
+        other => panic!("from should return an inflater, got {other:?}"),
+    };
+    let first_activity = program.allocate_object("Lcom/example/First;".to_owned());
+    let second_activity = program.allocate_object("Lcom/example/Second;".to_owned());
+    let wrapper = program.allocate_object("Lcom/example/Wrapper;".to_owned());
+    let factory = program.allocate_object("Lcom/example/Factory;".to_owned());
+    let other = program.allocate_object("Lcom/example/OtherFactory;".to_owned());
+    let first = inflater_for(&first_activity);
+
+    assert_eq!(
+        call(&set, vec![first.clone(), factory.clone()]),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        call(&get, vec![first.clone()]),
+        Some(DexExecutionResult::Value(factory.clone()))
+    );
+    assert_eq!(
+        call(&get2, vec![first.clone()]),
+        Some(DexExecutionResult::Value(DexValue::Null))
+    );
+    let Some(DexExecutionResult::Throw(error)) = call(&set2, vec![first.clone(), other.clone()])
+    else {
+        panic!("a second factory on the same inflater should throw");
+    };
+    assert!(program.value_matches_type(&error, "Ljava/lang/IllegalStateException;"));
+
+    let second = inflater_for(&second_activity);
+    assert_eq!(
+        call(&get, vec![second.clone()]),
+        Some(DexExecutionResult::Value(DexValue::Null))
+    );
+    assert_eq!(
+        call(&set2, vec![second.clone(), other.clone()]),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        call(&get2, vec![second]),
+        Some(DexExecutionResult::Value(other.clone()))
+    );
+
+    let Some(DexExecutionResult::Value(cloned)) = call(&clone, vec![first, wrapper]) else {
+        panic!("cloneInContext should return an inflater");
+    };
+    assert_eq!(
+        call(&get, vec![cloned.clone()]),
+        Some(DexExecutionResult::Value(factory))
+    );
+    assert_eq!(
+        call(&set2, vec![cloned.clone(), other.clone()]),
+        Some(DexExecutionResult::Void)
+    );
+    let Some(DexExecutionResult::Value(merged)) = call(&get2, vec![cloned.clone()]) else {
+        panic!("getFactory2 should return the merged factory");
+    };
+    assert!(program.value_matches_type(&merged, "Landroid/view/LayoutInflater$FactoryMerger;"));
+    assert_eq!(
+        call(&get, vec![cloned]),
+        Some(DexExecutionResult::Value(merged))
     );
 }

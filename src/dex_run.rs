@@ -2560,8 +2560,15 @@ impl DexProgram {
         let mut dispatched = 0usize;
         let mut dispatched_frame_batch = false;
         let mut work_budget_exhausted = false;
+        self.runtime.borrow_mut().idle_handlers_ran = false;
 
         for pass in 0..max_passes {
+            // cite: frameworks-base Activity.java#performDestroy, mDestroyed
+            {
+                let mut runtime = self.runtime.borrow_mut();
+                let destroyed = std::mem::take(&mut runtime.pending_destroyed_activities);
+                runtime.destroyed_activities.extend(destroyed);
+            }
             let work = self
                 .runtime
                 .borrow_mut()
@@ -2582,6 +2589,15 @@ impl DexProgram {
                 && work.thread_resumes.is_empty()
                 && !traversal_pending
             {
+                let run_idle =
+                    !std::mem::replace(&mut self.runtime.borrow_mut().idle_handlers_ran, true);
+                if run_idle && self.run_main_idle_handlers(depth + 1)? {
+                    trace::event(
+                        "runtime",
+                        format!("main loop pass {pass} ran idle handlers"),
+                    );
+                    continue;
+                }
                 let frame_interval_millis_ceil = self.runtime.borrow().frame_interval_millis_ceil();
                 let advanced_to_timed_event = self
                     .runtime
@@ -2603,6 +2619,7 @@ impl DexProgram {
                 break;
             }
 
+            self.runtime.borrow_mut().idle_handlers_ran = false;
             trace::event(
                 "runtime",
                 format!(
@@ -2637,7 +2654,11 @@ impl DexProgram {
                 );
                 {
                     let _span = trace::span("runtime", "dispatch Handler.post callback");
-                    match self.handler_looper_thread(&post.handler_key) {
+                    let thread = match self.handler_looper_thread(&post.handler_key) {
+                        Some(thread) => Some(thread),
+                        None => self.executor_worker_thread(&post.handler_key, depth + 1)?,
+                    };
+                    match thread {
                         Some(thread) => self.with_current_guest_thread(thread, || {
                             self.dispatch_handler_post(&post, depth + 1)
                         })?,
@@ -3043,9 +3064,7 @@ impl DexProgram {
 
     // cite: libcore FutureTask.java#run
     fn future_task_run(&self, receiver: &DexValue, depth: usize) -> Result<()> {
-        self.with_current_guest_thread(background_pool_thread_reference(), || {
-            self.future_task_run_as_current(receiver, depth)
-        })
+        self.future_task_run_as_current(receiver, depth)
     }
 
     fn future_task_run_as_current(&self, receiver: &DexValue, depth: usize) -> Result<()> {
@@ -17794,11 +17813,6 @@ fn obfuscated_lifecycle_event_target_state(arguments: &[DexValue]) -> Option<Dex
 // cite: frameworks-base ActivityThread.java#main
 fn main_guest_thread_reference() -> DexValue {
     DexValue::Reference(std::rc::Rc::from("Ljava/lang/Thread;:main"))
-}
-
-// cite: libcore ThreadPoolExecutor.java#runWorker
-fn background_pool_thread_reference() -> DexValue {
-    DexValue::Reference(std::rc::Rc::from("Ljava/lang/Thread;:pool"))
 }
 
 // cite: frameworks-base Activity.java#runOnUiThread

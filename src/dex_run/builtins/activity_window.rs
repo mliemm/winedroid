@@ -522,9 +522,11 @@ impl DexProgram {
                 .proto
                 .descriptor_is("()Landroid/view/LayoutInflater;")
         {
-            return Some(DexExecutionResult::Value(DexValue::Reference(
-                std::rc::Rc::from("Landroid/view/LayoutInflater;.bootstrap"),
-            )));
+            // cite: frameworks-base Activity.java#getLayoutInflater
+            let activity = invocation?.arguments.first()?.clone();
+            return Some(DexExecutionResult::Value(
+                self.layout_inflater_for_context(&activity),
+            ));
         }
 
         // cite: frameworks-base Activity.java#getIntent, setIntent, mIntent
@@ -537,7 +539,8 @@ impl DexProgram {
             "Landroid/app/Activity;",
             "getIntent",
             "()Landroid/content/Intent;",
-        ) {
+        ) && !self.guest_overrides(method, invocation)
+        {
             let stored = invocation
                 .and_then(|invocation| invocation.arguments.first())
                 .and_then(|activity| {
@@ -551,9 +554,62 @@ impl DexProgram {
 
         if method.matches_builtin_signature(
             "Landroid/app/Activity;",
+            "getReferrer",
+            "()Landroid/net/Uri;",
+        ) && !self.guest_overrides(method, invocation)
+        {
+            // cite: frameworks-base Activity.java#getReferrer, mReferrer
+            // cite: frameworks-base Intent.java#EXTRA_REFERRER, EXTRA_REFERRER_NAME
+            let invocation = invocation?;
+            let activity = invocation.arguments.first()?;
+            let parse = |uri: String| {
+                self.parse_uri(&DexInvocation {
+                    arguments: smallvec::smallvec![DexValue::String(std::rc::Rc::from(uri))],
+                    ..invocation.clone()
+                })
+            };
+            if let Some(intent) =
+                self.read_stored_instance_field(activity, &activity_intent_field())
+            {
+                let extra = |name: &str| {
+                    self.runtime
+                        .borrow()
+                        .intent_extras
+                        .get(&(map_identity_key(&intent), name.to_owned()))
+                        .cloned()
+                };
+                if let Some(referrer) =
+                    extra("android.intent.extra.REFERRER").filter(dex_value_is_object_like)
+                {
+                    return Some(DexExecutionResult::Value(referrer));
+                }
+                if let Some(DexValue::String(name)) = extra("android.intent.extra.REFERRER_NAME") {
+                    return Some(DexExecutionResult::Value(parse(name.to_string())?));
+                }
+            }
+            let root = self
+                .runtime
+                .borrow()
+                .activity_stack
+                .first()
+                .is_none_or(|root| map_identity_key(&root.receiver) == map_identity_key(activity));
+            let referrer = if root {
+                "com.android.launcher3".to_owned()
+            } else {
+                self.package_name.clone().unwrap_or_default()
+            };
+
+            return Some(DexExecutionResult::Value(parse(format!(
+                "android-app://{referrer}"
+            ))?));
+        }
+
+        if method.matches_builtin_signature(
+            "Landroid/app/Activity;",
             "setIntent",
             "(Landroid/content/Intent;)V",
-        ) {
+        ) && !self.guest_overrides(method, invocation)
+        {
             let [activity, intent] = invocation?.arguments.as_slice() else {
                 return None;
             };
@@ -646,10 +702,23 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Landroid/app/Activity;"
-            && method.name == "isFinishing"
+            && matches!(method.name.as_str(), "isFinishing" | "isDestroyed")
             && method.proto.descriptor_is("()Z")
+            && !self.guest_overrides(method, invocation)
         {
-            return Some(DexExecutionResult::Int(0));
+            // cite: frameworks-base Activity.java#isFinishing, isDestroyed, mFinished, mDestroyed
+            let state = invocation
+                .and_then(|invocation| invocation.arguments.first())
+                .is_some_and(|activity| {
+                    let runtime = self.runtime.borrow();
+                    let key = map_identity_key(activity);
+                    if method.name == "isFinishing" {
+                        runtime.finished_activities.contains(&key)
+                    } else {
+                        runtime.destroyed_activities.contains(&key)
+                    }
+                });
+            return Some(DexExecutionResult::Int(i32::from(state)));
         }
 
         if method.class_descriptor == "Landroid/app/Application;"

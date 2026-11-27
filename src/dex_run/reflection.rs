@@ -1238,6 +1238,50 @@ impl DexProgram {
         Some(array)
     }
 
+    // cite: libcore Constructor.java#getModifiers
+    // cite: libcore Executable.java#getModifiersInternal, fixMethodFlags
+    pub(super) fn constructor_get_modifiers(&self, invocation: &DexInvocation) -> Option<i32> {
+        let [constructor] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        let (class_descriptor, parameter_key) = reflect_constructor_reference(constructor)?;
+        let parameters = self.reflect_constructor_parameter_descriptors(parameter_key)?;
+        let shorty = std::iter::once('V')
+            .chain(
+                parameters
+                    .iter()
+                    .map(|parameter| match parameter.as_bytes()[0] {
+                        b'[' | b'L' => 'L',
+                        other => char::from(other),
+                    }),
+            )
+            .collect();
+        let method = DexMethodId {
+            class_descriptor: class_descriptor.to_owned(),
+            name: "<init>".to_owned(),
+            proto: crate::dex::DexProto {
+                shorty,
+                return_type: "V".to_owned(),
+                parameters,
+            },
+        };
+        let Some(resolved) = self.resolve_exact_method(&method).ok()? else {
+            return (self.load_class(class_descriptor).is_none()
+                && is_bootstrap_class_descriptor(class_descriptor))
+            .then_some(JAVA_ACC_PUBLIC as i32);
+        };
+        let mut flags = resolved.encoded_method.access_flags;
+        if flags & JAVA_ACC_ABSTRACT != 0 {
+            flags &= !0x0100;
+        }
+        flags &= !0x0020;
+        if flags & 0x0002_0000 != 0 {
+            flags |= 0x0020;
+        }
+
+        i32::try_from(flags & 0xffff).ok()
+    }
+
     // cite: libcore Constructor.java#getParameterTypes
     pub(super) fn constructor_get_parameter_types(
         &self,

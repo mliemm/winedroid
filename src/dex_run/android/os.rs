@@ -172,7 +172,7 @@ impl DexProgram {
         let value = runtime.atomic_integer_values.entry(object_key).or_insert(0);
         let previous = *value;
 
-        *value = (*value).checked_add(delta)?;
+        *value = (*value).wrapping_add(delta);
 
         Some((previous, *value))
     }
@@ -249,6 +249,27 @@ impl DexProgram {
         Some(1)
     }
 
+    // cite: libcore AtomicInteger.java#set, lazySet, getAndSet, compareAndSet, weakCompareAndSet, getAndDecrement
+    pub(in crate::dex_run) fn atomic_integer_update(
+        &self,
+        invocation: &DexInvocation,
+        update: impl FnOnce(i32) -> (i32, i32),
+    ) -> Option<i32> {
+        let object = invocation.arguments.first()?;
+        if !dex_value_is_object_like(object) {
+            return None;
+        }
+        let mut runtime = self.runtime.borrow_mut();
+        let value = runtime
+            .atomic_integer_values
+            .entry(map_identity_key(object))
+            .or_insert(0);
+        let (next, result) = update(*value);
+        *value = next;
+
+        Some(result)
+    }
+
     pub(in crate::dex_run) fn increment_atomic_integer(
         &self,
         invocation: &DexInvocation,
@@ -258,7 +279,7 @@ impl DexProgram {
         let mut runtime = self.runtime.borrow_mut();
         let value = runtime.atomic_integer_values.entry(object_key).or_insert(0);
 
-        *value = (*value).checked_add(1)?;
+        *value = (*value).wrapping_add(1);
 
         Some(*value)
     }
@@ -273,7 +294,7 @@ impl DexProgram {
         let value = runtime.atomic_integer_values.entry(object_key).or_insert(0);
         let previous = *value;
 
-        *value = (*value).checked_add(1)?;
+        *value = (*value).wrapping_add(1);
 
         Some(previous)
     }
@@ -287,7 +308,7 @@ impl DexProgram {
         let mut runtime = self.runtime.borrow_mut();
         let value = runtime.atomic_integer_values.entry(object_key).or_insert(0);
 
-        *value = (*value).checked_sub(1)?;
+        *value = (*value).wrapping_sub(1);
 
         Some(*value)
     }
@@ -848,7 +869,7 @@ impl DexProgram {
             Some(DexValue::Int(value)) => value,
             _ => return None,
         };
-        let next = current.checked_add(delta)?;
+        let next = current.wrapping_add(delta);
 
         self.write_stored_instance_field(target, &field, DexValue::Int(next))
             .then_some((current, next))
@@ -952,7 +973,7 @@ impl DexProgram {
             Some(DexValue::Int(value)) => i64::from(value),
             _ => return None,
         };
-        let next = current.checked_add(delta)?;
+        let next = current.wrapping_add(delta);
 
         self.write_stored_instance_field(target, &field, DexValue::Long(next))
             .then_some((current, next))
@@ -996,7 +1017,7 @@ impl DexProgram {
             Some(DexValue::Int(value)) => i64::from(value),
             _ => return None,
         };
-        let next = current.checked_add(delta)?;
+        let next = current.wrapping_add(delta);
 
         self.write_stored_instance_field(target, &field, DexValue::Long(next))
             .then_some(next)
@@ -1300,7 +1321,14 @@ impl DexProgram {
 
         let handler = &invocation.arguments[0];
         let key = map_identity_key(handler);
+        let executor = self.is_thread_pool_executor(handler)
+            || matches!(handler, DexValue::Reference(reference) if is_executors_factory_reference(reference));
         let mut runtime = self.runtime.borrow_mut();
+        if executor {
+            runtime
+                .executor_handlers
+                .insert(key.clone(), handler.clone());
+        }
         if runtime.handler_loopers.contains_key(&key) {
             runtime.post_handler_callback(handler.clone(), runnable, 0, false);
         } else {
@@ -1654,6 +1682,10 @@ impl DexProgram {
             &future_task_runnable_result_field(),
             DexValue::Null,
         );
+        self.runtime
+            .borrow_mut()
+            .executor_handlers
+            .insert(map_identity_key(executor), executor.clone());
         self.runtime.borrow_mut().post_handler_runnable(
             map_identity_key(executor),
             task.clone(),
@@ -1712,6 +1744,10 @@ impl DexProgram {
             &scheduled_future_task_period_field(),
             DexValue::Long(period_nanos),
         );
+        self.runtime
+            .borrow_mut()
+            .executor_handlers
+            .insert(map_identity_key(executor), executor.clone());
         self.runtime.borrow_mut().post_handler_runnable(
             map_identity_key(executor),
             task.clone(),
@@ -1770,6 +1806,10 @@ impl DexProgram {
             &scheduled_future_task_period_field(),
             DexValue::Long(-period_nanos),
         );
+        self.runtime
+            .borrow_mut()
+            .executor_handlers
+            .insert(map_identity_key(executor), executor.clone());
         self.runtime.borrow_mut().post_handler_runnable(
             map_identity_key(executor),
             task.clone(),
@@ -2483,6 +2523,91 @@ fn thread_pool_executor_work_queue_field() -> DexFieldId {
         class_descriptor: "Ljava/util/concurrent/ThreadPoolExecutor;".to_owned(),
         type_descriptor: "Ljava/util/concurrent/BlockingQueue;".to_owned(),
         name: "workQueue".to_owned(),
+    }
+}
+
+impl DexProgram {
+    // cite: libcore ThreadPoolExecutor.java#addWorker, Worker, getThreadFactory
+    // cite: libcore Executors.java#DefaultThreadFactory, newThread
+    pub(in crate::dex_run) fn executor_worker_thread(
+        &self,
+        handler_key: &str,
+        depth: usize,
+    ) -> Result<Option<DexValue>> {
+        let (executor, cached) = {
+            let runtime = self.runtime.borrow();
+            let Some(executor) = runtime.executor_handlers.get(handler_key).cloned() else {
+                return Ok(None);
+            };
+            (executor, runtime.executor_workers.get(handler_key).cloned())
+        };
+        if let Some(worker) = cached {
+            return Ok(Some(worker));
+        }
+
+        let worker_runnable = DexValue::Reference(std::rc::Rc::from(format!(
+            "Ljava/util/concurrent/ThreadPoolExecutor$Worker;:{handler_key}"
+        )));
+        let factory = self
+            .read_stored_instance_field(&executor, &thread_pool_executor_thread_factory_field())
+            .filter(|factory| matches!(factory, DexValue::Object(_)));
+        let mut worker = None;
+        if let Some(factory) = factory {
+            let class_descriptor = value_class_descriptor(&factory)
+                .unwrap_or_default()
+                .to_owned();
+            let new_thread = DexMethodId {
+                class_descriptor: class_descriptor.clone(),
+                name: "newThread".to_owned(),
+                proto: crate::dex::DexProto {
+                    shorty: "LL".to_owned(),
+                    return_type: "Ljava/lang/Thread;".to_owned(),
+                    parameters: vec!["Ljava/lang/Runnable;".to_owned()],
+                },
+            };
+            if let Some(resolved) =
+                self.resolve_exact_method_in_class_hierarchy(&class_descriptor, &new_thread)?
+            {
+                if let DexExecutionResult::Value(
+                    thread @ (DexValue::Object(_) | DexValue::Reference(_)),
+                ) = self.execute_method(
+                    None,
+                    &resolved,
+                    Some(&[factory, worker_runnable]),
+                    depth + 1,
+                )? {
+                    worker = Some(thread);
+                }
+            }
+        }
+        let worker = match worker {
+            Some(worker) => worker,
+            None => {
+                let pool = {
+                    let mut runtime = self.runtime.borrow_mut();
+                    let pool = runtime.next_thread_pool_number;
+                    runtime.next_thread_pool_number += 1;
+                    pool
+                };
+                let thread = self.allocate_object("Ljava/lang/Thread;".to_owned());
+                self.write_stored_instance_field(
+                    &thread,
+                    &DexFieldId {
+                        class_descriptor: "Ljava/lang/Thread;".to_owned(),
+                        type_descriptor: "Ljava/lang/String;".to_owned(),
+                        name: "name".to_owned(),
+                    },
+                    DexValue::String(std::rc::Rc::from(format!("pool-{pool}-thread-1"))),
+                );
+                thread
+            }
+        };
+        self.runtime
+            .borrow_mut()
+            .executor_workers
+            .insert(handler_key.to_owned(), worker.clone());
+
+        Ok(Some(worker))
     }
 }
 

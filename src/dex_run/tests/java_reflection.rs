@@ -2674,3 +2674,103 @@ fn builtin_reflect_method_get_default_value_is_null_outside_annotations() {
         None
     );
 }
+
+// cite: libcore Constructor.java#getModifiers
+#[test]
+fn builtin_constructor_get_modifiers_reports_public_bootstrap_constructor() {
+    let program = DexProgram::new(Vec::new());
+    let get_modifiers = builtin_method("Ljava/lang/reflect/Constructor;", "getModifiers", "I", &[]);
+    let constructor = DexValue::Reference(std::rc::Rc::from(
+        "Ljava/lang/reflect/Constructor;:Ljava/util/ArrayList;:null",
+    ));
+
+    assert_eq!(
+        program.invoke_builtin_method(&get_modifiers, Some(&test_invocation(vec![constructor]))),
+        Some(DexExecutionResult::Int(JAVA_ACC_PUBLIC as i32))
+    );
+}
+
+// cite: frameworks-base LayoutInflater.java#mFactory2
+#[test]
+fn builtin_get_declared_field_reads_layout_inflater_factory2() {
+    let program = DexProgram::new(Vec::new());
+    let get_declared_field = builtin_method(
+        "Ljava/lang/Class;",
+        "getDeclaredField",
+        "Ljava/lang/reflect/Field;",
+        &["Ljava/lang/String;"],
+    );
+    let field_get = builtin_method(
+        "Ljava/lang/reflect/Field;",
+        "get",
+        "Ljava/lang/Object;",
+        &["Ljava/lang/Object;"],
+    );
+    let set_factory2 = builtin_method(
+        "Landroid/view/LayoutInflater;",
+        "setFactory2",
+        "V",
+        &["Landroid/view/LayoutInflater$Factory2;"],
+    );
+    let inflater =
+        DexValue::Reference(std::rc::Rc::from("Landroid/view/LayoutInflater;.bootstrap"));
+    let factory = program.allocate_object("Lcom/example/Factory;".to_owned());
+    program.invoke_builtin_method(
+        &set_factory2,
+        Some(&test_invocation(vec![inflater.clone(), factory.clone()])),
+    );
+
+    let Some(DexExecutionResult::Value(field)) = program.invoke_builtin_method(
+        &get_declared_field,
+        Some(&test_invocation(vec![
+            DexValue::Reference(std::rc::Rc::from(
+                "Ljava/lang/Class;:Landroid/view/LayoutInflater;",
+            )),
+            DexValue::String(std::rc::Rc::from("mFactory2")),
+        ])),
+    ) else {
+        panic!("getDeclaredField should return a Field");
+    };
+    assert_eq!(
+        program.invoke_builtin_method(&field_get, Some(&test_invocation(vec![field, inflater]))),
+        Some(DexExecutionResult::Value(factory))
+    );
+}
+
+// cite: libcore Executable.java#getModifiersInternal, fixMethodFlags
+#[test]
+fn builtin_constructor_get_modifiers_masks_dex_constructor_flags() {
+    let dex_file = crate::dex::parse_dex_file(
+        "idle_contract.dex",
+        include_bytes!("fixtures/idle_contract.dex").to_vec(),
+    )
+    .expect("fixture DEX should parse");
+    let program = DexProgram::new(vec![dex_file]);
+    let get_modifiers = builtin_method("Ljava/lang/reflect/Constructor;", "getModifiers", "I", &[]);
+    let modifiers = |parameters: &[&str]| {
+        let descriptors: Vec<String> = parameters.iter().map(|value| (*value).to_owned()).collect();
+        let key = if descriptors.is_empty() {
+            "null".to_owned()
+        } else {
+            map_identity_key(
+                &program
+                    .allocate_class_array(&descriptors)
+                    .expect("class array"),
+            )
+        };
+        let constructor = DexValue::Reference(std::rc::Rc::from(format!(
+            "Ljava/lang/reflect/Constructor;:Lwinedroid/tests/ModifierContract;:{key}"
+        )));
+        program.invoke_builtin_method(&get_modifiers, Some(&test_invocation(vec![constructor])))
+    };
+
+    assert_eq!(
+        modifiers(&[]),
+        Some(DexExecutionResult::Int(JAVA_ACC_PUBLIC as i32))
+    );
+    assert_eq!(
+        modifiers(&["I"]),
+        Some(DexExecutionResult::Int(JAVA_ACC_PRIVATE as i32))
+    );
+    assert_eq!(modifiers(&["J"]), Some(DexExecutionResult::Int(0x0004)));
+}

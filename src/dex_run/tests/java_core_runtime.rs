@@ -4753,3 +4753,92 @@ fn libcore_runtime_exec_getprop_exposes_the_property_on_the_process_input_stream
         )))
     );
 }
+
+#[test]
+fn frameworks_base_process_get_thread_priority_returns_the_set_priority() {
+    // cite: frameworks-base Process.java#getThreadPriority, setThreadPriority, THREAD_PRIORITY_DEFAULT
+    let program = DexProgram::new(Vec::new());
+    let set = builtin_method(
+        "Landroid/os/Process;",
+        "setThreadPriority",
+        "V",
+        &["I", "I"],
+    );
+    let get = builtin_method("Landroid/os/Process;", "getThreadPriority", "I", &["I"]);
+    let get_priority = |tid: i32| {
+        program.invoke_builtin_method(&get, Some(&test_invocation(vec![DexValue::Int(tid)])))
+    };
+
+    assert_eq!(
+        get_priority(BOOTSTRAP_PROCESS_ID),
+        Some(DexExecutionResult::Int(0))
+    );
+    program.invoke_builtin_method(
+        &set,
+        Some(&test_invocation(vec![
+            DexValue::Int(BOOTSTRAP_PROCESS_ID),
+            DexValue::Int(10),
+        ])),
+    );
+    assert_eq!(
+        get_priority(BOOTSTRAP_PROCESS_ID),
+        Some(DexExecutionResult::Int(10))
+    );
+    assert_eq!(get_priority(0), Some(DexExecutionResult::Int(10)));
+    assert!(matches!(
+        get_priority(BOOTSTRAP_PROCESS_ID + 7),
+        Some(DexExecutionResult::Throw(_))
+    ));
+}
+
+// cite: libcore Executors.java#DefaultThreadFactory, newThread
+// cite: libcore Thread.java#nextThreadNum
+#[test]
+fn libcore_default_thread_names_follow_thread_and_pool_numbering() {
+    let program = DexProgram::new(Vec::new());
+    let init = builtin_method("Ljava/lang/Thread;", "<init>", "V", &[]);
+    let get_name = builtin_method("Ljava/lang/Thread;", "getName", "Ljava/lang/String;", &[]);
+    let name_of = |thread: &DexValue| {
+        program.invoke_builtin_method(&get_name, Some(&test_invocation(vec![thread.clone()])))
+    };
+    let string = |value: &str| {
+        Some(DexExecutionResult::Value(DexValue::String(
+            std::rc::Rc::from(value),
+        )))
+    };
+    let first = program.allocate_object("Ljava/lang/Thread;".to_owned());
+    let second = program.allocate_object("Ljava/lang/Thread;".to_owned());
+    program.invoke_builtin_method(&init, Some(&test_invocation(vec![first.clone()])));
+    program.invoke_builtin_method(&init, Some(&test_invocation(vec![second.clone()])));
+
+    assert_eq!(name_of(&first), string("Thread-0"));
+    assert_eq!(name_of(&second), string("Thread-1"));
+
+    for (index, executor) in [
+        "Ljava/util/concurrent/ExecutorService;.single",
+        "Ljava/util/concurrent/ExecutorService;.cached",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let executor = DexValue::Reference(std::rc::Rc::from(executor));
+        let key = map_identity_key(&executor);
+        program
+            .runtime
+            .borrow_mut()
+            .executor_handlers
+            .insert(key.clone(), executor);
+        let worker = program
+            .executor_worker_thread(&key, 0)
+            .expect("worker creation should succeed")
+            .expect("an executor has a worker");
+        assert_eq!(
+            name_of(&worker),
+            string(&format!("pool-{}-thread-1", index + 1))
+        );
+        assert_eq!(
+            program.executor_worker_thread(&key, 0).unwrap(),
+            Some(worker)
+        );
+    }
+}

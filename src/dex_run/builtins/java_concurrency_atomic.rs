@@ -640,6 +640,54 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        if method.class_descriptor == "Ljava/util/concurrent/atomic/AtomicInteger;" {
+            let int_argument = |index: usize| match invocation?.arguments.get(index)? {
+                DexValue::Int(value) => Some(*value),
+                _ => None,
+            };
+            let result = match (method.name.as_str(), method.proto.descriptor().as_str()) {
+                ("set" | "lazySet", "(I)V") => {
+                    let next = int_argument(1)?;
+                    self.atomic_integer_update(invocation?, |_| (next, 0))?;
+                    Some(DexExecutionResult::Void)
+                }
+                ("getAndSet", "(I)I") => {
+                    let next = int_argument(1)?;
+                    let previous =
+                        self.atomic_integer_update(invocation?, |current| (next, current))?;
+                    Some(DexExecutionResult::Int(previous))
+                }
+                ("compareAndSet" | "weakCompareAndSet", "(II)Z") => {
+                    let (expected, next) = (int_argument(1)?, int_argument(2)?);
+                    let swapped = self.atomic_integer_update(invocation?, |current| {
+                        if current == expected {
+                            (next, 1)
+                        } else {
+                            (current, 0)
+                        }
+                    })?;
+                    Some(DexExecutionResult::Int(swapped))
+                }
+                ("getAndDecrement", "()I") => {
+                    let previous = self.atomic_integer_update(invocation?, |current| {
+                        (current.wrapping_sub(1), current)
+                    })?;
+                    Some(DexExecutionResult::Int(previous))
+                }
+                // cite: libcore AtomicInteger.java#intValue, longValue
+                ("intValue", "()I") => Some(DexExecutionResult::Int(
+                    self.atomic_integer_update(invocation?, |current| (current, current))?,
+                )),
+                ("longValue", "()J") => Some(DexExecutionResult::Value(DexValue::Long(i64::from(
+                    self.atomic_integer_update(invocation?, |current| (current, current))?,
+                )))),
+                _ => None,
+            };
+            if result.is_some() {
+                return result;
+            }
+        }
+
         if method.matches_builtin_signature(
             "Ljava/util/concurrent/atomic/AtomicInteger;",
             "incrementAndGet",
