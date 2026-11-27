@@ -1,4 +1,6 @@
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod android_assets;
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod bionic;
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
 mod bionic_reference;

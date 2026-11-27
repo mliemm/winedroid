@@ -403,8 +403,10 @@ impl DexRunInvocationHandler<'_> {
             return Ok(DexInvocationResult::Value(value));
         }
 
-        if method.class_descriptor == "Ljava/util/concurrent/FutureTask;"
-            && method.name == "get"
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/util/concurrent/FutureTask;" | "Ljava/util/concurrent/Future;"
+        ) && method.name == "get"
             && proto_descriptor == "()Ljava/lang/Object;"
         {
             let result = self.program.future_task_get(&invocation, self.depth)?;

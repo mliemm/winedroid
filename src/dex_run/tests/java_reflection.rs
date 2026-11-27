@@ -2643,3 +2643,34 @@ fn libcore_class_as_subclass_returns_self_or_throws_class_cast() {
         program.invoke_builtin_method(&as_subclass, Some(&test_invocation(vec![string, number])));
     assert!(program.value_matches_type(&thrown_exception(result), "Ljava/lang/ClassCastException;"));
 }
+
+// cite: art java_lang_reflect_Method.cc#Method_getDefaultValue
+#[test]
+fn builtin_reflect_method_get_default_value_is_null_outside_annotations() {
+    let dex_file = crate::dex::parse_dex_file("classes.dex", minimal_interface_dex())
+        .expect("DEX should parse");
+    let program = DexProgram::new(vec![dex_file]);
+    let method = DexMethodId {
+        class_descriptor: "Ljava/lang/reflect/Method;".to_owned(),
+        name: "getDefaultValue".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "L".to_owned(),
+            return_type: "Ljava/lang/Object;".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let reflected = |class: &str| {
+        test_invocation(vec![DexValue::Reference(std::rc::Rc::from(format!(
+            "Ljava/lang/reflect/Method;:{class}:run:null"
+        )))])
+    };
+
+    assert_eq!(
+        program.invoke_builtin_method(&method, Some(&reflected("Lcom/example/Test;"))),
+        Some(DexExecutionResult::Value(DexValue::Null))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&method, Some(&reflected("Lcom/example/Missing;"))),
+        None
+    );
+}

@@ -6,9 +6,10 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 PLATFORM_TAG="android-14.0.0_r1"
 
-FRAMEWORKS_BASE_PATHS=(core/java core/res graphics/java libs/androidfw)
+FRAMEWORKS_BASE_PATHS=(core/java core/jni core/res graphics/java libs/androidfw native/android
+                       services/core/java)
 
-LIBCORE_PATHS=(ojluni/src/main luni/src/main)
+LIBCORE_PATHS=(ojluni/src/main luni/src/main json/src/main)
 
 ART_PATHS=(runtime libdexfile)
 
@@ -21,7 +22,7 @@ LOGGING_PATHS=(liblog)
 FRAMEWORKS_NATIVE_PATHS=(libs/input include)
 
 CTS_PATHS=(tests/tests/view tests/tests/widget tests/tests/text
-           tests/tests/graphics tests/tests/content)
+           tests/tests/graphics tests/tests/content tests/tests/database)
 
 ANDROIDX_BRANCH="androidx-main"
 ANDROIDX_PATHS=(appcompat activity fragment core compose room sqlite datastore lifecycle)

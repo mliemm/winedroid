@@ -2094,3 +2094,24 @@ fn libcore_concurrent_hash_map_new_key_set_returns_a_mutable_set_view() {
         Some(DexExecutionResult::Int(1))
     );
 }
+
+// cite: libcore Collections.java#unmodifiableSet
+#[test]
+fn builtin_collections_unmodifiable_set_returns_same_set_reference() {
+    let program = DexProgram::new(Vec::new());
+    let method = DexMethodId {
+        class_descriptor: "Ljava/util/Collections;".to_owned(),
+        name: "unmodifiableSet".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "LL".to_owned(),
+            return_type: "Ljava/util/Set;".to_owned(),
+            parameters: vec!["Ljava/util/Set;".to_owned()],
+        },
+    };
+    let set = program.allocate_object("Ljava/util/HashSet;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(&method, Some(&test_invocation(vec![set.clone()]))),
+        Some(DexExecutionResult::Value(set))
+    );
+}

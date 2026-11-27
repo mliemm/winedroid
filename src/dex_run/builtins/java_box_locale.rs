@@ -7,6 +7,23 @@ impl DexProgram {
         method: &DexMethodId,
         invocation: Option<&DexInvocation>,
     ) -> Option<DexExecutionResult> {
+        if method.class_descriptor == "Ljava/lang/Number;"
+            && matches!(
+                (method.name.as_str(), method.proto.descriptor().as_str()),
+                ("intValue", "()I")
+                    | ("longValue", "()J")
+                    | ("floatValue", "()F")
+                    | ("doubleValue", "()D")
+            )
+        {
+            let invocation = invocation?;
+            if invocation.arguments.first() == Some(&DexValue::Null) {
+                // cite: art common_throws.cc#ThrowNullPointerExceptionForMethodAccess
+                return Some(self.null_pointer_exception_result());
+            }
+            return self.number_value(method.name.as_str(), invocation);
+        }
+
         if method.matches_builtin_signature(
             "Ljava/lang/Boolean;",
             "valueOf",
@@ -224,9 +241,7 @@ impl DexProgram {
             )));
         }
 
-        if method.matches_builtin_signature("Ljava/lang/Integer;", "intValue", "()I")
-            || method.matches_builtin_signature("Ljava/lang/Number;", "intValue", "()I")
-        {
+        if method.matches_builtin_signature("Ljava/lang/Integer;", "intValue", "()I") {
             let invocation = invocation?;
             if invocation.arguments.first() == Some(&DexValue::Null) {
                 // cite: art common_throws.cc#ThrowNullPointerExceptionForMethodAccess
@@ -370,8 +385,7 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
-        if (method.class_descriptor == "Ljava/lang/Float;"
-            || method.class_descriptor == "Ljava/lang/Number;")
+        if method.class_descriptor == "Ljava/lang/Float;"
             && method.matches_builtin_member("floatValue", "()F")
         {
             let invocation = invocation?;
@@ -391,6 +405,19 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(value));
         }
 
+        if method.matches_builtin_signature(
+            "Ljava/lang/Double;",
+            "valueOf",
+            "(Ljava/lang/String;)Ljava/lang/Double;",
+        ) {
+            let invocation = invocation?;
+            let bits = double_parse_double(invocation)?;
+
+            return Some(DexExecutionResult::Value(DexValue::Reference(
+                std::rc::Rc::from(format!("Ljava/lang/Double;:{bits:016x}")),
+            )));
+        }
+
         if method.matches_builtin_signature("Ljava/lang/Double;", "<init>", "(D)V") {
             let invocation = invocation?;
             self.initialize_double_box(invocation)?;
@@ -398,8 +425,20 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
-        if (method.class_descriptor == "Ljava/lang/Double;"
-            || method.class_descriptor == "Ljava/lang/Number;")
+        // cite: libcore Double.java#intValue
+        if method.matches_builtin_signature("Ljava/lang/Double;", "intValue", "()I") {
+            let invocation = invocation?;
+            let DexValue::Reference(reference) = &invocation.arguments[0] else {
+                return None;
+            };
+            let bits =
+                u64::from_str_radix(reference.strip_prefix("Ljava/lang/Double;:")?, 16).ok()?;
+            let value = f64::from_bits(bits);
+
+            return Some(DexExecutionResult::Int(value as i32));
+        }
+
+        if method.class_descriptor == "Ljava/lang/Double;"
             && method.matches_builtin_member("doubleValue", "()D")
         {
             let invocation = invocation?;
@@ -419,8 +458,7 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(value));
         }
 
-        if (method.class_descriptor == "Ljava/lang/Long;"
-            || method.class_descriptor == "Ljava/lang/Number;")
+        if method.class_descriptor == "Ljava/lang/Long;"
             && method.matches_builtin_member("longValue", "()J")
         {
             let invocation = invocation?;
@@ -728,4 +766,48 @@ fn int_to_string_radix(value: i64, radix: u32) -> String {
     }
 
     digits.iter().rev().collect()
+}
+
+enum BoxedNumber {
+    Int(i32),
+    Long(i64),
+    Float(f32),
+    Double(f64),
+}
+
+impl DexProgram {
+    // cite: libcore Number.java#intValue, longValue, floatValue, doubleValue
+    fn number_value(&self, name: &str, invocation: &DexInvocation) -> Option<DexExecutionResult> {
+        let number = if let Some(value) = self.long_long_value(invocation) {
+            BoxedNumber::Long(value)
+        } else if let Some(bits) = self.double_double_value(invocation) {
+            BoxedNumber::Double(f64::from_bits(bits as u64))
+        } else if let Some(value) = self.float_float_value(invocation) {
+            BoxedNumber::Float(value)
+        } else {
+            BoxedNumber::Int(self.integer_int_value(invocation)?)
+        };
+        let (as_i64, as_f64) = match number {
+            BoxedNumber::Int(value) => (i64::from(value), f64::from(value)),
+            BoxedNumber::Long(value) => (value, value as f64),
+            BoxedNumber::Float(value) => (value as i64, f64::from(value)),
+            BoxedNumber::Double(value) => (value as i64, value),
+        };
+        let int_value = match number {
+            BoxedNumber::Float(value) => value as i32,
+            BoxedNumber::Double(value) => value as i32,
+            _ => as_i64 as i32,
+        };
+        let float_value = match number {
+            BoxedNumber::Long(value) => value as f32,
+            _ => as_f64 as f32,
+        };
+
+        Some(match name {
+            "intValue" => DexExecutionResult::Int(int_value),
+            "longValue" => DexExecutionResult::Value(DexValue::Long(as_i64)),
+            "floatValue" => DexExecutionResult::Value(DexValue::Float(float_value)),
+            _ => DexExecutionResult::Value(DexValue::Long(as_f64.to_bits() as i64)),
+        })
+    }
 }

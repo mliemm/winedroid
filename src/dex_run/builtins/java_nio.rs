@@ -32,6 +32,9 @@ impl DexProgram {
         invocation: Option<&DexInvocation>,
     ) -> Option<DexExecutionResult> {
         let class = method.class_descriptor.as_str();
+        if class == "Ljava/nio/charset/Charset;" {
+            return self.charset_builtin(method, invocation);
+        }
         if !matches!(class, BUFFER | BYTE_BUFFER | FILE_CHANNEL) {
             return None;
         }
@@ -591,4 +594,82 @@ pub(in crate::dex_run) fn byte_order_static_field(field: &DexFieldId) -> Option<
     // cite: libcore ByteOrder.java#BIG_ENDIAN, LITTLE_ENDIAN
     matches!(field.name.as_str(), "BIG_ENDIAN" | "LITTLE_ENDIAN")
         .then(|| byte_order_value(&field.name))
+}
+
+// cite: libcore Charset.java#forName, defaultCharset, name, equals
+impl DexProgram {
+    fn charset_builtin(
+        &self,
+        method: &DexMethodId,
+        invocation: Option<&DexInvocation>,
+    ) -> Option<DexExecutionResult> {
+        let invocation = invocation?;
+        match (method.name.as_str(), method.proto.descriptor().as_str()) {
+            ("forName", "(Ljava/lang/String;)Ljava/nio/charset/Charset;") => {
+                let DexValue::String(name) = invocation.arguments.first()? else {
+                    return Some(DexExecutionResult::Throw(
+                        self.allocate_object("Ljava/lang/NullPointerException;".to_owned()),
+                    ));
+                };
+                let name = canonical_charset_name(name)?;
+
+                Some(DexExecutionResult::Value(DexValue::Reference(
+                    std::rc::Rc::from(format!("Ljava/nio/charset/Charset;:{name}")),
+                )))
+            }
+            ("defaultCharset", "()Ljava/nio/charset/Charset;") => Some(DexExecutionResult::Value(
+                DexValue::Reference(std::rc::Rc::from("Ljava/nio/charset/Charset;:UTF-8")),
+            )),
+            ("name", "()Ljava/lang/String;") | ("toString", "()Ljava/lang/String;") => {
+                let name = charset_reference_name(&invocation.arguments[0])?;
+
+                Some(DexExecutionResult::Value(DexValue::String(
+                    std::rc::Rc::from(name),
+                )))
+            }
+            ("equals", "(Ljava/lang/Object;)Z") => {
+                let left = charset_reference_name(&invocation.arguments[0]);
+                let right = charset_reference_name(&invocation.arguments[1]);
+
+                Some(DexExecutionResult::Int(i32::from(
+                    left.is_some() && left == right,
+                )))
+            }
+            ("isSupported", "(Ljava/lang/String;)Z") => {
+                let DexValue::String(name) = invocation.arguments.first()? else {
+                    return Some(DexExecutionResult::Int(0));
+                };
+                Some(DexExecutionResult::Int(i32::from(
+                    canonical_charset_name(name).is_some(),
+                )))
+            }
+            _ => None,
+        }
+    }
+}
+
+fn canonical_charset_name(name: &str) -> Option<String> {
+    let canonical = match name.to_ascii_lowercase().as_str() {
+        "utf-8" | "utf8" | "unicode-1-1-utf-8" => "UTF-8",
+        "us-ascii" | "ascii" | "ansi_x3.4-1968" | "iso646-us" => "US-ASCII",
+        "iso-8859-1" | "iso8859-1" | "latin1" | "l1" | "cp819" | "8859_1" => "ISO-8859-1",
+        "utf-16" | "utf16" => "UTF-16",
+        "utf-16be" | "unicodebig" => "UTF-16BE",
+        "utf-16le" | "unicodelittle" => "UTF-16LE",
+        _ => return None,
+    };
+
+    Some(canonical.to_owned())
+}
+
+fn charset_reference_name(value: &DexValue) -> Option<String> {
+    let DexValue::Reference(reference) = value else {
+        return None;
+    };
+
+    Some(
+        reference
+            .strip_prefix("Ljava/nio/charset/Charset;:")?
+            .to_owned(),
+    )
 }

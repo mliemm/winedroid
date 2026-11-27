@@ -627,3 +627,74 @@ fn libcore_pattern_backtracking_engine_error_is_a_missing_primitive_not_no_match
         None
     );
 }
+
+// cite: libcore SecureRandom.java#SecureRandom
+#[test]
+fn libcore_secure_random_seeds_and_extends_random() {
+    let program = DexProgram::new(Vec::new());
+    let method = |name: &str, shorty: &str, ret: &str, params: Vec<String>| DexMethodId {
+        class_descriptor: "Ljava/security/SecureRandom;".to_owned(),
+        name: name.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: shorty.to_owned(),
+            return_type: ret.to_owned(),
+            parameters: params,
+        },
+    };
+    let random = program.allocate_object("Ljava/security/SecureRandom;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &method("<init>", "V", "V", Vec::new()),
+            Some(&test_invocation(vec![random.clone()]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    let Some(DexExecutionResult::Int(value)) = program.invoke_builtin_method(
+        &method("nextInt", "II", "I", vec!["I".to_owned()]),
+        Some(&test_invocation(vec![random, DexValue::Int(10)])),
+    ) else {
+        panic!("SecureRandom.nextInt(int) should return an int");
+    };
+    assert!((0..10).contains(&value));
+    assert_eq!(
+        bootstrap_superclass_descriptor("Ljava/security/SecureRandom;"),
+        Some("Ljava/util/Random;")
+    );
+}
+
+// cite: libcore Random.java#nextDouble, next
+#[test]
+fn libcore_random_next_double_matches_seed_zero_sequence() {
+    let program = DexProgram::new(Vec::new());
+    let constructor = DexMethodId {
+        class_descriptor: "Ljava/util/Random;".to_owned(),
+        name: "<init>".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VJ".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec!["J".to_owned()],
+        },
+    };
+    let next_double = DexMethodId {
+        class_descriptor: "Ljava/util/Random;".to_owned(),
+        name: "nextDouble".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "D".to_owned(),
+            return_type: "D".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let random = DexValue::Reference(std::rc::Rc::from("Ljava/util/Random;:double-seed-zero"));
+    program.invoke_builtin_method(
+        &constructor,
+        Some(&test_invocation(vec![random.clone(), DexValue::Long(0)])),
+    );
+
+    assert_eq!(
+        program.invoke_builtin_method(&next_double, Some(&test_invocation(vec![random]))),
+        Some(DexExecutionResult::Value(DexValue::Long(
+            0.730967787376657f64.to_bits() as i64
+        )))
+    );
+}

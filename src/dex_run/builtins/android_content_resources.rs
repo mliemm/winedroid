@@ -103,6 +103,60 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(value));
         }
 
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Landroid/provider/Settings$Secure;"
+                | "Landroid/provider/Settings$System;"
+                | "Landroid/provider/Settings$Global;"
+        ) && method.name == "getInt"
+            && method.proto.descriptor()
+                == "(Landroid/content/ContentResolver;Ljava/lang/String;I)I"
+        {
+            // cite: frameworks-base Settings.java#getInt
+            let invocation = invocation?;
+            let [resolver, DexValue::String(_), DexValue::Int(default)] =
+                invocation.arguments.as_slice()
+            else {
+                return None;
+            };
+            if !dex_value_is_object_like(resolver) {
+                return None;
+            }
+
+            return Some(DexExecutionResult::Int(*default));
+        }
+
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Landroid/provider/Settings$Secure;"
+                | "Landroid/provider/Settings$System;"
+                | "Landroid/provider/Settings$Global;"
+        ) && method.name == "getFloat"
+            && method.proto.descriptor() == "(Landroid/content/ContentResolver;Ljava/lang/String;)F"
+        {
+            // cite: frameworks-base Settings.java#getFloat, parseFloatSetting, SettingNotFoundException
+            let invocation = invocation?;
+            let [resolver, DexValue::String(name)] = invocation.arguments.as_slice() else {
+                return None;
+            };
+            if !dex_value_is_object_like(resolver) {
+                return None;
+            }
+            let exception = self
+                .allocate_object("Landroid/provider/Settings$SettingNotFoundException;".to_owned());
+            self.write_stored_instance_field(
+                &exception,
+                &DexFieldId {
+                    class_descriptor: "Ljava/lang/Throwable;".to_owned(),
+                    type_descriptor: "Ljava/lang/String;".to_owned(),
+                    name: "detailMessage".to_owned(),
+                },
+                DexValue::String(name.clone()),
+            );
+
+            return Some(DexExecutionResult::Throw(exception));
+        }
+
         if method.class_descriptor == "Landroid/provider/Settings$Global;"
             && method.name == "getFloat"
             && method.proto.descriptor()
@@ -187,6 +241,28 @@ impl DexProgram {
             let value = resources_drawable_resource(self, invocation)?;
 
             return Some(DexExecutionResult::Value(value));
+        }
+
+        // cite: frameworks-base ContextImpl.java#createConfigurationContext
+        if method.class_descriptor == "Landroid/content/Context;"
+            && method.name == "createConfigurationContext"
+            && method
+                .proto
+                .descriptor_is("(Landroid/content/res/Configuration;)Landroid/content/Context;")
+        {
+            let invocation = invocation?;
+            if invocation.arguments.len() != 2
+                || !dex_value_is_object_like(&invocation.arguments[1])
+            {
+                return None;
+            }
+            let configuration_key = map_identity_key(&invocation.arguments[1]);
+
+            return Some(DexExecutionResult::Value(DexValue::Reference(
+                std::rc::Rc::from(format!(
+                    "Landroid/content/Context;.configuration:{configuration_key}"
+                )),
+            )));
         }
 
         if method.class_descriptor == "Landroid/content/Context;"
@@ -375,6 +451,26 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        // cite: frameworks-base ContentResolver.java#notifyChange
+        if method.class_descriptor == "Landroid/content/ContentResolver;"
+            && method.name == "notifyChange"
+            && method
+                .proto
+                .descriptor_is("(Landroid/net/Uri;Landroid/database/ContentObserver;)V")
+        {
+            let invocation = invocation?;
+            let [resolver, uri, observer] = invocation.arguments.as_slice() else {
+                return None;
+            };
+            if !dex_value_is_object_like(resolver)
+                || !dex_value_is_object_like(uri)
+                || !dex_value_is_nullable_object_like(observer)
+            {
+                return None;
+            }
+            return Some(DexExecutionResult::Void);
+        }
+
         // cite: frameworks-base ContentResolver.java#unregisterContentObserver
         if method.class_descriptor == "Landroid/content/ContentResolver;"
             && method.name == "unregisterContentObserver"
@@ -405,6 +501,34 @@ impl DexProgram {
         {
             let invocation = invocation?;
             self.context_theme_wrapper_init(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.matches_builtin_signature(
+            "Landroid/content/ContextWrapper;",
+            "<init>",
+            "(Landroid/content/Context;)V",
+        ) {
+            // cite: frameworks-base ContextWrapper.java#ContextWrapper, mBase
+            let invocation = invocation?;
+            let [receiver, base] = invocation.arguments.as_slice() else {
+                return None;
+            };
+            if !dex_value_is_object_like(receiver) || !dex_value_is_nullable_object_like(base) {
+                return None;
+            }
+            if dex_value_is_object_like(base) {
+                self.write_stored_instance_field(
+                    receiver,
+                    &DexFieldId {
+                        class_descriptor: "Landroid/content/ContextWrapper;".to_owned(),
+                        type_descriptor: "Landroid/content/Context;".to_owned(),
+                        name: "mBase".to_owned(),
+                    },
+                    base.clone(),
+                );
+            }
 
             return Some(DexExecutionResult::Void);
         }
@@ -623,6 +747,25 @@ impl DexProgram {
                     ));
                 }
             }
+        }
+
+        // cite: frameworks-base Resources.java#Resources
+        if method.class_descriptor == "Landroid/content/res/Resources;"
+            && method.name == "<init>"
+            && method.proto.descriptor()
+                == "(Landroid/content/res/AssetManager;Landroid/util/DisplayMetrics;Landroid/content/res/Configuration;)V"
+        {
+            let invocation = invocation?;
+            if invocation.arguments.len() != 4
+                || invocation
+                    .arguments
+                    .iter()
+                    .any(|value| !dex_value_is_object_like(value))
+            {
+                return None;
+            }
+
+            return Some(DexExecutionResult::Void);
         }
 
         if method.class_descriptor == "Landroid/content/res/Resources;"
@@ -1034,6 +1177,17 @@ impl DexProgram {
             && method.proto.descriptor_is("()V")
         {
             return Some(DexExecutionResult::Void);
+        }
+
+        if method.matches_builtin_signature(
+            "Landroid/util/TypedValue;",
+            "applyDimension",
+            "(IFLandroid/util/DisplayMetrics;)F",
+        ) {
+            let invocation = invocation?;
+            let value = self.typed_value_apply_dimension(invocation)?;
+
+            return Some(DexExecutionResult::Value(DexValue::Float(value)));
         }
 
         if method.class_descriptor == "Landroid/util/Xml;"
@@ -1487,5 +1641,47 @@ impl DexProgram {
         };
 
         self.parse_uri(&uri_invocation)
+    }
+}
+
+impl DexProgram {
+    // cite: frameworks-base TypedValue.java#applyDimension
+    fn typed_value_apply_dimension(&self, invocation: &DexInvocation) -> Option<f32> {
+        let [DexValue::Int(unit), value, metrics] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        let value = match value {
+            DexValue::Float(value) => *value,
+            DexValue::Int(bits) => f32::from_bits(*bits as u32),
+            _ => return None,
+        };
+        if !dex_value_is_object_like(metrics) {
+            return None;
+        }
+        let metric = |name: &str| {
+            let field = DexFieldId {
+                class_descriptor: "Landroid/util/DisplayMetrics;".to_owned(),
+                type_descriptor: "F".to_owned(),
+                name: name.to_owned(),
+            };
+            match self
+                .read_stored_instance_field(metrics, &field)
+                .or_else(|| self.read_bootstrap_instance_field(metrics, &field))?
+            {
+                DexValue::Float(value) => Some(value),
+                DexValue::Int(bits) => Some(f32::from_bits(bits as u32)),
+                _ => None,
+            }
+        };
+
+        Some(match unit {
+            0 => value,
+            1 => value * metric("density")?,
+            2 => value * metric("scaledDensity")?,
+            3 => value * metric("xdpi")? * (1.0 / 72.0),
+            4 => value * metric("xdpi")?,
+            5 => value * metric("xdpi")? * (1.0 / 25.4),
+            _ => 0.0,
+        })
     }
 }

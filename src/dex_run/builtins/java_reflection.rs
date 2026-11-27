@@ -595,6 +595,23 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(value));
         }
 
+        if method.matches_builtin_signature(
+            "Ljava/lang/reflect/Method;",
+            "getDefaultValue",
+            "()Ljava/lang/Object;",
+        ) {
+            // cite: libcore Method.java#getDefaultValue
+            // cite: art java_lang_reflect_Method.cc#Method_getDefaultValue
+            let invocation = invocation?;
+            let (class_descriptor, _) = reflect_method_reference(invocation.arguments.first()?)?;
+            let loaded_class = self.load_class(class_descriptor)?;
+            if loaded_class.class_def.access_flags & JAVA_ACC_ANNOTATION != 0 {
+                return None;
+            }
+
+            return Some(DexExecutionResult::Value(DexValue::Null));
+        }
+
         if method.class_descriptor == "Ljava/lang/reflect/Method;"
             && method.name == "getParameterTypes"
             && method.proto.descriptor_is("()[Ljava/lang/Class;")

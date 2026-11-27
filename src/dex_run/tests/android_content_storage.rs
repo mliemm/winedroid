@@ -3038,3 +3038,63 @@ fn frameworks_base_package_manager_get_package_info_builds_providers_from_the_ma
     ));
     fs::remove_dir_all(app_dir).ok();
 }
+
+// cite: frameworks-base Intent.java#Intent
+#[test]
+fn builtin_intent_copy_constructor_copies_action_and_extras() {
+    let program = DexProgram::new(Vec::new());
+    let intent_method = |name: &str, shorty: &str, ret: &str, params: &[&str]| DexMethodId {
+        class_descriptor: "Landroid/content/Intent;".to_owned(),
+        name: name.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: shorty.to_owned(),
+            return_type: ret.to_owned(),
+            parameters: params.iter().map(|param| (*param).to_owned()).collect(),
+        },
+    };
+    let action = intent_method("<init>", "VL", "V", &["Ljava/lang/String;"]);
+    let copy = intent_method("<init>", "VL", "V", &["Landroid/content/Intent;"]);
+    let get_action = intent_method("getAction", "L", "Ljava/lang/String;", &[]);
+    let put = intent_method(
+        "putIntegerArrayListExtra",
+        "LLL",
+        "Landroid/content/Intent;",
+        &["Ljava/lang/String;", "Ljava/util/ArrayList;"],
+    );
+    let get = intent_method(
+        "getIntegerArrayListExtra",
+        "LL",
+        "Ljava/util/ArrayList;",
+        &["Ljava/lang/String;"],
+    );
+    let source = program.allocate_object("Landroid/content/Intent;".to_owned());
+    let target = program.allocate_object("Landroid/content/Intent;".to_owned());
+    let list = program.allocate_object("Ljava/util/ArrayList;".to_owned());
+    let string = |value: &str| DexValue::String(std::rc::Rc::from(value));
+
+    program.invoke_builtin_method(
+        &action,
+        Some(&test_invocation(vec![source.clone(), string("a.b.VIEW")])),
+    );
+    program.invoke_builtin_method(
+        &put,
+        Some(&test_invocation(vec![
+            source.clone(),
+            string("ids"),
+            list.clone(),
+        ])),
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&copy, Some(&test_invocation(vec![target.clone(), source]))),
+        Some(DexExecutionResult::Void)
+    );
+
+    assert_eq!(
+        program.invoke_builtin_method(&get_action, Some(&test_invocation(vec![target.clone()]))),
+        Some(DexExecutionResult::Value(string("a.b.VIEW")))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&get, Some(&test_invocation(vec![target, string("ids")]))),
+        Some(DexExecutionResult::Value(list))
+    );
+}

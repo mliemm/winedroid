@@ -2950,40 +2950,40 @@ fn libcore_linked_blocking_queue_constructor_creates_an_empty_queue() {
 }
 
 #[test]
-fn libcore_linked_blocking_queue_capacity_constructor_rejects_non_positive_capacity() {
+fn libcore_blocking_queue_capacity_constructors_reject_non_positive_capacity() {
     // cite: libcore LinkedBlockingQueue.java#LinkedBlockingQueue
-    let program = DexProgram::new(Vec::new());
-    let constructor = builtin_method(
+    // cite: libcore ArrayBlockingQueue.java#ArrayBlockingQueue
+    for class in [
         "Ljava/util/concurrent/LinkedBlockingQueue;",
-        "<init>",
-        "V",
-        &["I"],
-    );
-    let size = builtin_method("Ljava/util/Collection;", "size", "I", &[]);
-    let queue = program.allocate_object("Ljava/util/concurrent/LinkedBlockingQueue;".to_owned());
+        "Ljava/util/concurrent/ArrayBlockingQueue;",
+    ] {
+        let program = DexProgram::new(Vec::new());
+        let constructor = builtin_method(class, "<init>", "V", &["I"]);
+        let size = builtin_method("Ljava/util/Collection;", "size", "I", &[]);
+        let queue = program.allocate_object(class.to_owned());
 
-    assert_eq!(
-        program.invoke_builtin_method(
-            &constructor,
-            Some(&test_invocation(vec![queue.clone(), DexValue::Int(16)]))
-        ),
-        Some(DexExecutionResult::Void)
-    );
-    assert_eq!(
-        program.invoke_builtin_method(&size, Some(&test_invocation(vec![queue.clone()]))),
-        Some(DexExecutionResult::Int(0))
-    );
-    assert!(program.value_matches_type(&queue, "Ljava/util/concurrent/BlockingQueue;"));
-    assert!(program.value_matches_type(&queue, "Ljava/util/Queue;"));
+        assert_eq!(
+            program.invoke_builtin_method(
+                &constructor,
+                Some(&test_invocation(vec![queue.clone(), DexValue::Int(16)]))
+            ),
+            Some(DexExecutionResult::Void)
+        );
+        assert_eq!(
+            program.invoke_builtin_method(&size, Some(&test_invocation(vec![queue.clone()]))),
+            Some(DexExecutionResult::Int(0))
+        );
+        assert!(program.value_matches_type(&queue, "Ljava/util/concurrent/BlockingQueue;"));
+        assert!(program.value_matches_type(&queue, "Ljava/util/Queue;"));
 
-    for capacity in [0, -1] {
-        let rejected =
-            program.allocate_object("Ljava/util/concurrent/LinkedBlockingQueue;".to_owned());
-        let exception = thrown_exception(program.invoke_builtin_method(
-            &constructor,
-            Some(&test_invocation(vec![rejected, DexValue::Int(capacity)])),
-        ));
-        assert!(program.value_matches_type(&exception, "Ljava/lang/IllegalArgumentException;"));
+        for capacity in [0, -1] {
+            let rejected = program.allocate_object(class.to_owned());
+            let exception = thrown_exception(program.invoke_builtin_method(
+                &constructor,
+                Some(&test_invocation(vec![rejected, DexValue::Int(capacity)])),
+            ));
+            assert!(program.value_matches_type(&exception, "Ljava/lang/IllegalArgumentException;"));
+        }
     }
 }
 
@@ -3358,5 +3358,202 @@ fn libcore_collection_to_array_fills_a_new_or_existing_array() {
             .array_entries
             .get(&map_identity_key(&target)),
         Some(&vec![DexValue::Int(1), DexValue::Int(2), DexValue::Null])
+    );
+}
+
+// cite: libcore Arrays.java#fill
+#[test]
+fn builtin_arrays_fill_whole_long_and_boolean_arrays() {
+    let program = DexProgram::new(Vec::new());
+    let long_fill = DexMethodId {
+        class_descriptor: "Ljava/util/Arrays;".to_owned(),
+        name: "fill".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VJJ".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec!["[J".to_owned(), "J".to_owned()],
+        },
+    };
+    let boolean_fill = DexMethodId {
+        class_descriptor: "Ljava/util/Arrays;".to_owned(),
+        name: "fill".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VZZ".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec!["[Z".to_owned(), "Z".to_owned()],
+        },
+    };
+    let longs = program
+        .allocate_array("[J".to_owned(), 3)
+        .expect("long array");
+    let booleans = program
+        .allocate_array("[Z".to_owned(), 2)
+        .expect("boolean array");
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &long_fill,
+            Some(&test_invocation(vec![
+                longs.clone(),
+                DexValue::Long(9),
+                DexValue::Long(9)
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(program.read_array_value(&longs, 2), Some(DexValue::Long(9)));
+    assert_eq!(
+        program.invoke_builtin_method(
+            &boolean_fill,
+            Some(&test_invocation(vec![booleans.clone(), DexValue::Int(1)]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.read_array_value(&booleans, 1),
+        Some(DexValue::Int(1))
+    );
+}
+
+// cite: libcore LinkedList.java#LinkedList
+
+// cite: libcore ArrayDeque.java#ArrayDeque
+#[test]
+fn builtin_linked_list_collection_constructor_and_array_deque_capacity() {
+    let program = DexProgram::new(Vec::new());
+    let singleton = DexMethodId {
+        class_descriptor: "Ljava/util/Collections;".to_owned(),
+        name: "singletonList".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "LL".to_owned(),
+            return_type: "Ljava/util/List;".to_owned(),
+            parameters: vec!["Ljava/lang/Object;".to_owned()],
+        },
+    };
+    let linked_init = DexMethodId {
+        class_descriptor: "Ljava/util/LinkedList;".to_owned(),
+        name: "<init>".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VL".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec!["Ljava/util/Collection;".to_owned()],
+        },
+    };
+    let deque_init = DexMethodId {
+        class_descriptor: "Ljava/util/ArrayDeque;".to_owned(),
+        name: "<init>".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VI".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec!["I".to_owned()],
+        },
+    };
+    let size = DexMethodId {
+        class_descriptor: "Ljava/util/List;".to_owned(),
+        name: "size".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "I".to_owned(),
+            return_type: "I".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let Some(DexExecutionResult::Value(source)) = program.invoke_builtin_method(
+        &singleton,
+        Some(&test_invocation(vec![DexValue::String(std::rc::Rc::from(
+            "item",
+        ))])),
+    ) else {
+        panic!("singletonList should return a list");
+    };
+    let list = program.allocate_object("Ljava/util/LinkedList;".to_owned());
+    assert_eq!(
+        program.invoke_builtin_method(
+            &linked_init,
+            Some(&test_invocation(vec![list.clone(), source]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&size, Some(&test_invocation(vec![list]))),
+        Some(DexExecutionResult::Int(1))
+    );
+
+    let deque = program.allocate_object("Ljava/util/ArrayDeque;".to_owned());
+    assert_eq!(
+        program.invoke_builtin_method(
+            &deque_init,
+            Some(&test_invocation(vec![deque, DexValue::Int(4)]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+}
+
+#[test]
+fn libcore_linked_list_add_first_prepends() {
+    // cite: libcore LinkedList.java#addFirst, offerFirst, linkFirst
+    let program = DexProgram::new(Vec::new());
+    let method = |name: &str, ret: &str| DexMethodId {
+        class_descriptor: "Ljava/util/LinkedList;".to_owned(),
+        name: name.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: format!("{ret}L"),
+            return_type: ret.to_owned(),
+            parameters: vec!["Ljava/lang/Object;".to_owned()],
+        },
+    };
+    let list = program.allocate_object("Ljava/util/LinkedList;".to_owned());
+    let a = DexValue::String(std::rc::Rc::from("a"));
+    let b = DexValue::String(std::rc::Rc::from("b"));
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &method("addFirst", "V"),
+            Some(&test_invocation(vec![list.clone(), a.clone()]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &method("offerFirst", "Z"),
+            Some(&test_invocation(vec![list.clone(), b.clone()]))
+        ),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(
+        program
+            .runtime
+            .borrow()
+            .list_entries
+            .get(&map_identity_key(&list))
+            .cloned(),
+        Some(vec![b, a])
+    );
+}
+
+#[test]
+fn libcore_tree_map_comparator_constructor_accepts_null_and_rejects_primitive() {
+    // cite: libcore TreeMap.java#TreeMap, comparator
+    let program = DexProgram::new(Vec::new());
+    let init = DexMethodId {
+        class_descriptor: "Ljava/util/TreeMap;".to_owned(),
+        name: "<init>".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VL".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec!["Ljava/util/Comparator;".to_owned()],
+        },
+    };
+    let map = program.allocate_object("Ljava/util/TreeMap;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &init,
+            Some(&test_invocation(vec![map.clone(), DexValue::Int(0)]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&init, Some(&test_invocation(vec![map, DexValue::Int(7)]))),
+        None
     );
 }

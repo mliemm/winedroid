@@ -297,3 +297,44 @@ fn builtin_work_request_builder_build_internal_returns_built_request() {
         )))
     );
 }
+
+#[test]
+fn builtin_lifecycle_stubs_defer_to_guest_receivers() {
+    let program = DexProgram::new(Vec::new());
+    let method = |class: &str, name: &str, ret: &str, params: Vec<String>| DexMethodId {
+        class_descriptor: class.to_owned(),
+        name: name.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "L".to_owned(),
+            return_type: ret.to_owned(),
+            parameters: params,
+        },
+    };
+    let get_lifecycle = method(
+        "Landroidx/lifecycle/LifecycleOwner;",
+        "getLifecycle",
+        "Landroidx/lifecycle/Lifecycle;",
+        Vec::new(),
+    );
+    let add_observer = method(
+        "Landroidx/lifecycle/Lifecycle;",
+        "addObserver",
+        "V",
+        vec!["Landroidx/lifecycle/LifecycleObserver;".to_owned()],
+    );
+    let owner = program.allocate_object("Lcom/example/MainActivity;".to_owned());
+    let registry = program.allocate_object("Landroidx/lifecycle/LifecycleRegistry;".to_owned());
+    let observer = program.allocate_object("Lcom/example/Observer;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(&get_lifecycle, Some(&test_invocation(vec![owner]))),
+        None
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &add_observer,
+            Some(&test_invocation(vec![registry, observer]))
+        ),
+        None
+    );
+}

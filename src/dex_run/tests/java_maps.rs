@@ -1155,3 +1155,128 @@ fn libcore_abstract_map_simple_entry_copy_constructor_rejects_null() {
     let exception = thrown_exception(result);
     assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
 }
+
+// cite: libcore AbstractMap.java#equals
+#[test]
+fn builtin_map_equals_compares_entries() {
+    let program = DexProgram::new(Vec::new());
+    let first = program.allocate_object("Ljava/util/HashMap;".to_owned());
+    let second = program.allocate_object("Ljava/util/HashMap;".to_owned());
+    let put = DexMethodId {
+        class_descriptor: "Ljava/util/HashMap;".to_owned(),
+        name: "put".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "LLL".to_owned(),
+            return_type: "Ljava/lang/Object;".to_owned(),
+            parameters: vec![
+                "Ljava/lang/Object;".to_owned(),
+                "Ljava/lang/Object;".to_owned(),
+            ],
+        },
+    };
+    let equals = DexMethodId {
+        class_descriptor: "Ljava/util/Map;".to_owned(),
+        name: "equals".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "ZL".to_owned(),
+            return_type: "Z".to_owned(),
+            parameters: vec!["Ljava/lang/Object;".to_owned()],
+        },
+    };
+    for map in [&first, &second] {
+        assert_eq!(
+            program.invoke_builtin_method(
+                &put,
+                Some(&test_invocation(vec![
+                    map.clone(),
+                    DexValue::String(std::rc::Rc::from("key")),
+                    DexValue::String(std::rc::Rc::from("value")),
+                ]))
+            ),
+            Some(DexExecutionResult::Value(DexValue::Null))
+        );
+    }
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &equals,
+            Some(&test_invocation(vec![first.clone(), second.clone()]))
+        ),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &equals,
+            Some(&test_invocation(vec![
+                first,
+                DexValue::Reference(std::rc::Rc::from("not-a-map"))
+            ]))
+        ),
+        Some(DexExecutionResult::Int(0))
+    );
+}
+
+// cite: libcore TreeMap.java#ceilingEntry
+#[test]
+fn builtin_tree_map_ceiling_entry_returns_next_key() {
+    let program = DexProgram::new(Vec::new());
+    let map = program.allocate_object("Ljava/util/TreeMap;".to_owned());
+    let put = DexMethodId {
+        class_descriptor: "Ljava/util/TreeMap;".to_owned(),
+        name: "put".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "LLL".to_owned(),
+            return_type: "Ljava/lang/Object;".to_owned(),
+            parameters: vec![
+                "Ljava/lang/Object;".to_owned(),
+                "Ljava/lang/Object;".to_owned(),
+            ],
+        },
+    };
+    let ceiling = DexMethodId {
+        class_descriptor: "Ljava/util/TreeMap;".to_owned(),
+        name: "ceilingEntry".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "LL".to_owned(),
+            return_type: "Ljava/util/Map$Entry;".to_owned(),
+            parameters: vec!["Ljava/lang/Object;".to_owned()],
+        },
+    };
+    let get_key = DexMethodId {
+        class_descriptor: "Ljava/util/Map$Entry;".to_owned(),
+        name: "getKey".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "L".to_owned(),
+            return_type: "Ljava/lang/Object;".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    for value in [2, 4, 6] {
+        program.invoke_builtin_method(
+            &put,
+            Some(&test_invocation(vec![
+                map.clone(),
+                DexValue::Int(value),
+                DexValue::String(std::rc::Rc::from(format!("v{value}"))),
+            ])),
+        );
+    }
+
+    let Some(DexExecutionResult::Value(entry)) = program.invoke_builtin_method(
+        &ceiling,
+        Some(&test_invocation(vec![map.clone(), DexValue::Int(3)])),
+    ) else {
+        panic!("ceilingEntry should return an entry");
+    };
+    assert_eq!(
+        program.invoke_builtin_method(&get_key, Some(&test_invocation(vec![entry]))),
+        Some(DexExecutionResult::Value(DexValue::Int(4)))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &ceiling,
+            Some(&test_invocation(vec![map, DexValue::Int(7)]))
+        ),
+        Some(DexExecutionResult::Value(DexValue::Null))
+    );
+}

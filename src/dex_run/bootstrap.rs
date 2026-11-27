@@ -212,6 +212,8 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         | "Landroid/graphics/Rect;"
         | "Landroid/graphics/RectF;"
         | "Lorg/xml/sax/helpers/DefaultHandler;" => Some("Ljava/lang/Object;"),
+        // cite: libcore SecureRandom.java#SecureRandom
+        "Ljava/security/SecureRandom;" => Some("Ljava/util/Random;"),
         // cite: libcore ByteArrayOutputStream.java#ByteArrayOutputStream
         "Ljava/io/ByteArrayOutputStream;" => Some("Ljava/io/OutputStream;"),
         // cite: libcore OutputStream.java#OutputStream
@@ -259,8 +261,10 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         "Ljava/lang/ArrayIndexOutOfBoundsException;" => {
             Some("Ljava/lang/IndexOutOfBoundsException;")
         }
+        // cite: frameworks-base Settings.java#SettingNotFoundException
         // cite: frameworks-base PackageManager.java#NameNotFoundException
-        "Landroid/content/pm/PackageManager$NameNotFoundException;" => {
+        "Landroid/provider/Settings$SettingNotFoundException;"
+        | "Landroid/content/pm/PackageManager$NameNotFoundException;" => {
             Some("Landroid/util/AndroidException;")
         }
         // cite: frameworks-base AndroidException.java#AndroidException
@@ -388,6 +392,7 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         "Ljava/util/PriorityQueue;"
         | "Ljava/util/concurrent/ConcurrentLinkedQueue;"
         | "Ljava/util/concurrent/LinkedBlockingQueue;"
+        | "Ljava/util/concurrent/ArrayBlockingQueue;"
         | "Ljava/util/concurrent/ScheduledThreadPoolExecutor$DelayedWorkQueue;"
         | "Ljava/util/concurrent/SynchronousQueue;" => Some("Ljava/util/AbstractQueue;"),
         // cite: libcore ScheduledThreadPoolExecutor.java#ScheduledThreadPoolExecutor
@@ -583,7 +588,9 @@ pub(super) fn bootstrap_direct_interface_descriptors(
             &["Ljava/util/Deque;", "Ljava/io/Serializable;"]
         }
         // cite: libcore LinkedBlockingQueue.java#LinkedBlockingQueue
-        "Ljava/util/concurrent/LinkedBlockingQueue;" => &[
+        // cite: libcore ArrayBlockingQueue.java#ArrayBlockingQueue
+        "Ljava/util/concurrent/LinkedBlockingQueue;"
+        | "Ljava/util/concurrent/ArrayBlockingQueue;" => &[
             "Ljava/util/concurrent/BlockingQueue;",
             "Ljava/io/Serializable;",
         ],

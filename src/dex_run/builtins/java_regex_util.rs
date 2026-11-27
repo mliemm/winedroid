@@ -221,7 +221,26 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
-        if method.matches_builtin_signature("Ljava/util/Random;", "nextInt", "()I") {
+        if method.matches_builtin_signature("Ljava/security/SecureRandom;", "<init>", "()V") {
+            // cite: libcore SecureRandom.java#SecureRandom
+            let invocation = invocation?;
+            let mut seed = [0u8; 8];
+            std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom").ok()?, &mut seed)
+                .ok()?;
+            let seeded = DexInvocation {
+                arguments: smallvec::smallvec![
+                    invocation.arguments.first()?.clone(),
+                    DexValue::Long(i64::from_ne_bytes(seed)),
+                ],
+                ..invocation.clone()
+            };
+            self.initialize_random(&seeded).ok()??;
+            return Some(DexExecutionResult::Void);
+        }
+
+        if (method.matches_builtin_signature("Ljava/util/Random;", "nextInt", "()I")
+            || method.matches_builtin_signature("Ljava/security/SecureRandom;", "nextInt", "()I"))
+        {
             let invocation = invocation?;
             // cite: libcore Random.java#nextInt, next
             let value = self.random_next_unbounded_int(invocation).ok()??;
@@ -229,7 +248,9 @@ impl DexProgram {
             return Some(DexExecutionResult::Int(value));
         }
 
-        if method.matches_builtin_signature("Ljava/util/Random;", "nextFloat", "()F") {
+        if (method.matches_builtin_signature("Ljava/util/Random;", "nextFloat", "()F")
+            || method.matches_builtin_signature("Ljava/security/SecureRandom;", "nextFloat", "()F"))
+        {
             let invocation = invocation?;
             // cite: libcore Random.java#nextFloat, next
             let value = self.random_next_float(invocation).ok()??;
@@ -237,7 +258,21 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(DexValue::Float(value)));
         }
 
-        if method.matches_builtin_signature("Ljava/util/Random;", "nextInt", "(I)I") {
+        if method.matches_builtin_signature("Ljava/util/Random;", "nextDouble", "()D")
+            || method.matches_builtin_signature("Ljava/security/SecureRandom;", "nextDouble", "()D")
+        {
+            let invocation = invocation?;
+            // cite: libcore Random.java#nextDouble, next
+            let value = self.random_next_double(invocation).ok()??;
+
+            return Some(DexExecutionResult::Value(DexValue::Long(
+                value.to_bits() as i64
+            )));
+        }
+
+        if (method.matches_builtin_signature("Ljava/util/Random;", "nextInt", "(I)I")
+            || method.matches_builtin_signature("Ljava/security/SecureRandom;", "nextInt", "(I)I"))
+        {
             let invocation = invocation?;
             // cite: libcore Random.java#nextInt, next
             let value = self.random_next_int(invocation).ok()??;

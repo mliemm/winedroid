@@ -594,7 +594,7 @@ impl DexProgram {
 
         if matches!(
             method.class_descriptor.as_str(),
-            "Ljava/io/BufferedWriter;" | "Ljava/io/FileWriter;" | "Ljava/io/Writer;"
+            "Ljava/io/BufferedWriter;" | "Ljava/io/FileWriter;"
         ) && method.name == "write"
             && method.proto.descriptor_is("(Ljava/lang/String;)V")
         {
@@ -821,10 +821,13 @@ impl DexProgram {
             && method.proto.descriptor_is("(Ljava/lang/String;)V")
         {
             let invocation = invocation?;
-            self.require_string_writer_receiver(invocation)?;
-            self.write_string_writer_string(invocation)?;
+            if self.require_string_writer_receiver(invocation).is_some() {
+                self.write_string_writer_string(invocation)?;
 
-            return Some(DexExecutionResult::Void);
+                return Some(DexExecutionResult::Void);
+            }
+
+            return self.writer_write_string_through_override(invocation);
         }
 
         if method.class_descriptor == "Ljava/io/Writer;"
@@ -2169,5 +2172,81 @@ fn throwable_detail_message_field() -> DexFieldId {
         class_descriptor: "Ljava/lang/Throwable;".to_owned(),
         type_descriptor: "Ljava/lang/String;".to_owned(),
         name: "detailMessage".to_owned(),
+    }
+}
+
+// cite: libcore Writer.java#write
+impl DexProgram {
+    fn writer_write_string_through_override(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        let [receiver, DexValue::String(text)] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        let descriptor = value_class_descriptor(receiver)?;
+        let length = i32::try_from(text.encode_utf16().count()).ok()?;
+        let range_method = DexMethodId {
+            class_descriptor: descriptor.to_owned(),
+            name: "write".to_owned(),
+            proto: crate::dex::DexProto {
+                shorty: "VLII".to_owned(),
+                return_type: "V".to_owned(),
+                parameters: vec![
+                    "Ljava/lang/String;".to_owned(),
+                    "I".to_owned(),
+                    "I".to_owned(),
+                ],
+            },
+        };
+        if let Some(resolved) = self
+            .resolve_exact_method_in_class_hierarchy(descriptor, &range_method)
+            .ok()?
+        {
+            return self
+                .execute_method(
+                    None,
+                    &resolved,
+                    Some(&[
+                        receiver.clone(),
+                        DexValue::String(text.clone()),
+                        DexValue::Int(0),
+                        DexValue::Int(length),
+                    ]),
+                    1,
+                )
+                .ok();
+        }
+
+        let characters = text
+            .encode_utf16()
+            .map(|unit| DexValue::Int(i32::from(unit)))
+            .collect();
+        let characters = self.allocate_filled_array("[C".to_owned(), characters);
+        let characters_method = DexMethodId {
+            class_descriptor: descriptor.to_owned(),
+            name: "write".to_owned(),
+            proto: crate::dex::DexProto {
+                shorty: "VLII".to_owned(),
+                return_type: "V".to_owned(),
+                parameters: vec!["[C".to_owned(), "I".to_owned(), "I".to_owned()],
+            },
+        };
+        let resolved = self
+            .resolve_exact_method_in_class_hierarchy(descriptor, &characters_method)
+            .ok()??;
+
+        self.execute_method(
+            None,
+            &resolved,
+            Some(&[
+                receiver.clone(),
+                characters,
+                DexValue::Int(0),
+                DexValue::Int(length),
+            ]),
+            1,
+        )
+        .ok()
     }
 }

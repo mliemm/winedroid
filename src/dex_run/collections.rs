@@ -3113,6 +3113,58 @@ impl DexProgram {
         Some(())
     }
 
+    // cite: libcore TreeMap.java#ceilingEntry
+    pub(super) fn tree_map_ceiling_entry(&self, invocation: &DexInvocation) -> Option<DexValue> {
+        let [tree, key] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        let map_key = map_identity_key(tree);
+        let entries = {
+            let runtime = self.runtime.borrow();
+            runtime
+                .map_entries
+                .iter()
+                .filter(|((owner, _), _)| owner == &map_key)
+                .filter_map(|((owner, entry_key), value)| {
+                    let key = runtime
+                        .map_entry_keys
+                        .get(&(owner.clone(), entry_key.clone()))?
+                        .clone();
+                    Some((key, value.clone()))
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let mut ceiling: Option<(DexValue, DexValue)> = None;
+        for (stored_key, value) in entries {
+            let ordering = self.compare_binary_search_values(&stored_key, key)?;
+            if ordering == std::cmp::Ordering::Less {
+                continue;
+            }
+            if let Some((best_key, _)) = &ceiling {
+                if self.compare_binary_search_values(&stored_key, best_key)?
+                    != std::cmp::Ordering::Less
+                {
+                    continue;
+                }
+            }
+            ceiling = Some((stored_key, value));
+        }
+
+        let Some((key, value)) = ceiling else {
+            return Some(DexValue::Null);
+        };
+        let entry = self.allocate_object("Ljava/util/AbstractMap$SimpleEntry;".to_owned());
+        if !self.write_stored_instance_field(&entry, &simple_entry_field("key"), key) {
+            return None;
+        }
+        if !self.write_stored_instance_field(&entry, &simple_entry_field("value"), value) {
+            return None;
+        }
+
+        Some(entry)
+    }
+
     pub(super) fn map_entry_key(&self, invocation: &DexInvocation) -> Option<DexValue> {
         if let Some(entry) = self.simple_entry_receiver(invocation) {
             return self.read_stored_instance_field(entry, &simple_entry_field("key"));
@@ -5317,6 +5369,48 @@ impl DexProgram {
         Some(list)
     }
 
+    // cite: libcore Arrays.java#fill
+    pub(super) fn arrays_fill_long(&self, invocation: &DexInvocation) -> Option<()> {
+        if invocation.arguments.len() != 3 {
+            return None;
+        }
+        let array = invocation.arguments[0].clone();
+        let value = invocation.arguments[1].clone();
+        let array_key = map_identity_key(&array);
+        let length = self.runtime.borrow().array_entries.get(&array_key)?.len();
+        let length = i32::try_from(length).ok()?;
+        let range = DexInvocation {
+            arguments: smallvec::smallvec![
+                array,
+                DexValue::Int(0),
+                DexValue::Int(length),
+                value.clone(),
+                value
+            ],
+            ..invocation.clone()
+        };
+
+        self.arrays_fill_long_range(&range)
+    }
+
+    // cite: libcore Arrays.java#fill
+    pub(super) fn arrays_fill_int(&self, invocation: &DexInvocation) -> Option<()> {
+        if invocation.arguments.len() != 2 {
+            return None;
+        }
+        let array = invocation.arguments[0].clone();
+        let value = invocation.arguments[1].clone();
+        let array_key = map_identity_key(&array);
+        let length = self.runtime.borrow().array_entries.get(&array_key)?.len();
+        let length = i32::try_from(length).ok()?;
+        let range = DexInvocation {
+            arguments: smallvec::smallvec![array, DexValue::Int(0), DexValue::Int(length), value],
+            ..invocation.clone()
+        };
+
+        self.arrays_fill_int_range(&range)
+    }
+
     pub(super) fn arrays_fill_long_range(&self, invocation: &DexInvocation) -> Option<()> {
         if invocation.arguments.len() != 5 {
             return None;
@@ -6009,10 +6103,11 @@ impl DexProgram {
         ((high << 27) + low) as f64 / (1u64 << 53) as f64
     }
 
-    pub(super) fn random_next_float<A: MethodIntrinsicArguments + ?Sized>(
+    fn with_random_seed<A: MethodIntrinsicArguments + ?Sized, T>(
         &self,
         invocation: &A,
-    ) -> Result<Option<f32>> {
+        next: impl FnOnce(&mut i64) -> T,
+    ) -> Result<Option<T>> {
         if invocation.argument_count() != 1 {
             return Ok(None);
         }
@@ -6031,10 +6126,29 @@ impl DexProgram {
             .entry(random_key)
             .or_insert_with(|| java_random_initial_scramble(0));
 
+        Ok(Some(next(seed)))
+    }
+
+    pub(super) fn random_next_float<A: MethodIntrinsicArguments + ?Sized>(
+        &self,
+        invocation: &A,
+    ) -> Result<Option<f32>> {
         // cite: libcore Random.java#nextFloat, next
-        Ok(Some(
-            java_random_next_bits(seed, 24) as f32 / (1 << 24) as f32,
-        ))
+        self.with_random_seed(invocation, |seed| {
+            java_random_next_bits(seed, 24) as f32 / (1 << 24) as f32
+        })
+    }
+
+    pub(super) fn random_next_double<A: MethodIntrinsicArguments + ?Sized>(
+        &self,
+        invocation: &A,
+    ) -> Result<Option<f64>> {
+        // cite: libcore Random.java#nextDouble, next
+        self.with_random_seed(invocation, |seed| {
+            let high = i64::from(java_random_next_bits(seed, 26)) << 27;
+            let low = i64::from(java_random_next_bits(seed, 27));
+            (high + low) as f64 * (1.0 / (1u64 << 53) as f64)
+        })
     }
 
     pub(super) fn random_next_int<A: MethodIntrinsicArguments + ?Sized>(

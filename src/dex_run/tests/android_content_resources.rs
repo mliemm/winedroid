@@ -4539,3 +4539,279 @@ fn frameworks_configuration_update_from_merges_locale_and_screen_layout() {
         Some(DexExecutionResult::Int(0))
     );
 }
+
+// cite: frameworks-base Resources.java#Resources
+#[test]
+fn builtin_resources_constructor_accepts_asset_manager_metrics_and_configuration() {
+    let program = DexProgram::new(Vec::new());
+    let constructor = builtin_method(
+        "Landroid/content/res/Resources;",
+        "<init>",
+        "V",
+        &[
+            "Landroid/content/res/AssetManager;",
+            "Landroid/util/DisplayMetrics;",
+            "Landroid/content/res/Configuration;",
+        ],
+    );
+    let resources = program.allocate_object("Landroid/content/res/Resources;".to_owned());
+    let assets = program.allocate_object("Landroid/content/res/AssetManager;".to_owned());
+    let metrics = program.allocate_object("Landroid/util/DisplayMetrics;".to_owned());
+    let configuration = program.allocate_object("Landroid/content/res/Configuration;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![
+                resources,
+                assets,
+                metrics,
+                configuration
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+}
+
+// cite: frameworks-base ContextImpl.java#createConfigurationContext
+#[test]
+fn builtin_context_create_configuration_context_returns_context_reference() {
+    let program = DexProgram::new(Vec::new());
+    let method = builtin_method(
+        "Landroid/content/Context;",
+        "createConfigurationContext",
+        "Landroid/content/Context;",
+        &["Landroid/content/res/Configuration;"],
+    );
+    let context = program.allocate_object("Landroid/content/Context;".to_owned());
+    let configuration = program.allocate_object("Landroid/content/res/Configuration;".to_owned());
+    let configuration_key = map_identity_key(&configuration);
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &method,
+            Some(&test_invocation(vec![context, configuration]))
+        ),
+        Some(DexExecutionResult::Value(DexValue::Reference(
+            std::rc::Rc::from(format!(
+                "Landroid/content/Context;.configuration:{configuration_key}"
+            ))
+        )))
+    );
+}
+
+#[test]
+fn builtin_content_resolver_notify_change_accepts_null_observer_and_rejects_null_uri() {
+    // cite: frameworks-base ContentResolver.java#notifyChange
+    let program = DexProgram::new(Vec::new());
+    let method = DexMethodId {
+        class_descriptor: "Landroid/content/ContentResolver;".to_owned(),
+        name: "notifyChange".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VLL".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec![
+                "Landroid/net/Uri;".to_owned(),
+                "Landroid/database/ContentObserver;".to_owned(),
+            ],
+        },
+    };
+    let resolver = DexValue::Reference(std::rc::Rc::from(
+        "Landroid/content/ContentResolver;.bootstrap",
+    ));
+    let uri = DexValue::Object(DexObjectRef {
+        id: 12,
+        class_descriptor: std::rc::Rc::from("Landroid/net/Uri;"),
+    });
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &method,
+            Some(&test_invocation(vec![
+                resolver.clone(),
+                uri,
+                DexValue::Int(0)
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &method,
+            Some(&test_invocation(vec![
+                resolver,
+                DexValue::Null,
+                DexValue::Null
+            ]))
+        ),
+        None
+    );
+}
+
+// cite: frameworks-base Settings.java#getInt
+#[test]
+fn builtin_settings_global_get_int_returns_default() {
+    let program = DexProgram::new(Vec::new());
+    let method = DexMethodId {
+        class_descriptor: "Landroid/provider/Settings$Global;".to_owned(),
+        name: "getInt".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "ILLI".to_owned(),
+            return_type: "I".to_owned(),
+            parameters: vec![
+                "Landroid/content/ContentResolver;".to_owned(),
+                "Ljava/lang/String;".to_owned(),
+                "I".to_owned(),
+            ],
+        },
+    };
+    let resolver = DexValue::Reference(std::rc::Rc::from(
+        "Landroid/content/ContentResolver;.bootstrap",
+    ));
+    let key = DexValue::String(std::rc::Rc::from("disable_window_blurs"));
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &method,
+            Some(&test_invocation(vec![
+                resolver,
+                key.clone(),
+                DexValue::Int(7)
+            ]))
+        ),
+        Some(DexExecutionResult::Int(7))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &method,
+            Some(&test_invocation(vec![
+                DexValue::Null,
+                key,
+                DexValue::Int(7)
+            ]))
+        ),
+        None
+    );
+}
+
+// cite: frameworks-base TypedValue.java#applyDimension
+#[test]
+fn builtin_typed_value_apply_dimension_scales_dip_by_metrics_density() {
+    let program = DexProgram::new(Vec::new());
+    let method = DexMethodId {
+        class_descriptor: "Landroid/util/TypedValue;".to_owned(),
+        name: "applyDimension".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "FIFL".to_owned(),
+            return_type: "F".to_owned(),
+            parameters: vec![
+                "I".to_owned(),
+                "F".to_owned(),
+                "Landroid/util/DisplayMetrics;".to_owned(),
+            ],
+        },
+    };
+    let metrics = DexValue::Reference(std::rc::Rc::from("Landroid/util/DisplayMetrics;.bootstrap"));
+    let apply = |unit: i32, value: f32| {
+        program.invoke_builtin_method(
+            &method,
+            Some(&test_invocation(vec![
+                DexValue::Int(unit),
+                DexValue::Float(value),
+                metrics.clone(),
+            ])),
+        )
+    };
+
+    assert_eq!(
+        apply(0, 3.0),
+        Some(DexExecutionResult::Value(DexValue::Float(3.0)))
+    );
+    assert_eq!(
+        apply(1, 3.0),
+        Some(DexExecutionResult::Value(DexValue::Float(
+            3.0 * BOOTSTRAP_DISPLAY_DENSITY
+        )))
+    );
+    assert_eq!(
+        apply(4, 3.0),
+        Some(DexExecutionResult::Value(DexValue::Float(480.0)))
+    );
+    assert_eq!(
+        apply(9, 3.0),
+        Some(DexExecutionResult::Value(DexValue::Float(0.0)))
+    );
+}
+
+// cite: frameworks-base Settings.java#getFloat, parseFloatSetting
+#[test]
+fn builtin_settings_global_get_float_without_default_throws_setting_not_found() {
+    let program = DexProgram::new(Vec::new());
+    let method = DexMethodId {
+        class_descriptor: "Landroid/provider/Settings$Global;".to_owned(),
+        name: "getFloat".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "FLL".to_owned(),
+            return_type: "F".to_owned(),
+            parameters: vec![
+                "Landroid/content/ContentResolver;".to_owned(),
+                "Ljava/lang/String;".to_owned(),
+            ],
+        },
+    };
+    let resolver = DexValue::Reference(std::rc::Rc::from(
+        "Landroid/content/ContentResolver;.bootstrap",
+    ));
+    let Some(DexExecutionResult::Throw(exception)) = program.invoke_builtin_method(
+        &method,
+        Some(&test_invocation(vec![
+            resolver,
+            DexValue::String(std::rc::Rc::from("animator_duration_scale")),
+        ])),
+    ) else {
+        panic!("getFloat without a stored value should throw");
+    };
+
+    assert!(program.value_matches_type(&exception, "Landroid/util/AndroidException;"));
+}
+
+// cite: frameworks-base ContextWrapper.java#ContextWrapper, mBase
+#[test]
+fn builtin_context_wrapper_constructor_sets_base_context() {
+    let program = DexProgram::new(Vec::new());
+    let wrapper_method = |name: &str, shorty: &str, ret: &str, params: Vec<String>| DexMethodId {
+        class_descriptor: "Landroid/content/ContextWrapper;".to_owned(),
+        name: name.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: shorty.to_owned(),
+            return_type: ret.to_owned(),
+            parameters: params,
+        },
+    };
+    let constructor = wrapper_method(
+        "<init>",
+        "VL",
+        "V",
+        vec!["Landroid/content/Context;".to_owned()],
+    );
+    let get_base_context = wrapper_method(
+        "getBaseContext",
+        "L",
+        "Landroid/content/Context;",
+        Vec::new(),
+    );
+    let wrapper = program.allocate_object("Lcom/example/Wrapper;".to_owned());
+    let base = DexValue::Reference(std::rc::Rc::from("Landroid/content/Context;.bootstrap"));
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![wrapper.clone(), base.clone()]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&get_base_context, Some(&test_invocation(vec![wrapper]))),
+        Some(DexExecutionResult::Value(base))
+    );
+}

@@ -61,6 +61,17 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        if method.matches_builtin_signature(
+            "Landroid/content/Intent;",
+            "<init>",
+            "(Landroid/content/Intent;)V",
+        ) {
+            let invocation = invocation?;
+            self.initialize_intent_copy(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
         if method.class_descriptor == "Landroid/content/Intent;"
             && method.name == "putIntegerArrayListExtra"
             && method.proto.descriptor()
@@ -1282,5 +1293,49 @@ fn package_name_text(value: &DexValue) -> Option<String> {
     match value {
         DexValue::String(name) => Some(name.to_string()),
         _ => None,
+    }
+}
+
+impl DexProgram {
+    // cite: frameworks-base Intent.java#Intent
+    fn initialize_intent_copy(&self, invocation: &DexInvocation) -> Option<()> {
+        let [intent, source] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        if !dex_value_is_object_like(intent) || !dex_value_is_object_like(source) {
+            return None;
+        }
+        let stored_type = DexFieldId {
+            class_descriptor: "Landroid/content/Intent;".to_owned(),
+            type_descriptor: "Ljava/lang/String;".to_owned(),
+            name: "mType".to_owned(),
+        };
+        for field in [
+            intent_target_class_field(),
+            intent_action_field(),
+            intent_type_field(),
+            intent_data_uri_field(),
+            stored_type,
+        ] {
+            if let Some(value) = self.read_stored_instance_field(source, &field) {
+                self.write_stored_instance_field(intent, &field, value);
+            }
+        }
+
+        let (source_key, intent_key) = (map_identity_key(source), map_identity_key(intent));
+        let mut runtime = self.runtime.borrow_mut();
+        let extras: Vec<_> = runtime
+            .intent_extras
+            .iter()
+            .filter(|((owner, _), _)| *owner == source_key)
+            .map(|((_, name), value)| (name.clone(), value.clone()))
+            .collect();
+        for (name, value) in extras {
+            runtime
+                .intent_extras
+                .insert((intent_key.clone(), name), value);
+        }
+
+        Some(())
     }
 }

@@ -821,12 +821,19 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        let receiver_is_dex_object = invocation
+            .and_then(|invocation| invocation.arguments.first())
+            .is_some_and(|receiver| matches!(receiver, DexValue::Object(_)));
+
         if method.class_descriptor == "Landroidx/lifecycle/LifecycleOwner;"
             && method.name == "getLifecycle"
             && method
                 .proto
                 .descriptor_is("()Landroidx/lifecycle/Lifecycle;")
         {
+            if receiver_is_dex_object {
+                return None;
+            }
             return Some(DexExecutionResult::Value(DexValue::Reference(
                 std::rc::Rc::from(method.display_signature()),
             )));
@@ -838,9 +845,6 @@ impl DexProgram {
                 .proto
                 .descriptor_is("()Landroidx/lifecycle/Lifecycle$State;")
         {
-            let receiver_is_dex_object = invocation
-                .and_then(|invocation| invocation.arguments.first())
-                .is_some_and(|receiver| matches!(receiver, DexValue::Object(_)));
             if receiver_is_dex_object {
                 return None;
             }
@@ -856,6 +860,9 @@ impl DexProgram {
                 .proto
                 .descriptor_is("(Landroidx/lifecycle/LifecycleObserver;)V")
         {
+            if receiver_is_dex_object {
+                return None;
+            }
             return Some(DexExecutionResult::Void);
         }
 
@@ -1944,6 +1951,87 @@ impl DexProgram {
         {
             let invocation = invocation?;
             let value = self.sqlite_cursor_is_null(invocation)?;
+
+            return Some(DexExecutionResult::Int(value));
+        }
+
+        // cite: frameworks-base Pair.java#Pair
+        if method.class_descriptor == "Landroid/util/Pair;"
+            && method.name == "<init>"
+            && method
+                .proto
+                .descriptor_is("(Ljava/lang/Object;Ljava/lang/Object;)V")
+        {
+            let invocation = invocation?;
+            if invocation.arguments.len() != 3
+                || !dex_value_is_object_like(&invocation.arguments[0])
+            {
+                return None;
+            }
+            for (index, name) in [(1, "first"), (2, "second")] {
+                if !self.write_stored_instance_field(
+                    &invocation.arguments[0],
+                    &DexFieldId {
+                        class_descriptor: "Landroid/util/Pair;".to_owned(),
+                        type_descriptor: "Ljava/lang/Object;".to_owned(),
+                        name: name.to_owned(),
+                    },
+                    invocation.arguments[index].clone(),
+                ) {
+                    return None;
+                }
+            }
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        // cite: frameworks-base Settings.java#getString, NameValueCache
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Landroid/provider/Settings$Secure;"
+                | "Landroid/provider/Settings$System;"
+                | "Landroid/provider/Settings$Global;"
+        ) && method.name == "getString"
+            && method.proto.descriptor().as_str()
+                == "(Landroid/content/ContentResolver;Ljava/lang/String;)Ljava/lang/String;"
+        {
+            let invocation = invocation?;
+            let Some(DexValue::String(key)) = invocation.arguments.get(1) else {
+                return None;
+            };
+            let value = match key.as_ref() {
+                "android_id" => {
+                    let package_name = self.package_name.as_deref().unwrap_or("winedroid");
+                    let first = stable_hash_i32(&format!("{package_name}:android_id:high")) as u32;
+                    let second = stable_hash_i32(&format!("{package_name}:android_id:low")) as u32;
+                    Some(format!("{first:08x}{second:08x}"))
+                }
+                "bluetooth_name" | "device_name" => Some("winedroid".to_owned()),
+                _ => None,
+            };
+
+            return Some(DexExecutionResult::Value(match value {
+                Some(value) => DexValue::String(std::rc::Rc::from(value)),
+                None => DexValue::Null,
+            }));
+        }
+
+        if method.class_descriptor == "Landroid/database/Cursor;"
+            && method.name == "getCount"
+            && method.proto.descriptor_is("()I")
+        {
+            let invocation = invocation?;
+            let value = self.sqlite_cursor_count(invocation)?;
+
+            return Some(DexExecutionResult::Int(value));
+        }
+
+        if method.class_descriptor == "Landroid/database/Cursor;"
+            && method.name == "moveToFirst"
+            && method.proto.descriptor_is("()Z")
+        {
+            let invocation = invocation?;
+            let value = self.sqlite_cursor_move_to_first(invocation)?;
 
             return Some(DexExecutionResult::Int(value));
         }
@@ -3047,6 +3135,29 @@ impl DexProgram {
             .get(cursor_key)
             .map(|cursor| cursor.columns.clone())
             .unwrap_or_default()
+    }
+
+    // cite: frameworks-base AbstractCursor.java#getCount, moveToFirst
+    fn sqlite_cursor_count(&self, invocation: &DexInvocation) -> Option<i32> {
+        let cursor_key = sqlite_cursor_key(invocation)?;
+        let row_count = self
+            .runtime
+            .borrow()
+            .sqlite_cursors
+            .get(&cursor_key)?
+            .rows
+            .len();
+
+        i32::try_from(row_count).ok()
+    }
+
+    fn sqlite_cursor_move_to_first(&self, invocation: &DexInvocation) -> Option<i32> {
+        let cursor_key = sqlite_cursor_key(invocation)?;
+        let mut runtime = self.runtime.borrow_mut();
+        let cursor = runtime.sqlite_cursors.get_mut(&cursor_key)?;
+        cursor.position = 0;
+
+        Some(i32::from(!cursor.rows.is_empty()))
     }
 
     fn sqlite_cursor_move_to_next(&self, invocation: &DexInvocation) -> Option<i32> {

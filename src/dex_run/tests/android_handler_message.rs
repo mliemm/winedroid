@@ -849,3 +849,26 @@ fn frameworks_looper_loop_parks_background_threads_and_returns_on_main() {
     });
     assert!(matches!(result, Some(DexExecutionResult::Parked(_))));
 }
+
+// cite: frameworks-base Handler.java#sendMessageAtFrontOfQueue
+#[test]
+fn frameworks_handler_send_message_at_front_of_queue_sets_post_flag() {
+    let program = DexProgram::new(Vec::new());
+    let handler = new_handler(&program, "Landroid/os/Handler;");
+    let message = obtain_message(&program, &handler, 4);
+    let send = handler_method("sendMessageAtFrontOfQueue", "Z", &["Landroid/os/Message;"]);
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &send,
+            Some(&test_invocation(vec![handler, message.clone()]))
+        ),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert!(program
+        .runtime
+        .borrow()
+        .handler_posts
+        .iter()
+        .any(|post| post.runnable == message && post.at_front && post.delay_millis == 0));
+}

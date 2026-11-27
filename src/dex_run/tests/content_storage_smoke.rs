@@ -638,6 +638,24 @@ fn builtin_sqlite_open_helper_constructor_returns_void() {
             parameters: Vec::new(),
         },
     };
+    let cursor_get_count = DexMethodId {
+        class_descriptor: "Landroid/database/Cursor;".to_owned(),
+        name: "getCount".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "I".to_owned(),
+            return_type: "I".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let cursor_move_to_first = DexMethodId {
+        class_descriptor: "Landroid/database/Cursor;".to_owned(),
+        name: "moveToFirst".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "Z".to_owned(),
+            return_type: "Z".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
     let helper = DexValue::Reference(std::rc::Rc::from("helper"));
     let context = DexValue::Reference(std::rc::Rc::from("Landroid/content/Context;.bootstrap"));
     let invocation = test_invocation(vec![helper.clone()]);
@@ -742,6 +760,26 @@ fn builtin_sqlite_open_helper_constructor_returns_void() {
     assert_eq!(
         program.invoke_builtin_method(
             &cursor_move_to_next,
+            Some(&test_invocation(vec![DexValue::Reference(std::rc::Rc::from(format!(
+                "Landroid/database/Cursor;:sqlite:reference:Landroid/database/sqlite/SQLiteDatabase;:reference:helper:{}",
+                stable_hash_i32("SELECT 1")
+            )))]))
+        ),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &cursor_get_count,
+            Some(&test_invocation(vec![DexValue::Reference(std::rc::Rc::from(format!(
+                "Landroid/database/Cursor;:sqlite:reference:Landroid/database/sqlite/SQLiteDatabase;:reference:helper:{}",
+                stable_hash_i32("SELECT 1")
+            )))]))
+        ),
+        Some(DexExecutionResult::Int(1))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &cursor_move_to_first,
             Some(&test_invocation(vec![DexValue::Reference(std::rc::Rc::from(format!(
                 "Landroid/database/Cursor;:sqlite:reference:Landroid/database/sqlite/SQLiteDatabase;:reference:helper:{}",
                 stable_hash_i32("SELECT 1")

@@ -2253,3 +2253,65 @@ fn builtin_dialog_set_content_view_links_content_view_to_decor() {
         )))
     );
 }
+
+// cite: frameworks-base WindowManager.java#isCrossWindowBlurEnabled
+#[test]
+fn builtin_window_manager_cross_window_blur_is_disabled() {
+    let program = DexProgram::new(Vec::new());
+    let method = DexMethodId {
+        class_descriptor: "Landroid/view/WindowManager;".to_owned(),
+        name: "isCrossWindowBlurEnabled".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "Z".to_owned(),
+            return_type: "Z".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+
+    assert_eq!(
+        program.invoke_builtin_method(&method, None),
+        Some(DexExecutionResult::Int(0))
+    );
+}
+
+// cite: frameworks-base Activity.java#getIntent, setIntent
+#[test]
+fn builtin_activity_set_intent_replaces_get_intent() {
+    let program = DexProgram::new(Vec::new());
+    let activity_method = |name: &str, shorty: &str, ret: &str, params: Vec<String>| DexMethodId {
+        class_descriptor: "Landroid/app/Activity;".to_owned(),
+        name: name.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: shorty.to_owned(),
+            return_type: ret.to_owned(),
+            parameters: params,
+        },
+    };
+    let get_intent = activity_method("getIntent", "L", "Landroid/content/Intent;", Vec::new());
+    let set_intent = activity_method(
+        "setIntent",
+        "VL",
+        "V",
+        vec!["Landroid/content/Intent;".to_owned()],
+    );
+    let activity = program.allocate_object("Lcom/example/MainActivity;".to_owned());
+    let intent = program.allocate_object("Landroid/content/Intent;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(&get_intent, Some(&test_invocation(vec![activity.clone()]))),
+        Some(DexExecutionResult::Value(DexValue::Reference(
+            std::rc::Rc::from("Landroid/content/Intent;.bootstrap")
+        )))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &set_intent,
+            Some(&test_invocation(vec![activity.clone(), intent.clone()]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&get_intent, Some(&test_invocation(vec![activity]))),
+        Some(DexExecutionResult::Value(intent))
+    );
+}

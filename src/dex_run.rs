@@ -96,6 +96,7 @@ const JAVA_ACC_PROTECTED: u32 = 0x0004;
 const JAVA_ACC_FINAL: u32 = 0x0010;
 const JAVA_ACC_TRANSIENT: u32 = 0x0080;
 const JAVA_ACC_INTERFACE: u32 = 0x0200;
+const JAVA_ACC_ANNOTATION: u32 = 0x2000;
 const JAVA_ACC_ABSTRACT: u32 = 0x0400;
 const JAVA_ACC_SYNTHETIC: u32 = 0x1000;
 const BOOTSTRAP_ANDROID_SDK_INT: i32 = 35;
@@ -1591,6 +1592,8 @@ impl DexProgram {
                 "compiled DEX execution requested by `{flag}`, but this build is interpreter-only\nunset `{flag}` or use a native build with the `jit` feature"
             )));
         }
+        #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+        crate::native::android_assets::set_apk_path(apk_path);
         let manifest_context = {
             let _span = trace::span("runtime", "load manifest context");
             load_apk_manifest_context(apk_path)?
@@ -4060,13 +4063,19 @@ impl DexProgram {
 
         match result {
             DexExecutionResult::Void => Ok(()),
-            DexExecutionResult::Int(_)
-            | DexExecutionResult::Value(_)
-            | DexExecutionResult::Throw(_) => Err(WinedroidError::new(format!(
-                "DEX entrypoint constructor did not complete normally\nclass: {}\nmethod: {}",
+            DexExecutionResult::Throw(exception) => Err(WinedroidError::new(format!(
+                "DEX entrypoint constructor threw uncaught {}\nclass: {}\nmethod: {}",
+                self.describe_uncaught_throw(&exception),
                 resolved.class_descriptor,
                 constructor.method.display_signature()
             ))),
+            DexExecutionResult::Int(_) | DexExecutionResult::Value(_) => {
+                Err(WinedroidError::new(format!(
+                    "DEX entrypoint constructor did not complete normally\nclass: {}\nmethod: {}",
+                    resolved.class_descriptor,
+                    constructor.method.display_signature()
+                )))
+            }
             DexExecutionResult::Parked(execution) => {
                 self.discard_parked_execution(&execution);
                 Err(WinedroidError::new(format!(

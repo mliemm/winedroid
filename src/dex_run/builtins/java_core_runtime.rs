@@ -2154,6 +2154,15 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Landroid/os/Handler;"
+            && method.name == "sendMessageAtFrontOfQueue"
+            && method.proto.descriptor_is("(Landroid/os/Message;)Z")
+        {
+            let invocation = invocation?;
+
+            return self.handler_send_message_at_front_of_queue(invocation);
+        }
+
+        if method.class_descriptor == "Landroid/os/Handler;"
             && method.name == "sendMessageAtTime"
             && method.proto.descriptor_is("(Landroid/os/Message;J)Z")
         {

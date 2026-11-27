@@ -46,6 +46,7 @@ mod runtime_core;
 mod sqlite_security;
 mod static_bootstrap;
 mod third_party_runtime;
+mod writer_contract;
 
 #[test]
 fn installed_runtime_dir_only_applies_to_installed_source_apk() {

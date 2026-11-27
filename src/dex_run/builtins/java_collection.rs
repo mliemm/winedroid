@@ -397,6 +397,36 @@ impl DexProgram {
 
         if method.class_descriptor == "Ljava/util/Arrays;"
             && method.name == "fill"
+            && method.proto.descriptor_is("([JJ)V")
+        {
+            let invocation = invocation?;
+            self.arrays_fill_long(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.class_descriptor == "Ljava/util/Arrays;"
+            && method.name == "fill"
+            && method.proto.descriptor_is("([II)V")
+        {
+            let invocation = invocation?;
+            self.arrays_fill_int(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.class_descriptor == "Ljava/util/Arrays;"
+            && method.name == "fill"
+            && method.proto.descriptor_is("([ZZ)V")
+        {
+            let invocation = invocation?;
+            self.arrays_fill_int(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.class_descriptor == "Ljava/util/Arrays;"
+            && method.name == "fill"
             && method.proto.descriptor_is("([JIIJ)V")
         {
             let invocation = invocation?;
@@ -536,6 +566,30 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(DexValue::Reference(
                 std::rc::Rc::from("Ljava/util/Map;:collections:emptyMap"),
             )));
+        }
+
+        if method.class_descriptor == "Ljava/util/Collections;"
+            && method.name == "unmodifiableSet"
+            && method
+                .proto
+                .descriptor_is("(Ljava/util/Set;)Ljava/util/Set;")
+        {
+            let invocation = invocation?;
+            let value = Self::collections_identity(invocation)?;
+
+            return Some(DexExecutionResult::Value(value));
+        }
+
+        if method.class_descriptor == "Ljava/util/Collections;"
+            && method.name == "unmodifiableCollection"
+            && method
+                .proto
+                .descriptor_is("(Ljava/util/Collection;)Ljava/util/Collection;")
+        {
+            let invocation = invocation?;
+            let value = Self::collections_identity(invocation)?;
+
+            return Some(DexExecutionResult::Value(value));
         }
 
         if method.class_descriptor == "Ljava/util/Collections;"
@@ -906,6 +960,32 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(view));
         }
 
+        if method.class_descriptor == "Ljava/util/TreeMap;"
+            && method.name == "ceilingEntry"
+            && method
+                .proto
+                .descriptor_is("(Ljava/lang/Object;)Ljava/util/Map$Entry;")
+        {
+            // cite: libcore TreeMap.java#ceilingEntry
+            let invocation = invocation?;
+            let value = self.tree_map_ceiling_entry(invocation)?;
+
+            return Some(DexExecutionResult::Value(value));
+        }
+
+        if is_supported_map_class(&method.class_descriptor)
+            && method.name == "equals"
+            && method.proto.descriptor_is("(Ljava/lang/Object;)Z")
+        {
+            // cite: libcore AbstractMap.java#equals
+            let invocation = invocation?;
+            let value = self
+                .runtime_values_equal(&invocation.arguments[0], &invocation.arguments[1], 1, true)
+                .ok()?;
+
+            return Some(DexExecutionResult::Int(i32::from(value)));
+        }
+
         if is_supported_map_class(&method.class_descriptor)
             && method.name == "get"
             && method
@@ -1117,6 +1197,20 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        if method.class_descriptor == "Ljava/util/TreeMap;"
+            && method.name == "<init>"
+            && method.proto.descriptor_is("(Ljava/util/Comparator;)V")
+        {
+            // cite: libcore TreeMap.java#TreeMap, comparator
+            let [map, comparator] = invocation?.arguments.as_slice() else {
+                return None;
+            };
+            if !dex_value_is_object_like(map) || !dex_value_is_nullable_object_like(comparator) {
+                return None;
+            }
+            return Some(DexExecutionResult::Void);
+        }
+
         if method.class_descriptor == "Ljava/util/Properties;"
             && method.name == "<init>"
             && method.proto.descriptor_is("()V")
@@ -1229,7 +1323,7 @@ impl DexProgram {
 
         if method.class_descriptor == "Ljava/util/ArrayDeque;"
             && method.name == "<init>"
-            && method.proto.descriptor_is("()V")
+            && matches!(method.proto.descriptor().as_str(), "()V" | "(I)V")
         {
             return Some(DexExecutionResult::Void);
         }

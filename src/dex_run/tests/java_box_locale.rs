@@ -1275,3 +1275,90 @@ fn libcore_long_to_hex_string_formats_unsigned_hex() {
         )))
     );
 }
+
+// cite: libcore Double.java#valueOf
+#[test]
+fn builtin_double_value_of_parses_string() {
+    let program = DexProgram::new(Vec::new());
+    let method = DexMethodId {
+        class_descriptor: "Ljava/lang/Double;".to_owned(),
+        name: "valueOf".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "LL".to_owned(),
+            return_type: "Ljava/lang/Double;".to_owned(),
+            parameters: vec!["Ljava/lang/String;".to_owned()],
+        },
+    };
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &method,
+            Some(&test_invocation(vec![DexValue::String(std::rc::Rc::from(
+                "1.5"
+            ))]))
+        ),
+        Some(DexExecutionResult::Value(DexValue::Reference(
+            std::rc::Rc::from(format!("Ljava/lang/Double;:{:016x}", 1.5f64.to_bits()))
+        )))
+    );
+
+    let int_value = DexMethodId {
+        class_descriptor: "Ljava/lang/Double;".to_owned(),
+        name: "intValue".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "I".to_owned(),
+            return_type: "I".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    assert_eq!(
+        program.invoke_builtin_method(
+            &int_value,
+            Some(&test_invocation(vec![DexValue::Reference(
+                std::rc::Rc::from(format!("Ljava/lang/Double;:{:016x}", 2.75f64.to_bits()))
+            )]))
+        ),
+        Some(DexExecutionResult::Int(2))
+    );
+}
+
+// cite: libcore Number.java#intValue, longValue, floatValue, doubleValue
+#[test]
+fn libcore_number_accessors_convert_any_box() {
+    let program = DexProgram::new(Vec::new());
+    let number = |name: &str, ret: &str| DexMethodId {
+        class_descriptor: "Ljava/lang/Number;".to_owned(),
+        name: name.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: ret.to_owned(),
+            return_type: ret.to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let boxed = |value: String| DexValue::Reference(std::rc::Rc::from(value));
+    let integer = boxed("Ljava/lang/Integer;:5".to_owned());
+    let double = boxed(format!("Ljava/lang/Double;:{:016x}", 3.9f64.to_bits()));
+    let long = boxed("Ljava/lang/Long;:9007199254740993".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &number("floatValue", "F"),
+            Some(&test_invocation(vec![integer]))
+        ),
+        Some(DexExecutionResult::Value(DexValue::Float(5.0)))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &number("intValue", "I"),
+            Some(&test_invocation(vec![double]))
+        ),
+        Some(DexExecutionResult::Int(3))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &number("longValue", "J"),
+            Some(&test_invocation(vec![long]))
+        ),
+        Some(DexExecutionResult::Value(DexValue::Long(9007199254740993)))
+    );
+}

@@ -527,13 +527,48 @@ impl DexProgram {
             )));
         }
 
-        if method.class_descriptor == "Landroid/app/Activity;"
-            && method.name == "getIntent"
-            && method.proto.descriptor_is("()Landroid/content/Intent;")
-        {
-            return Some(DexExecutionResult::Value(DexValue::Reference(
-                std::rc::Rc::from("Landroid/content/Intent;.bootstrap"),
-            )));
+        // cite: frameworks-base Activity.java#getIntent, setIntent, mIntent
+        let activity_intent_field = || DexFieldId {
+            class_descriptor: "Landroid/app/Activity;".to_owned(),
+            type_descriptor: "Landroid/content/Intent;".to_owned(),
+            name: "mIntent".to_owned(),
+        };
+        if method.matches_builtin_signature(
+            "Landroid/app/Activity;",
+            "getIntent",
+            "()Landroid/content/Intent;",
+        ) {
+            let stored = invocation
+                .and_then(|invocation| invocation.arguments.first())
+                .and_then(|activity| {
+                    self.read_stored_instance_field(activity, &activity_intent_field())
+                });
+
+            return Some(DexExecutionResult::Value(stored.unwrap_or_else(|| {
+                DexValue::Reference(std::rc::Rc::from("Landroid/content/Intent;.bootstrap"))
+            })));
+        }
+
+        if method.matches_builtin_signature(
+            "Landroid/app/Activity;",
+            "setIntent",
+            "(Landroid/content/Intent;)V",
+        ) {
+            let [activity, intent] = invocation?.arguments.as_slice() else {
+                return None;
+            };
+            if !dex_value_is_object_like(activity) || !dex_value_is_nullable_object_like(intent) {
+                return None;
+            }
+            let intent = if dex_value_is_object_like(intent) {
+                intent.clone()
+            } else {
+                DexValue::Null
+            };
+            self.write_stored_instance_field(activity, &activity_intent_field(), intent)
+                .then_some(())?;
+
+            return Some(DexExecutionResult::Void);
         }
 
         if method.class_descriptor == "Landroid/app/Activity;"
@@ -941,6 +976,15 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(DexValue::Reference(
                 std::rc::Rc::from("Landroid/view/Display;.bootstrap"),
             )));
+        }
+
+        if method.matches_builtin_signature(
+            "Landroid/view/WindowManager;",
+            "isCrossWindowBlurEnabled",
+            "()Z",
+        ) {
+            // cite: frameworks-base WindowManager.java#isCrossWindowBlurEnabled
+            return Some(DexExecutionResult::Int(0));
         }
 
         if method.class_descriptor == "Landroid/view/WindowManager;"

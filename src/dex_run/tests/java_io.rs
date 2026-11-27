@@ -2692,3 +2692,42 @@ fn libcore_concurrent_linked_deque_default_constructor_creates_an_empty_collecti
     assert!(program.value_matches_type(&deque, "Ljava/util/Deque;"));
     assert!(program.value_matches_type(&deque, "Ljava/util/AbstractCollection;"));
 }
+
+// cite: libcore Charset.java#forName, name
+#[test]
+fn builtin_charset_for_name_returns_canonical_charset() {
+    let program = DexProgram::new(Vec::new());
+    let for_name = DexMethodId {
+        class_descriptor: "Ljava/nio/charset/Charset;".to_owned(),
+        name: "forName".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "LL".to_owned(),
+            return_type: "Ljava/nio/charset/Charset;".to_owned(),
+            parameters: vec!["Ljava/lang/String;".to_owned()],
+        },
+    };
+    let name = DexMethodId {
+        class_descriptor: "Ljava/nio/charset/Charset;".to_owned(),
+        name: "name".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "L".to_owned(),
+            return_type: "Ljava/lang/String;".to_owned(),
+            parameters: Vec::new(),
+        },
+    };
+    let Some(DexExecutionResult::Value(charset)) = program.invoke_builtin_method(
+        &for_name,
+        Some(&test_invocation(vec![DexValue::String(std::rc::Rc::from(
+            "utf8",
+        ))])),
+    ) else {
+        panic!("forName should return a charset");
+    };
+
+    assert_eq!(
+        program.invoke_builtin_method(&name, Some(&test_invocation(vec![charset]))),
+        Some(DexExecutionResult::Value(DexValue::String(
+            std::rc::Rc::from("UTF-8")
+        )))
+    );
+}

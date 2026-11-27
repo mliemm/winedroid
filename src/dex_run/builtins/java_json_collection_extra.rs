@@ -396,6 +396,16 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        if method.class_descriptor == "Ljava/util/LinkedList;"
+            && method.name == "<init>"
+            && method.proto.descriptor_is("(Ljava/util/Collection;)V")
+        {
+            let invocation = invocation?;
+            self.initialize_array_list_from_collection(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
         if method.class_descriptor == "Ljava/util/ArrayList;"
             && method.name == "<init>"
             && method.proto.descriptor_is("(Ljava/util/Collection;)V")
@@ -514,11 +524,15 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
-        if method.class_descriptor == "Ljava/util/concurrent/LinkedBlockingQueue;"
-            && method.name == "<init>"
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/util/concurrent/LinkedBlockingQueue;"
+                | "Ljava/util/concurrent/ArrayBlockingQueue;"
+        ) && method.name == "<init>"
             && method.proto.descriptor_is("(I)V")
         {
             // cite: libcore LinkedBlockingQueue.java#LinkedBlockingQueue
+            // cite: libcore ArrayBlockingQueue.java#ArrayBlockingQueue
             let invocation = invocation?;
             let DexValue::Int(capacity) = invocation.arguments.get(1)? else {
                 return None;
@@ -563,6 +577,32 @@ impl DexProgram {
             self.add_array_list_value(invocation)?;
 
             return Some(DexExecutionResult::Int(1));
+        }
+
+        if method.class_descriptor == "Ljava/util/LinkedList;"
+            && matches!(
+                (method.name.as_str(), method.proto.descriptor().as_str()),
+                ("addFirst" | "push", "(Ljava/lang/Object;)V")
+                    | ("offerFirst", "(Ljava/lang/Object;)Z")
+            )
+        {
+            // cite: libcore LinkedList.java#addFirst, offerFirst, push, linkFirst
+            let invocation = invocation?;
+            let [list, value] = invocation.arguments.as_slice() else {
+                return None;
+            };
+            self.runtime
+                .borrow_mut()
+                .list_entries
+                .entry(map_identity_key(list))
+                .or_default()
+                .insert(0, value.clone());
+
+            return Some(if method.name == "offerFirst" {
+                DexExecutionResult::Int(1)
+            } else {
+                DexExecutionResult::Void
+            });
         }
 
         if method.class_descriptor == "Ljava/util/ArrayList;"

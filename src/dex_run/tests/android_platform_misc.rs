@@ -1849,3 +1849,90 @@ fn frameworks_display_metrics_constructor_returns_void() {
     );
     assert!(program.value_matches_type(&metrics, "Landroid/util/DisplayMetrics;"));
 }
+
+// cite: frameworks-base Pair.java#Pair
+#[test]
+fn builtin_pair_constructor_stores_first_and_second_fields() {
+    let program = DexProgram::new(Vec::new());
+    let constructor = DexMethodId {
+        class_descriptor: "Landroid/util/Pair;".to_owned(),
+        name: "<init>".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "VLL".to_owned(),
+            return_type: "V".to_owned(),
+            parameters: vec![
+                "Ljava/lang/Object;".to_owned(),
+                "Ljava/lang/Object;".to_owned(),
+            ],
+        },
+    };
+    let pair = program.allocate_object("Landroid/util/Pair;".to_owned());
+    let first = DexValue::String(std::rc::Rc::from("key"));
+    let second = DexValue::String(std::rc::Rc::from("value"));
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![
+                pair.clone(),
+                first.clone(),
+                second.clone()
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    for (name, expected) in [("first", first), ("second", second)] {
+        assert_eq!(
+            program.read_stored_instance_field(
+                &pair,
+                &DexFieldId {
+                    class_descriptor: "Landroid/util/Pair;".to_owned(),
+                    type_descriptor: "Ljava/lang/Object;".to_owned(),
+                    name: name.to_owned(),
+                }
+            ),
+            Some(expected)
+        );
+    }
+}
+
+// cite: frameworks-base Settings.java#getString
+#[test]
+fn builtin_settings_secure_get_string_returns_android_id() {
+    let program = DexProgram::with_package_name(Vec::new(), Some("com.example".to_owned()));
+    let method = DexMethodId {
+        class_descriptor: "Landroid/provider/Settings$Secure;".to_owned(),
+        name: "getString".to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "LLL".to_owned(),
+            return_type: "Ljava/lang/String;".to_owned(),
+            parameters: vec![
+                "Landroid/content/ContentResolver;".to_owned(),
+                "Ljava/lang/String;".to_owned(),
+            ],
+        },
+    };
+    let resolver = DexValue::Reference(std::rc::Rc::from("resolver"));
+    let android_id = program.invoke_builtin_method(
+        &method,
+        Some(&test_invocation(vec![
+            resolver.clone(),
+            DexValue::String(std::rc::Rc::from("android_id")),
+        ])),
+    );
+
+    assert!(matches!(
+        android_id,
+        Some(DexExecutionResult::Value(DexValue::String(value))) if value.len() == 16
+    ));
+    assert_eq!(
+        program.invoke_builtin_method(
+            &method,
+            Some(&test_invocation(vec![
+                resolver,
+                DexValue::String(std::rc::Rc::from("unknown"))
+            ]))
+        ),
+        Some(DexExecutionResult::Value(DexValue::Null))
+    );
+}

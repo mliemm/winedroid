@@ -199,7 +199,19 @@ impl DexProgram {
             return None;
         };
 
-        self.handler_enqueue_message(handler, message, 0)
+        self.handler_enqueue_message(handler, message, 0, false)
+    }
+
+    // cite: frameworks-base Handler.java#sendMessageAtFrontOfQueue
+    pub(in crate::dex_run) fn handler_send_message_at_front_of_queue(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        let [handler, message] = invocation.arguments.as_slice() else {
+            return None;
+        };
+
+        self.handler_enqueue_message(handler, message, 0, true)
     }
 
     // cite: frameworks-base Handler.java#sendMessageAtTime
@@ -215,7 +227,7 @@ impl DexProgram {
         let now_millis = self.runtime.borrow().main_thread_uptime_millis;
         let delay_millis = uptime_millis.saturating_sub(now_millis);
 
-        self.handler_enqueue_message(handler, message, delay_millis)
+        self.handler_enqueue_message(handler, message, delay_millis, false)
     }
 
     // cite: frameworks-base Handler.java#sendMessageDelayed
@@ -228,7 +240,7 @@ impl DexProgram {
         };
         let delay_millis = wide_long_argument(delay_millis, high_slot)?;
 
-        self.handler_enqueue_message(handler, message, delay_millis)
+        self.handler_enqueue_message(handler, message, delay_millis, false)
     }
 
     // cite: frameworks-base Handler.java#sendEmptyMessageDelayed
@@ -254,7 +266,7 @@ impl DexProgram {
             DexValue::Int(*what),
         );
 
-        self.handler_enqueue_message(handler, &message, delay_millis)
+        self.handler_enqueue_message(handler, &message, delay_millis, false)
     }
 
     fn handler_has_looper(&self, handler: &DexValue) -> bool {
@@ -273,6 +285,7 @@ impl DexProgram {
         handler: &DexValue,
         message: &DexValue,
         delay_millis: i64,
+        at_front: bool,
     ) -> Option<DexExecutionResult> {
         if !self.handler_has_looper(handler) {
             return None;
@@ -306,7 +319,7 @@ impl DexProgram {
             map_identity_key(handler),
             message.clone(),
             delay_millis.max(0),
-            false,
+            at_front,
         );
 
         Some(DexExecutionResult::Int(1))
