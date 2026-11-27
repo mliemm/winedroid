@@ -1429,7 +1429,7 @@ fn builtin_view_configuration_returns_bootstrap_values() {
     );
     assert_eq!(
         program.invoke_builtin_method(&long_press_timeout, None),
-        Some(DexExecutionResult::Int(500))
+        Some(DexExecutionResult::Int(400))
     );
     assert_eq!(
         program.invoke_builtin_method(&show_menu_shortcuts, None),
@@ -8364,4 +8364,173 @@ fn frameworks_display_real_metrics_fill_the_display_metrics_fields() {
         program.read_stored_instance_field(&metrics, &display_metrics_field("xdpi", "F")),
         Some(DexValue::Float(BOOTSTRAP_DISPLAY_DENSITY_DPI as f32))
     );
+}
+
+// cite: frameworks-base FrameLayout.java#LayoutParams
+// cite: frameworks-base ViewGroup.java#MarginLayoutParams
+#[test]
+fn builtin_frame_layout_params_store_size_and_are_margin_layout_params() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Landroid/widget/FrameLayout$LayoutParams;";
+    let init = builtin_method(class, "<init>", "V", &["I", "I"]);
+    let init_gravity = builtin_method(class, "<init>", "V", &["I", "I", "I"]);
+    let params = program.allocate_object(class.to_owned());
+    let centered = program.allocate_object(class.to_owned());
+    let field = |owner: &str, name: &str| DexFieldId {
+        class_descriptor: owner.to_owned(),
+        type_descriptor: "I".to_owned(),
+        name: name.to_owned(),
+    };
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &init,
+            Some(&test_invocation(vec![
+                params.clone(),
+                DexValue::Int(-1),
+                DexValue::Int(-2)
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.read_stored_instance_field(
+            &params,
+            &field("Landroid/view/ViewGroup$LayoutParams;", "width")
+        ),
+        Some(DexValue::Int(-1))
+    );
+    program.invoke_builtin_method(
+        &init_gravity,
+        Some(&test_invocation(vec![
+            centered.clone(),
+            DexValue::Int(-1),
+            DexValue::Int(-1),
+            DexValue::Int(17),
+        ])),
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&centered, &field(class, "gravity")),
+        Some(DexValue::Int(17))
+    );
+    assert!(program.value_matches_type(&params, "Landroid/view/ViewGroup$MarginLayoutParams;"));
+}
+
+// cite: frameworks-base Scroller.java#startScroll, computeScrollOffset, fling, abortAnimation
+#[test]
+fn builtin_scroller_scrolls_over_time_and_flings_within_bounds() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Landroid/widget/Scroller;";
+    let init = builtin_method(class, "<init>", "V", &["Landroid/content/Context;"]);
+    let start_scroll = builtin_method(class, "startScroll", "V", &["I", "I", "I", "I", "I"]);
+    let compute = builtin_method(class, "computeScrollOffset", "Z", &[]);
+    let curr_x = builtin_method(class, "getCurrX", "I", &[]);
+    let final_x = builtin_method(class, "getFinalX", "I", &[]);
+    let finished = builtin_method(class, "isFinished", "Z", &[]);
+    let fling = builtin_method(
+        class,
+        "fling",
+        "V",
+        &["I", "I", "I", "I", "I", "I", "I", "I"],
+    );
+    let abort = builtin_method(class, "abortAnimation", "V", &[]);
+    let scroller = program.allocate_object(class.to_owned());
+    let context = DexValue::Reference(std::rc::Rc::from("Landroid/content/Context;.bootstrap"));
+    let call = |method: &DexMethodId, arguments: &[i32]| {
+        let mut values = vec![scroller.clone()];
+        values.extend(arguments.iter().map(|value| DexValue::Int(*value)));
+        program.invoke_builtin_method(method, Some(&test_invocation(values)))
+    };
+    let int = |result: Option<DexExecutionResult>| match result {
+        Some(DexExecutionResult::Int(value)) => value,
+        other => panic!("expected an int, got {other:?}"),
+    };
+    let set_time = |millis: i64| program.runtime.borrow_mut().main_thread_uptime_millis = millis;
+
+    program.invoke_builtin_method(
+        &init,
+        Some(&test_invocation(vec![scroller.clone(), context])),
+    );
+    assert_eq!(int(call(&finished, &[])), 1);
+    assert_eq!(int(call(&compute, &[])), 0);
+
+    set_time(1000);
+    call(&start_scroll, &[0, 0, 300, 0, 100]);
+    set_time(1050);
+    assert_eq!(int(call(&compute, &[])), 1);
+    let midway = int(call(&curr_x, &[]));
+    assert!(midway > 0 && midway < 300, "midway position {midway}");
+    set_time(1100);
+    assert_eq!(int(call(&compute, &[])), 1);
+    assert_eq!(int(call(&curr_x, &[])), 300);
+    assert_eq!(int(call(&finished, &[])), 1);
+
+    call(&fling, &[0, 0, 4000, 0, 0, 500, 0, 0]);
+    let fling_end = int(call(&final_x, &[]));
+    assert!(fling_end > 0 && fling_end <= 500, "fling end {fling_end}");
+    call(&abort, &[]);
+    assert_eq!(int(call(&curr_x, &[])), fling_end);
+}
+
+// cite: frameworks-base ViewConfiguration.java#getScaledPagingTouchSlop, getScaledOverflingDistance, getLongPressTimeout, DEFAULT_LONG_PRESS_TIMEOUT
+#[test]
+fn builtin_view_configuration_reports_aosp_defaults() {
+    let program = DexProgram::new(Vec::new());
+    let configuration = DexValue::Reference(std::rc::Rc::from(
+        "Landroid/view/ViewConfiguration;.bootstrap",
+    ));
+    let get = |name: &str| {
+        program.invoke_builtin_method(
+            &builtin_method("Landroid/view/ViewConfiguration;", name, "I", &[]),
+            Some(&test_invocation(vec![configuration.clone()])),
+        )
+    };
+
+    assert_eq!(
+        get("getScaledPagingTouchSlop"),
+        Some(DexExecutionResult::Int(16))
+    );
+    assert_eq!(
+        get("getScaledOverflingDistance"),
+        Some(DexExecutionResult::Int(6))
+    );
+    assert_eq!(
+        get("getLongPressTimeout"),
+        Some(DexExecutionResult::Int(400))
+    );
+    assert_eq!(get("getScaledUnknownThing"), None);
+}
+
+// cite: frameworks-base ViewStub.java#ViewStub, setLayoutResource, getLayoutResource, getInflatedId
+#[test]
+fn builtin_view_stub_starts_gone_and_stores_its_layout() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Landroid/view/ViewStub;";
+    let init = builtin_method(class, "<init>", "V", &["Landroid/content/Context;"]);
+    let set_layout = builtin_method(class, "setLayoutResource", "V", &["I"]);
+    let get_layout = builtin_method(class, "getLayoutResource", "I", &[]);
+    let get_inflated = builtin_method(class, "getInflatedId", "I", &[]);
+    let stub = program.allocate_object(class.to_owned());
+    let context = DexValue::Reference(std::rc::Rc::from("Landroid/content/Context;.bootstrap"));
+    let call = |method: &DexMethodId, mut arguments: Vec<DexValue>| {
+        arguments.insert(0, stub.clone());
+        program.invoke_builtin_method(method, Some(&test_invocation(arguments)))
+    };
+
+    assert_eq!(call(&init, vec![context]), Some(DexExecutionResult::Void));
+    assert_eq!(
+        program.read_stored_instance_field(&stub, &view_visibility_field()),
+        Some(DexValue::Int(8))
+    );
+    assert_eq!(call(&get_layout, vec![]), Some(DexExecutionResult::Int(0)));
+    assert_eq!(
+        call(&get_inflated, vec![]),
+        Some(DexExecutionResult::Int(-1))
+    );
+    call(&set_layout, vec![DexValue::Int(0x7f0d_0001)]);
+    assert_eq!(
+        call(&get_layout, vec![]),
+        Some(DexExecutionResult::Int(0x7f0d_0001))
+    );
+    assert!(program.value_matches_type(&stub, "Landroid/view/View;"));
 }

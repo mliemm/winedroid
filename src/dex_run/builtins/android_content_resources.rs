@@ -624,6 +624,27 @@ impl DexProgram {
             return Some(DexExecutionResult::Int(value));
         }
 
+        if method.matches_builtin_signature("Landroid/content/res/Resources;", "getInteger", "(I)I")
+        {
+            let invocation = invocation?;
+            // cite: frameworks-base Resources.java#getInteger
+            let value = match self.resources_get_integer(invocation) {
+                Ok(Some(value)) => value,
+                Ok(None) => {
+                    return Some(DexExecutionResult::Throw(
+                        self.resource_not_found_for_request(invocation, "integer"),
+                    ));
+                }
+                Err(error) => {
+                    return Some(DexExecutionResult::Throw(
+                        self.resource_not_found_exception(error),
+                    ));
+                }
+            };
+
+            return Some(DexExecutionResult::Int(value));
+        }
+
         if method.class_descriptor == "Landroid/content/res/Resources;"
             && method.name == "getBoolean"
             && method.proto.descriptor_is("(I)Z")

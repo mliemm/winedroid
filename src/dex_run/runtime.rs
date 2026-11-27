@@ -59,6 +59,7 @@ pub(super) struct DexRuntimeState {
     pub(super) iterator_last_returned_indices: HashMap<String, usize>,
     pub(super) array_entries: HashMap<String, Vec<DexValue>>,
     pub(super) json_entries: HashMap<(String, String), DexValue>,
+    pub(super) json_key_order: HashMap<String, Vec<String>>,
     pub(super) content_values_entries: HashMap<(String, String), DexValue>,
     pub(super) bundle_entries: HashMap<(String, String), DexValue>,
     pub(super) sparse_array_entries: HashMap<String, Vec<(i32, DexValue)>>,
@@ -77,6 +78,7 @@ pub(super) struct DexRuntimeState {
         HashMap<String, crate::guest_filesystem::PrivateStorageKind>,
     pub(super) context_storage_kinds: HashMap<String, crate::guest_filesystem::PrivateStorageKind>,
     pub(super) intent_extras: HashMap<(String, String), DexValue>,
+    pub(super) intent_extra_types: HashMap<(String, String), String>,
     pub(super) adapter_item_click_listeners: HashMap<(String, i32), DexValue>,
     pub(super) shared_preferences_editors: HashMap<String, SharedPreferencesEditorState>,
     pub(super) string_values: HashMap<String, String>,
@@ -105,6 +107,7 @@ pub(super) struct DexRuntimeState {
     pub(super) destroyed_activities: HashSet<String>,
     pub(super) idle_handlers: Vec<(String, DexValue)>,
     pub(super) queue_capacities: HashMap<String, usize>,
+    pub(super) scrollers: HashMap<String, super::android::scroller::ScrollerState>,
     pub(super) executor_handlers: HashMap<String, DexValue>,
     pub(super) executor_workers: HashMap<String, DexValue>,
     pub(super) next_thread_pool_number: u32,
@@ -213,6 +216,48 @@ pub(super) struct DexRuntimeState {
 }
 
 impl DexRuntimeState {
+    // cite: libcore JSONObject.java#put, nameValuePairs
+    pub(super) fn insert_json_entry(
+        &mut self,
+        object_key: String,
+        entry_key: String,
+        value: DexValue,
+    ) {
+        let order = self.json_key_order.entry(object_key.clone()).or_default();
+        if !self
+            .json_entries
+            .contains_key(&(object_key.clone(), entry_key.clone()))
+        {
+            order.push(entry_key.clone());
+        }
+        self.json_entries.insert((object_key, entry_key), value);
+    }
+
+    pub(super) fn json_entries_in_order(&self, object_key: &str) -> Vec<(String, DexValue)> {
+        let mut ordered: Vec<(String, DexValue)> = self
+            .json_key_order
+            .get(object_key)
+            .into_iter()
+            .flatten()
+            .filter_map(|key| {
+                self.json_entries
+                    .get(&(object_key.to_owned(), key.clone()))
+                    .map(|value| (key.clone(), value.clone()))
+            })
+            .collect();
+        let mut unordered: Vec<(String, DexValue)> = self
+            .json_entries
+            .iter()
+            .filter(|((owner, key), _)| {
+                owner == object_key && !ordered.iter().any(|(known, _)| known == key)
+            })
+            .map(|((_, key), value)| (key.clone(), value.clone()))
+            .collect();
+        unordered.sort_by(|left, right| left.0.cmp(&right.0));
+        ordered.extend(unordered);
+        ordered
+    }
+
     pub(super) fn allocate_adapter_item_click_id(&mut self) -> i32 {
         let id = self.next_adapter_item_click_id;
         self.next_adapter_item_click_id = if id >= ADAPTER_ITEM_CLICK_ID_MAX {
@@ -374,6 +419,7 @@ impl DexRuntimeState {
             iterator_last_returned_indices: HashMap::new(),
             array_entries: HashMap::new(),
             json_entries: HashMap::new(),
+            json_key_order: HashMap::new(),
             content_values_entries: HashMap::new(),
             bundle_entries: HashMap::new(),
             sparse_array_entries: HashMap::new(),
@@ -387,6 +433,7 @@ impl DexRuntimeState {
             shared_preferences_storage_kinds: HashMap::new(),
             context_storage_kinds: HashMap::new(),
             intent_extras: HashMap::new(),
+            intent_extra_types: HashMap::new(),
             adapter_item_click_listeners: HashMap::new(),
             shared_preferences_editors: HashMap::new(),
             string_values: HashMap::new(),
@@ -415,6 +462,7 @@ impl DexRuntimeState {
             destroyed_activities: HashSet::new(),
             idle_handlers: Vec::new(),
             queue_capacities: HashMap::new(),
+            scrollers: HashMap::new(),
             executor_handlers: HashMap::new(),
             executor_workers: HashMap::new(),
             next_thread_pool_number: 1,

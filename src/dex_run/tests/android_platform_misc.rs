@@ -190,21 +190,20 @@ fn builtin_content_observer_constructor_stores_handler() {
 }
 
 #[test]
-fn builtin_animation_utils_current_time_uses_bootstrap_clock() {
+fn builtin_animation_utils_current_time_follows_the_main_thread_clock() {
+    // cite: frameworks-base AnimationUtils.java#currentAnimationTimeMillis
     let program = DexProgram::new(Vec::new());
-    let method = DexMethodId {
-        class_descriptor: "Landroid/view/animation/AnimationUtils;".to_owned(),
-        name: "currentAnimationTimeMillis".to_owned(),
-        proto: crate::dex::DexProto {
-            shorty: "J".to_owned(),
-            return_type: "J".to_owned(),
-            parameters: Vec::new(),
-        },
-    };
+    let method = builtin_method(
+        "Landroid/view/animation/AnimationUtils;",
+        "currentAnimationTimeMillis",
+        "J",
+        &[],
+    );
+    program.runtime.borrow_mut().main_thread_uptime_millis = 1234;
 
     assert_eq!(
         program.invoke_builtin_method(&method, None),
-        Some(DexExecutionResult::Value(DexValue::Long(0)))
+        Some(DexExecutionResult::Value(DexValue::Long(1234)))
     );
 }
 
@@ -1934,5 +1933,46 @@ fn builtin_settings_secure_get_string_returns_android_id() {
             ]))
         ),
         Some(DexExecutionResult::Value(DexValue::Null))
+    );
+}
+
+// cite: frameworks-base BaseBundle.java#getString, putString, putBoolean
+#[test]
+fn bundle_get_string_returns_the_default_for_missing_or_non_string_values() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Landroid/os/BaseBundle;";
+    let put_string = builtin_method(
+        class,
+        "putString",
+        "V",
+        &["Ljava/lang/String;", "Ljava/lang/String;"],
+    );
+    let put_boolean = builtin_method(class, "putBoolean", "V", &["Ljava/lang/String;", "Z"]);
+    let get_string = builtin_method(
+        class,
+        "getString",
+        "Ljava/lang/String;",
+        &["Ljava/lang/String;", "Ljava/lang/String;"],
+    );
+    let bundle = program.allocate_object("Landroid/os/Bundle;".to_owned());
+    let string = |value: &str| DexValue::String(std::rc::Rc::from(value));
+    let call = |method: &DexMethodId, mut arguments: Vec<DexValue>| {
+        arguments.insert(0, bundle.clone());
+        program.invoke_builtin_method(method, Some(&test_invocation(arguments)))
+    };
+    call(&put_string, vec![string("tab"), string("home")]);
+    call(&put_boolean, vec![string("flag"), DexValue::Int(1)]);
+
+    assert_eq!(
+        call(&get_string, vec![string("tab"), DexValue::Int(0)]),
+        Some(DexExecutionResult::Value(string("home")))
+    );
+    assert_eq!(
+        call(&get_string, vec![string("missing"), DexValue::Int(0)]),
+        Some(DexExecutionResult::Value(DexValue::Null))
+    );
+    assert_eq!(
+        call(&get_string, vec![string("flag"), string("fallback")]),
+        Some(DexExecutionResult::Value(string("fallback")))
     );
 }

@@ -195,50 +195,73 @@ fn builtin_regex_pattern_matcher_tracks_find_groups_and_utf16_indices() {
     );
 }
 
+// cite: libcore GregorianCalendar.java#computeFields, getWeekNumber
+// cite: libcore Calendar.java#getInstance, get, setTimeInMillis
 #[test]
-fn builtin_calendar_get_instance_returns_bootstrap_calendar() {
+fn libcore_calendar_fields_follow_the_instance_time_in_utc() {
     let program = DexProgram::new(Vec::new());
-    let get_instance = DexMethodId {
-        class_descriptor: "Ljava/util/Calendar;".to_owned(),
-        name: "getInstance".to_owned(),
-        proto: crate::dex::DexProto {
-            shorty: "L".to_owned(),
-            return_type: "Ljava/util/Calendar;".to_owned(),
-            parameters: Vec::new(),
-        },
+    let get_instance = builtin_method(
+        "Ljava/util/Calendar;",
+        "getInstance",
+        "Ljava/util/Calendar;",
+        &[],
+    );
+    let get = builtin_method("Ljava/util/Calendar;", "get", "I", &["I"]);
+    let set_time = builtin_method("Ljava/util/Calendar;", "setTimeInMillis", "V", &["J"]);
+    {
+        let mut runtime = program.runtime.borrow_mut();
+        runtime.boot_wall_clock_millis = 1_709_214_330_123;
+        runtime.main_thread_uptime_millis = 0;
+    }
+    let Some(DexExecutionResult::Value(calendar)) =
+        program.invoke_builtin_method(&get_instance, None)
+    else {
+        panic!("getInstance should return a calendar");
     };
-    let get = DexMethodId {
-        class_descriptor: "Ljava/util/Calendar;".to_owned(),
-        name: "get".to_owned(),
-        proto: crate::dex::DexProto {
-            shorty: "II".to_owned(),
-            return_type: "I".to_owned(),
-            parameters: vec!["I".to_owned()],
-        },
+    let field = |value: i32| {
+        program.invoke_builtin_method(
+            &get,
+            Some(&test_invocation(vec![
+                calendar.clone(),
+                DexValue::Int(value),
+            ])),
+        )
     };
-    let hour_invocation = test_invocation(vec![
-        DexValue::Reference(std::rc::Rc::from("Ljava/util/Calendar;.bootstrap")),
-        DexValue::Int(ANDROID_CALENDAR_HOUR_OF_DAY),
-    ]);
-    let unsupported_invocation = test_invocation(vec![
-        DexValue::Reference(std::rc::Rc::from("Ljava/util/Calendar;.bootstrap")),
-        DexValue::Int(1),
-    ]);
 
-    assert_eq!(
-        program.invoke_builtin_method(&get_instance, None),
-        Some(DexExecutionResult::Value(DexValue::Reference(
-            std::rc::Rc::from("Ljava/util/Calendar;.bootstrap")
-        )))
+    for (index, expected) in [
+        (0, 1),
+        (1, 2024),
+        (2, 1),
+        (3, 9),
+        (4, 5),
+        (5, 29),
+        (6, 60),
+        (7, 5),
+        (8, 5),
+        (9, 1),
+        (10, 1),
+        (11, 13),
+        (12, 45),
+        (13, 30),
+        (14, 123),
+        (15, 0),
+    ] {
+        assert_eq!(
+            field(index),
+            Some(DexExecutionResult::Int(expected)),
+            "field {index}"
+        );
+    }
+    program.invoke_builtin_method(
+        &set_time,
+        Some(&test_invocation(vec![
+            calendar.clone(),
+            DexValue::Long(1_735_635_600_000),
+        ])),
     );
-    assert_eq!(
-        program.invoke_builtin_method(&get, Some(&hour_invocation)),
-        Some(DexExecutionResult::Int(BOOTSTRAP_HOUR_OF_DAY))
-    );
-    assert_eq!(
-        program.invoke_builtin_method(&get, Some(&unsupported_invocation)),
-        None
-    );
+    assert_eq!(field(3), Some(DexExecutionResult::Int(1)));
+    assert_eq!(field(6), Some(DexExecutionResult::Int(366)));
+    assert_eq!(field(99), None);
 }
 
 #[test]

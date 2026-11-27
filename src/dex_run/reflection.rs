@@ -1597,21 +1597,6 @@ pub(super) fn array_component_descriptor(descriptor: &str) -> Option<&str> {
     descriptor.strip_prefix('[')
 }
 
-pub(super) fn calendar_get_field(invocation: &DexInvocation) -> Option<i32> {
-    if invocation.arguments.len() != 2 {
-        return None;
-    }
-
-    let DexValue::Int(field) = invocation.arguments[1] else {
-        return None;
-    };
-
-    match field {
-        ANDROID_CALENDAR_HOUR_OF_DAY => Some(BOOTSTRAP_HOUR_OF_DAY),
-        _ => None,
-    }
-}
-
 pub(super) fn class_get_package(invocation: &DexInvocation) -> Option<DexValue> {
     let descriptor = class_reference_descriptor(invocation)?;
     let package_name = descriptor_package_name(descriptor)?;

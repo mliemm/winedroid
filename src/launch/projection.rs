@@ -23,6 +23,14 @@ pub(super) struct ActivityHostContext {
     pub(super) height: u32,
 }
 
+impl Drop for ActivityHostContext {
+    fn drop(&mut self) {
+        if let Some(resources) = &self.resources {
+            crate::resource_table::forget_table_caches(resources);
+        }
+    }
+}
+
 pub(super) unsafe fn click_activity_runtime(context: *const c_void, view_id: i32) -> Result<i32> {
     let activity_runtime = activity_runtime_from_context(context);
     let handled = activity_runtime.click_view_id(view_id)?;

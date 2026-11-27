@@ -66,6 +66,12 @@ pub struct LayoutDrawable {
     pub tint_color: Option<u32>,
 }
 
+impl Drop for LayoutDrawable {
+    fn drop(&mut self) {
+        crate::resource_table::forget_table_caches(&self.resources);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutDrawableTint {
     Color(u32),

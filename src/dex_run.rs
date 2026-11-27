@@ -102,8 +102,6 @@ const JAVA_ACC_SYNTHETIC: u32 = 0x1000;
 const BOOTSTRAP_ANDROID_SDK_INT: i32 = 35;
 const ANDROID_PERMISSION_GRANTED: i32 = 0;
 const ANDROID_PERMISSION_DENIED: i32 = -1;
-const ANDROID_CALENDAR_HOUR_OF_DAY: i32 = 11;
-const BOOTSTRAP_HOUR_OF_DAY: i32 = 12;
 const BOOTSTRAP_PROCESS_NAME: &str = "winedroid.bootstrap";
 const BOOTSTRAP_PROCESS_ID: i32 = 1000;
 const BOOTSTRAP_PROCESS_UID: i32 = 10000;
@@ -459,6 +457,14 @@ struct DexProgram {
     jni: jni::JniState,
     #[cfg(all(feature = "jit", not(target_family = "wasm")))]
     jit_cache: RefCell<crate::jit::JitCache>,
+}
+
+impl Drop for DexProgram {
+    fn drop(&mut self) {
+        if let Some(resources) = &self.resources {
+            crate::resource_table::forget_table_caches(resources);
+        }
+    }
 }
 
 enum RuntimeSqliteConnection {

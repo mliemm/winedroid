@@ -170,21 +170,8 @@ impl DexProgram {
             )));
         }
 
-        if method.matches_builtin_signature(
-            "Ljava/util/Calendar;",
-            "getInstance",
-            "()Ljava/util/Calendar;",
-        ) {
-            return Some(DexExecutionResult::Value(DexValue::Reference(
-                std::rc::Rc::from("Ljava/util/Calendar;.bootstrap"),
-            )));
-        }
-
-        if method.matches_builtin_signature("Ljava/util/Calendar;", "get", "(I)I") {
-            let invocation = invocation?;
-            let value = calendar_get_field(invocation)?;
-
-            return Some(DexExecutionResult::Int(value));
+        if let Some(result) = self.calendar_builtin(method, invocation) {
+            return Some(result);
         }
 
         if method.matches_builtin_signature("Lo8/a;", "a", "()Ljava/util/Random;") {

@@ -543,6 +543,26 @@ impl DexProgram {
         Ok(Some(i32::from(value)))
     }
 
+    // cite: frameworks-base Resources.java#getInteger
+    pub(in crate::dex_run) fn resources_get_integer(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Result<Option<i32>> {
+        let Some(resource_id) = resources_int_resource_id(invocation) else {
+            return Ok(None);
+        };
+
+        if resource_id <= 0 {
+            return Err(invalid_resource_id_error("integer", resource_id));
+        }
+
+        let value = self
+            .resolve_integer_resource(resource_id as u32)?
+            .ok_or_else(|| resource_type_error("integer", resource_id as u32))?;
+
+        Ok(Some(value))
+    }
+
     pub(in crate::dex_run) fn resources_get_color(
         &self,
         invocation: &DexInvocation,
@@ -1629,6 +1649,40 @@ impl DexProgram {
             "[Ljava/lang/CharSequence;".to_owned(),
             values,
         )))
+    }
+
+    // cite: frameworks-base TypedValue.java#TYPE_FIRST_INT, TYPE_LAST_INT
+    pub(in crate::dex_run) fn resolve_integer_resource(
+        &self,
+        resource_id: u32,
+    ) -> Result<Option<i32>> {
+        let Some(value) = self.resolve_resource_primitive_references(resource_id, None)? else {
+            return Ok(None);
+        };
+
+        match value {
+            resource_table::ResourcePrimitive::Boolean(value) => Ok(Some(i32::from(value))),
+            resource_table::ResourcePrimitive::Integer(value) => Ok(Some(value)),
+            resource_table::ResourcePrimitive::Hex(value)
+            | resource_table::ResourcePrimitive::Color(value) => Ok(Some(value as i32)),
+            resource_table::ResourcePrimitive::Unknown { data_type, data }
+                if (0x10..=0x1f).contains(&data_type) =>
+            {
+                Ok(Some(data as i32))
+            }
+            resource_table::ResourcePrimitive::Reference(0) => Ok(None),
+            resource_table::ResourcePrimitive::Reference(next_resource_id) => Err(
+                unresolved_terminal_reference_error(resource_id, next_resource_id),
+            ),
+            resource_table::ResourcePrimitive::String(_)
+            | resource_table::ResourcePrimitive::Attribute(_)
+            | resource_table::ResourcePrimitive::Float(_)
+            | resource_table::ResourcePrimitive::Dimension(_)
+            | resource_table::ResourcePrimitive::Fraction(_)
+            | resource_table::ResourcePrimitive::Array(_)
+            | resource_table::ResourcePrimitive::Bag(_)
+            | resource_table::ResourcePrimitive::Unknown { .. } => Ok(None),
+        }
     }
 
     pub(in crate::dex_run) fn resolve_boolean_resource(

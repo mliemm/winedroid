@@ -42,6 +42,26 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        if method.matches_builtin_signature(
+            "Lorg/json/JSONObject;",
+            "<init>",
+            "(Lorg/json/JSONObject;[Ljava/lang/String;)V",
+        ) {
+            return self.init_json_object_from_names(invocation?);
+        }
+
+        if method.matches_builtin_signature(
+            "Lorg/json/JSONObject;",
+            "keys",
+            "()Ljava/util/Iterator;",
+        ) && !self.guest_overrides(method, invocation)
+        {
+            let invocation = invocation?;
+            let value = self.json_object_keys(invocation)?;
+
+            return Some(DexExecutionResult::Value(value));
+        }
+
         if method.class_descriptor == "Lorg/json/JSONObject;"
             && method.name == "<init>"
             && method.proto.descriptor_is("()V")

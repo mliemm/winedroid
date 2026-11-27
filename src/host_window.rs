@@ -361,6 +361,12 @@ pub struct ActivityImage {
     pub padding_after: u32,
 }
 
+impl Drop for ActivityImage {
+    fn drop(&mut self) {
+        crate::resource_table::forget_table_caches(&self.resources);
+    }
+}
+
 pub const MISSING_FRAMEWORK_DRAWABLE_SOURCE: &str = "winedroid:missing-framework-drawable";
 
 #[derive(Debug, Clone, PartialEq, Eq)]

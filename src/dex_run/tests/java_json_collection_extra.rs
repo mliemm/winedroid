@@ -333,7 +333,7 @@ fn builtin_json_object_put_int_stores_value_and_returns_object() {
     assert_eq!(
         program.invoke_builtin_method(&to_string, Some(&length_invocation)),
         Some(DexExecutionResult::Value(DexValue::String(
-            std::rc::Rc::from("{\"country\":\"US\",\"duration\":42,\"elapsed\":7}")
+            std::rc::Rc::from("{\"elapsed\":7,\"country\":\"US\",\"duration\":42}")
         )))
     );
     assert_eq!(
@@ -824,5 +824,107 @@ fn org_json_json_object_opt_json_object_returns_only_nested_objects() {
             ]))
         ),
         Some(DexExecutionResult::Value(DexValue::Null))
+    );
+}
+
+// cite: libcore JSONObject.java#keys, put, toString
+#[test]
+fn libcore_json_object_keys_and_to_string_follow_insertion_order() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Lorg/json/JSONObject;";
+    let init = builtin_method(class, "<init>", "V", &[]);
+    let put = builtin_method(
+        class,
+        "put",
+        class,
+        &["Ljava/lang/String;", "Ljava/lang/Object;"],
+    );
+    let keys = builtin_method(class, "keys", "Ljava/util/Iterator;", &[]);
+    let to_string = builtin_method(class, "toString", "Ljava/lang/String;", &[]);
+    let has_next = builtin_method("Ljava/util/Iterator;", "hasNext", "Z", &[]);
+    let next = builtin_method("Ljava/util/Iterator;", "next", "Ljava/lang/Object;", &[]);
+    let object = program.allocate_object(class.to_owned());
+    let string = |value: &str| DexValue::String(std::rc::Rc::from(value));
+    program.invoke_builtin_method(&init, Some(&test_invocation(vec![object.clone()])));
+    for (key, value) in [("zeta", "1"), ("alpha", "2"), ("zeta", "3")] {
+        program.invoke_builtin_method(
+            &put,
+            Some(&test_invocation(vec![
+                object.clone(),
+                string(key),
+                string(value),
+            ])),
+        );
+    }
+
+    let Some(DexExecutionResult::Value(iterator)) =
+        program.invoke_builtin_method(&keys, Some(&test_invocation(vec![object.clone()])))
+    else {
+        panic!("keys() should return an iterator");
+    };
+    let mut seen = Vec::new();
+    while program.invoke_builtin_method(&has_next, Some(&test_invocation(vec![iterator.clone()])))
+        == Some(DexExecutionResult::Int(1))
+    {
+        let Some(DexExecutionResult::Value(DexValue::String(key))) =
+            program.invoke_builtin_method(&next, Some(&test_invocation(vec![iterator.clone()])))
+        else {
+            panic!("next() should return a key");
+        };
+        seen.push(key.to_string());
+    }
+
+    assert_eq!(seen, ["zeta", "alpha"]);
+    assert_eq!(
+        program.invoke_builtin_method(&to_string, Some(&test_invocation(vec![object]))),
+        Some(DexExecutionResult::Value(string(
+            "{\"zeta\":\"3\",\"alpha\":\"2\"}"
+        )))
+    );
+}
+
+// cite: libcore JSONObject.java#JSONObject
+#[test]
+fn libcore_json_object_copy_constructor_keeps_named_present_keys_in_name_order() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Lorg/json/JSONObject;";
+    let put = builtin_method(
+        class,
+        "put",
+        class,
+        &["Ljava/lang/String;", "Ljava/lang/Object;"],
+    );
+    let copy = builtin_method(class, "<init>", "V", &[class, "[Ljava/lang/String;"]);
+    let to_string = builtin_method(class, "toString", "Ljava/lang/String;", &[]);
+    let string = |value: &str| DexValue::String(std::rc::Rc::from(value));
+    let source = program.allocate_object(class.to_owned());
+    for (key, value) in [("a", "1"), ("b", "2"), ("c", "3")] {
+        program.invoke_builtin_method(
+            &put,
+            Some(&test_invocation(vec![
+                source.clone(),
+                string(key),
+                string(value),
+            ])),
+        );
+    }
+    let names = program.allocate_filled_array(
+        "[Ljava/lang/String;".to_owned(),
+        vec![string("c"), string("missing"), string("a")],
+    );
+    let copied = program.allocate_object(class.to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &copy,
+            Some(&test_invocation(vec![copied.clone(), source, names]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&to_string, Some(&test_invocation(vec![copied]))),
+        Some(DexExecutionResult::Value(string(
+            "{\"c\":\"3\",\"a\":\"1\"}"
+        )))
     );
 }

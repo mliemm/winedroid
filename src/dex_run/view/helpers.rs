@@ -1816,15 +1816,31 @@ pub(in crate::dex_run::view) fn root_measure_spec(window_size: i32, measurement:
     }
 }
 
-pub(in crate::dex_run) fn view_configuration_int(name: &str) -> i32 {
-    match name {
-        "getScaledTouchSlop" => 8,
-        "getScaledMinimumFlingVelocity" => 50,
-        "getScaledMaximumFlingVelocity" => 8000,
+// cite: frameworks-base ViewConfiguration.java#TOUCH_SLOP, PAGING_TOUCH_SLOP, DOUBLE_TAP_TOUCH_SLOP, DOUBLE_TAP_SLOP, WINDOW_TOUCH_SLOP, EDGE_SLOP, FADING_EDGE_LENGTH, SCROLL_BAR_SIZE, MINIMUM_FLING_VELOCITY, MAXIMUM_FLING_VELOCITY, OVERSCROLL_DISTANCE, OVERFLING_DISTANCE, TAP_TIMEOUT, DEFAULT_LONG_PRESS_TIMEOUT, DOUBLE_TAP_TIMEOUT, JUMP_TAP_TIMEOUT, PRESSED_STATE_DURATION, SCROLL_BAR_FADE_DURATION, SCROLL_BAR_DEFAULT_DELAY
+pub(in crate::dex_run) fn view_configuration_int(name: &str) -> Option<i32> {
+    let density = BOOTSTRAP_DISPLAY_DENSITY;
+    let scaled = |value: i32| (density * value as f32 + 0.5) as i32;
+    Some(match name {
+        "getScaledTouchSlop" | "getScaledDoubleTapTouchSlop" => scaled(8),
+        "getScaledPagingTouchSlop" => scaled(8) * 2,
+        "getScaledDoubleTapSlop" => scaled(100),
+        "getScaledWindowTouchSlop" => scaled(16),
+        "getScaledEdgeSlop" => scaled(12),
+        "getScaledFadingEdgeLength" => scaled(12),
+        "getScaledScrollBarSize" => scaled(4),
+        "getScaledMinimumFlingVelocity" => scaled(50),
+        "getScaledMaximumFlingVelocity" => scaled(8000),
+        "getScaledOverscrollDistance" => scaled(0),
+        "getScaledOverflingDistance" => scaled(6),
         "getTapTimeout" => 100,
-        "getLongPressTimeout" => 500,
-        _ => 0,
-    }
+        "getLongPressTimeout" => 400,
+        "getDoubleTapTimeout" => 300,
+        "getJumpTapTimeout" => 500,
+        "getPressedStateDuration" => 64,
+        "getScrollBarFadeDuration" => 250,
+        "getScrollDefaultDelay" => 300,
+        _ => return None,
+    })
 }
 
 pub(in crate::dex_run) fn window_insets_builder_build(

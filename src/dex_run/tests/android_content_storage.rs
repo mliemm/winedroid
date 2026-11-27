@@ -3098,3 +3098,88 @@ fn builtin_intent_copy_constructor_copies_action_and_extras() {
         Some(DexExecutionResult::Value(list))
     );
 }
+
+// cite: frameworks-base Intent.java#putExtra, getStringExtra, getIntExtra, getBooleanExtra, getLongExtra, hasExtra
+// cite: frameworks-base BaseBundle.java#getInt, getString
+#[test]
+fn builtin_intent_typed_extras_return_defaults_on_missing_or_mismatched_types() {
+    let program = DexProgram::new(Vec::new());
+    let class = "Landroid/content/Intent;";
+    let put = |value_type: &str| {
+        builtin_method(
+            class,
+            "putExtra",
+            class,
+            &["Ljava/lang/String;", value_type],
+        )
+    };
+    let get_string = builtin_method(
+        class,
+        "getStringExtra",
+        "Ljava/lang/String;",
+        &["Ljava/lang/String;"],
+    );
+    let get_int = builtin_method(class, "getIntExtra", "I", &["Ljava/lang/String;", "I"]);
+    let get_long = builtin_method(class, "getLongExtra", "J", &["Ljava/lang/String;", "J"]);
+    let has = builtin_method(class, "hasExtra", "Z", &["Ljava/lang/String;"]);
+    let copy = builtin_method(class, "<init>", "V", &[class]);
+    let intent = program.allocate_object(class.to_owned());
+    let string = |value: &str| DexValue::String(std::rc::Rc::from(value));
+    let call = |method: &DexMethodId, target: &DexValue, mut arguments: Vec<DexValue>| {
+        arguments.insert(0, target.clone());
+        program.invoke_builtin_method(method, Some(&test_invocation(arguments)))
+    };
+
+    assert_eq!(
+        call(
+            &put("Ljava/lang/String;"),
+            &intent,
+            vec![string("from"), string("push")]
+        ),
+        Some(DexExecutionResult::Value(intent.clone()))
+    );
+    call(&put("I"), &intent, vec![string("count"), DexValue::Int(3)]);
+    call(
+        &put("J"),
+        &intent,
+        vec![string("ts"), DexValue::Long(9), DexValue::Long(9)],
+    );
+    call(&put("Z"), &intent, vec![string("flag"), DexValue::Int(1)]);
+    let copied = program.allocate_object(class.to_owned());
+    call(&copy, &copied, vec![intent.clone()]);
+
+    for target in [&intent, &copied] {
+        assert_eq!(
+            call(&get_string, target, vec![string("from")]),
+            Some(DexExecutionResult::Value(string("push")))
+        );
+        assert_eq!(
+            call(&get_string, target, vec![string("count")]),
+            Some(DexExecutionResult::Value(DexValue::Null))
+        );
+        assert_eq!(
+            call(&get_int, target, vec![string("count"), DexValue::Int(-1)]),
+            Some(DexExecutionResult::Int(3))
+        );
+        assert_eq!(
+            call(&get_int, target, vec![string("from"), DexValue::Int(-1)]),
+            Some(DexExecutionResult::Int(-1))
+        );
+        assert_eq!(
+            call(
+                &get_long,
+                target,
+                vec![string("ts"), DexValue::Long(0), DexValue::Long(0)]
+            ),
+            Some(DexExecutionResult::Value(DexValue::Long(9)))
+        );
+        assert_eq!(
+            call(&get_int, target, vec![string("flag"), DexValue::Int(-1)]),
+            Some(DexExecutionResult::Int(-1))
+        );
+        assert_eq!(
+            call(&has, target, vec![string("missing")]),
+            Some(DexExecutionResult::Int(0))
+        );
+    }
+}

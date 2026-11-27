@@ -594,7 +594,7 @@ impl DexProgram {
                 .first()
                 .is_none_or(|root| map_identity_key(&root.receiver) == map_identity_key(activity));
             let referrer = if root {
-                "com.android.launcher3".to_owned()
+                "com.android.shell".to_owned()
             } else {
                 self.package_name.clone().unwrap_or_default()
             };
@@ -699,6 +699,18 @@ impl DexProgram {
             && method.proto.descriptor_is("()Ljava/lang/Object;")
         {
             return Some(DexExecutionResult::Value(DexValue::Null));
+        }
+
+        if method.class_descriptor == "Landroid/app/Activity;"
+            && matches!(
+                method.name.as_str(),
+                "isInMultiWindowMode" | "isInPictureInPictureMode"
+            )
+            && method.proto.descriptor_is("()Z")
+            && !self.guest_overrides(method, invocation)
+        {
+            // cite: frameworks-base Activity.java#isInMultiWindowMode, isInPictureInPictureMode, mIsInMultiWindowMode, mIsInPictureInPictureMode
+            return Some(DexExecutionResult::Int(0));
         }
 
         if method.class_descriptor == "Landroid/app/Activity;"

@@ -705,3 +705,105 @@ mod tests {
         assert_eq!(parse_date_pattern("yyyy-MM-dd", "not-a-date"), None);
     }
 }
+
+// cite: libcore Calendar.java#ERA, YEAR, MONTH, WEEK_OF_YEAR, WEEK_OF_MONTH, DATE, DAY_OF_YEAR, DAY_OF_WEEK, DAY_OF_WEEK_IN_MONTH, AM_PM, HOUR, HOUR_OF_DAY, MINUTE, SECOND, MILLISECOND, ZONE_OFFSET, DST_OFFSET
+// cite: libcore GregorianCalendar.java#computeFields, getWeekNumber
+fn calendar_field(millis: i64, field: i32) -> Option<i32> {
+    let civil = civil_from_millis(millis);
+    let weekday = civil.weekday as i64;
+    let days = millis.div_euclid(86_400_000);
+    let week_of = |day_index: i64, first_weekday: i64| (day_index + first_weekday) / 7 + 1;
+    let january_first_weekday = (weekday - (i64::from(civil.day_of_year) - 1)).rem_euclid(7);
+    let week_saturday = days + (6 - weekday);
+    let (saturday_year, _, _) = civil_from_days(week_saturday);
+    let week_of_year = if saturday_year > civil.year {
+        1
+    } else {
+        week_of(i64::from(civil.day_of_year) - 1, january_first_weekday)
+    };
+    let month_first_weekday = (weekday - (i64::from(civil.day) - 1)).rem_euclid(7);
+
+    Some(match field {
+        0 => i32::from(civil.year > 0),
+        1 => civil.year as i32,
+        2 => civil.month as i32 - 1,
+        3 => week_of_year as i32,
+        4 => week_of(i64::from(civil.day) - 1, month_first_weekday) as i32,
+        5 => civil.day as i32,
+        6 => civil.day_of_year as i32,
+        7 => weekday as i32 + 1,
+        8 => (civil.day as i32 - 1) / 7 + 1,
+        9 => i32::from(civil.hour >= 12),
+        10 => (civil.hour % 12) as i32,
+        11 => civil.hour as i32,
+        12 => civil.minute as i32,
+        13 => civil.second as i32,
+        14 => civil.milli as i32,
+        15 | 16 => 0,
+        _ => return None,
+    })
+}
+
+fn calendar_time_field() -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Ljava/util/Calendar;".to_owned(),
+        type_descriptor: "J".to_owned(),
+        name: "time".to_owned(),
+    }
+}
+
+impl DexProgram {
+    // cite: libcore Calendar.java#getInstance, get, getTimeInMillis, setTimeInMillis
+    pub(super) fn calendar_builtin(
+        &self,
+        method: &DexMethodId,
+        invocation: Option<&DexInvocation>,
+    ) -> Option<DexExecutionResult> {
+        if !matches!(
+            method.class_descriptor.as_str(),
+            "Ljava/util/Calendar;" | "Ljava/util/GregorianCalendar;"
+        ) || self.guest_overrides(method, invocation)
+        {
+            return None;
+        }
+        let descriptor = method.proto.descriptor();
+        if method.name == "getInstance" && descriptor == "()Ljava/util/Calendar;" {
+            let calendar = self.allocate_object("Ljava/util/GregorianCalendar;".to_owned());
+            let now = self.runtime.borrow().current_wall_clock_millis();
+            self.write_stored_instance_field(
+                &calendar,
+                &calendar_time_field(),
+                DexValue::Long(now),
+            );
+            return Some(DexExecutionResult::Value(calendar));
+        }
+        let invocation = invocation?;
+        let calendar = invocation.arguments.first()?;
+        let DexValue::Long(millis) =
+            self.read_stored_instance_field(calendar, &calendar_time_field())?
+        else {
+            return None;
+        };
+        match (
+            method.name.as_str(),
+            descriptor.as_str(),
+            invocation.arguments.get(1),
+        ) {
+            ("get", "(I)I", Some(DexValue::Int(field))) => {
+                Some(DexExecutionResult::Int(calendar_field(millis, *field)?))
+            }
+            ("getTimeInMillis", "()J", None) => {
+                Some(DexExecutionResult::Value(DexValue::Long(millis)))
+            }
+            ("setTimeInMillis", "(J)V", Some(DexValue::Long(time))) => {
+                self.write_stored_instance_field(
+                    calendar,
+                    &calendar_time_field(),
+                    DexValue::Long(*time),
+                );
+                Some(DexExecutionResult::Void)
+            }
+            _ => None,
+        }
+    }
+}

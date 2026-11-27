@@ -592,22 +592,56 @@ pub fn find_resource_id(data: &[u8], type_name: &str, key_name: &str) -> Result<
     Ok(None)
 }
 
+type TableKey = (usize, usize);
+
+thread_local! {
+    static VALUE_CACHE: std::cell::RefCell<
+        std::collections::HashMap<
+            TableKey,
+            std::collections::HashMap<(u32, ResourceResolutionConfig), Option<ResourceValue>>,
+        >,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+    static STRING_POOL_CACHE: std::cell::RefCell<
+        std::collections::HashMap<TableKey, Vec<(usize, std::rc::Rc<StringPool>)>>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+fn table_key(data: &[u8]) -> TableKey {
+    (data.as_ptr() as usize, data.len())
+}
+
+pub(crate) fn forget_table_caches(data: &[u8]) {
+    if data.is_empty() {
+        return;
+    }
+    let key = table_key(data);
+    let _ = VALUE_CACHE.try_with(|cache| cache.borrow_mut().remove(&key));
+    let _ = STRING_POOL_CACHE.try_with(|cache| cache.borrow_mut().remove(&key));
+}
+
 pub fn resolve_resource_value_for_config(
     data: &[u8],
     resource_id: u32,
     config: ResourceResolutionConfig,
 ) -> Result<Option<ResourceValue>> {
-    thread_local! {
-        static VALUE_CACHE: std::cell::RefCell<
-            std::collections::HashMap<(usize, usize, u32, ResourceResolutionConfig), Option<ResourceValue>>,
-        > = std::cell::RefCell::new(std::collections::HashMap::new());
-    }
-    let key = (data.as_ptr() as usize, data.len(), resource_id, config);
-    if let Some(value) = VALUE_CACHE.with(|c| c.borrow().get(&key).cloned()) {
+    let table = table_key(data);
+    let entry = (resource_id, config);
+    if let Some(value) = VALUE_CACHE.with(|cache| {
+        cache
+            .borrow()
+            .get(&table)
+            .and_then(|values| values.get(&entry).cloned())
+    }) {
         return Ok(value);
     }
     let value = resolve_resource_value_for_config_uncached(data, resource_id, config)?;
-    VALUE_CACHE.with(|c| c.borrow_mut().insert(key, value.clone()));
+    VALUE_CACHE.with(|cache| {
+        cache
+            .borrow_mut()
+            .entry(table)
+            .or_default()
+            .insert(entry, value.clone())
+    });
     Ok(value)
 }
 
@@ -1601,19 +1635,22 @@ fn cached_string_pool(
     chunk_end: usize,
     header: ChunkHeader,
 ) -> Result<std::rc::Rc<StringPool>> {
-    use std::cell::RefCell;
     use std::rc::Rc;
-    thread_local! {
-        static POOLS: RefCell<Vec<((usize, usize, usize), Rc<StringPool>)>> =
-            const { RefCell::new(Vec::new()) };
-    }
-    let key = (data.as_ptr() as usize, data.len(), offset);
-    POOLS.with(|pools| {
-        if let Some((_, pool)) = pools.borrow().iter().find(|(k, _)| *k == key) {
+    let table = table_key(data);
+    STRING_POOL_CACHE.with(|cache| {
+        if let Some((_, pool)) = cache
+            .borrow()
+            .get(&table)
+            .and_then(|pools| pools.iter().find(|(known, _)| *known == offset))
+        {
             return Ok(Rc::clone(pool));
         }
         let pool = Rc::new(StringPool::parse(data, offset, chunk_end, header)?);
-        pools.borrow_mut().push((key, Rc::clone(&pool)));
+        cache
+            .borrow_mut()
+            .entry(table)
+            .or_default()
+            .push((offset, Rc::clone(&pool)));
         Ok(pool)
     })
 }

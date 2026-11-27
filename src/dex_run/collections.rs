@@ -3267,8 +3267,7 @@ impl DexProgram {
 
         self.runtime
             .borrow_mut()
-            .json_entries
-            .insert((object_key, entry_key.clone().to_string()), value);
+            .insert_json_entry(object_key, entry_key.to_string(), value);
 
         Some(object)
     }
@@ -3294,8 +3293,9 @@ impl DexProgram {
             return None;
         }
 
-        self.runtime.borrow_mut().json_entries.insert(
-            (object_key, entry_key.clone().to_string()),
+        self.runtime.borrow_mut().insert_json_entry(
+            object_key,
+            entry_key.to_string(),
             DexValue::Long(value),
         );
 
@@ -3529,18 +3529,21 @@ impl DexProgram {
         };
         let default_value = match invocation.arguments.get(2) {
             Some(DexValue::String(value)) => DexValue::String(value.clone()),
-            Some(DexValue::Null) => DexValue::Null,
+            Some(DexValue::Null | DexValue::Int(0)) | None => DexValue::Null,
             Some(_) => return None,
-            None => DexValue::Null,
         };
 
+        // cite: frameworks-base BaseBundle.java#getString, typeWarning
         Some(
-            self.runtime
+            match self
+                .runtime
                 .borrow()
                 .bundle_entries
                 .get(&(bundle_key, entry_key.clone().to_string()))
-                .cloned()
-                .unwrap_or(default_value),
+            {
+                Some(value @ DexValue::String(_)) => value.clone(),
+                _ => default_value,
+            },
         )
     }
 
@@ -4185,6 +4188,61 @@ impl DexProgram {
         }
     }
 
+    // cite: libcore JSONObject.java#JSONObject, opt
+    pub(super) fn init_json_object_from_names(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        let [object, source, names] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        if !dex_value_is_object_like(object) || !dex_value_is_object_like(source) {
+            return None;
+        }
+        let names = self
+            .runtime
+            .borrow()
+            .array_entries
+            .get(&map_identity_key(names))?
+            .clone();
+        let (object_key, source_key) = (map_identity_key(object), map_identity_key(source));
+        let mut runtime = self.runtime.borrow_mut();
+        for name in names {
+            let DexValue::String(name) = name else {
+                continue;
+            };
+            let Some(value) = runtime
+                .json_entries
+                .get(&(source_key.clone(), name.to_string()))
+                .cloned()
+            else {
+                continue;
+            };
+            runtime.insert_json_entry(object_key.clone(), name.to_string(), value);
+        }
+
+        Some(DexExecutionResult::Void)
+    }
+
+    // cite: libcore JSONObject.java#keys, nameValuePairs
+    pub(super) fn json_object_keys(&self, invocation: &DexInvocation) -> Option<DexValue> {
+        let [object] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        if !dex_value_is_object_like(object) {
+            return None;
+        }
+        let keys = self
+            .runtime
+            .borrow()
+            .json_entries_in_order(&map_identity_key(object))
+            .into_iter()
+            .map(|(key, _)| DexValue::String(std::rc::Rc::from(key)))
+            .collect();
+
+        self.create_value_iterator_with_position(keys, 0, "Ljava/util/Iterator;", None)
+    }
+
     pub(super) fn json_object_length(&self, invocation: &DexInvocation) -> Option<i32> {
         if invocation.arguments.len() != 1 {
             return None;
@@ -4304,20 +4362,8 @@ impl DexProgram {
             return None;
         }
 
-        let mut entries = Vec::new();
-        let runtime = self.runtime.borrow();
-
-        for ((json_key, entry_key), value) in &runtime.json_entries {
-            if json_key != object_key {
-                continue;
-            }
-
-            entries.push((entry_key.clone(), value.clone()));
-        }
-
-        drop(runtime);
-
-        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        // cite: libcore JSONObject.java#toString, writeTo, nameValuePairs
+        let entries = self.runtime.borrow().json_entries_in_order(object_key);
 
         let mut encoded_entries = Vec::new();
         for (entry_key, value) in entries {
@@ -4408,9 +4454,7 @@ impl DexProgram {
         let entries = self.parse_json_object_body(&mut chars)?;
         let mut runtime = self.runtime.borrow_mut();
         for (entry_key, value) in entries {
-            runtime
-                .json_entries
-                .insert((object_key.clone(), entry_key), value);
+            runtime.insert_json_entry(object_key.clone(), entry_key, value);
         }
 
         Some(())
@@ -4464,9 +4508,7 @@ impl DexProgram {
 
         let mut runtime = self.runtime.borrow_mut();
         for (entry_key, value) in wrapped {
-            runtime
-                .json_entries
-                .insert((object_key.clone(), entry_key), value);
+            runtime.insert_json_entry(object_key.clone(), entry_key, value);
         }
 
         Some(DexExecutionResult::Void)
@@ -4583,9 +4625,7 @@ impl DexProgram {
                 let object_key = map_identity_key(&object);
                 let mut runtime = self.runtime.borrow_mut();
                 for (entry_key, value) in entries {
-                    runtime
-                        .json_entries
-                        .insert((object_key.clone(), entry_key), value);
+                    runtime.insert_json_entry(object_key.clone(), entry_key, value);
                 }
                 Some(object)
             }

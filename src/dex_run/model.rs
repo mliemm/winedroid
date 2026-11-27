@@ -8,6 +8,14 @@ pub struct DexActivityStart {
     pub resources: Option<Vec<u8>>,
 }
 
+impl Drop for DexActivityStart {
+    fn drop(&mut self) {
+        if let Some(resources) = &self.resources {
+            crate::resource_table::forget_table_caches(resources);
+        }
+    }
+}
+
 pub struct DexActivityRuntime {
     pub(in crate::dex_run) program: DexProgram,
     pub(in crate::dex_run) class_descriptor: String,

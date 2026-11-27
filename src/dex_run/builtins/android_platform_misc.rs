@@ -116,7 +116,9 @@ impl DexProgram {
             && method.name == "currentAnimationTimeMillis"
             && method.proto.descriptor_is("()J")
         {
-            return Some(DexExecutionResult::Value(DexValue::Long(0)));
+            // cite: frameworks-base AnimationUtils.java#currentAnimationTimeMillis
+            let now = self.runtime.borrow().main_thread_uptime_millis;
+            return Some(DexExecutionResult::Value(DexValue::Long(now)));
         }
 
         if method.class_descriptor == "Landroid/os/VibratorManager;"

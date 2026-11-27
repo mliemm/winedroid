@@ -2765,11 +2765,41 @@ impl DexProgram {
                 | "Landroid/view/ViewGroup$MarginLayoutParams;"
                 | "Landroid/widget/RelativeLayout$LayoutParams;"
                 | "Landroid/widget/LinearLayout$LayoutParams;"
+                | "Landroid/widget/FrameLayout$LayoutParams;"
         ) && method.name == "<init>"
             && method.proto.descriptor_is("(II)V")
         {
             let invocation = invocation?;
             self.write_view_group_layout_params_size(invocation)?;
+
+            return Some(DexExecutionResult::Void);
+        }
+
+        if method.matches_builtin_signature(
+            "Landroid/widget/FrameLayout$LayoutParams;",
+            "<init>",
+            "(III)V",
+        ) {
+            // cite: frameworks-base FrameLayout.java#LayoutParams, gravity
+            let invocation = invocation?;
+            let [params, width, height, DexValue::Int(gravity)] = invocation.arguments.as_slice()
+            else {
+                return None;
+            };
+            let sized = DexInvocation {
+                arguments: smallvec::smallvec![params.clone(), width.clone(), height.clone()],
+                ..invocation.clone()
+            };
+            self.write_view_group_layout_params_size(&sized)?;
+            self.write_stored_instance_field(
+                params,
+                &DexFieldId {
+                    class_descriptor: "Landroid/widget/FrameLayout$LayoutParams;".to_owned(),
+                    type_descriptor: "I".to_owned(),
+                    name: "gravity".to_owned(),
+                },
+                DexValue::Int(*gravity),
+            );
 
             return Some(DexExecutionResult::Void);
         }
@@ -3868,19 +3898,11 @@ impl DexProgram {
         }
 
         if method.class_descriptor == "Landroid/view/ViewConfiguration;"
-            && matches!(
-                method.name.as_str(),
-                "getScaledTouchSlop"
-                    | "getScaledMinimumFlingVelocity"
-                    | "getScaledMaximumFlingVelocity"
-                    | "getTapTimeout"
-                    | "getLongPressTimeout"
-            )
             && method.proto.descriptor_is("()I")
         {
-            return Some(DexExecutionResult::Int(view_configuration_int(
-                &method.name,
-            )));
+            if let Some(value) = view_configuration_int(&method.name) {
+                return Some(DexExecutionResult::Int(value));
+            }
         }
 
         if method.class_descriptor == "Landroid/view/ViewConfiguration;"
@@ -4185,6 +4207,83 @@ impl DexProgram {
             layout_transition_type(invocation)?;
 
             return Some(DexExecutionResult::Void);
+        }
+
+        if let Some(result) = self.scroller_builtin(method, invocation) {
+            return Some(result);
+        }
+
+        if method.class_descriptor == "Landroid/view/ViewStub;"
+            && !self.guest_overrides(method, invocation)
+        {
+            // cite: frameworks-base ViewStub.java#ViewStub, mLayoutResource, mInflatedId, setLayoutResource, getLayoutResource, setInflatedId, getInflatedId
+            let invocation = invocation?;
+            let stub = invocation.arguments.first()?;
+            if !dex_value_is_object_like(stub) {
+                return None;
+            }
+            let field = |name: &str| DexFieldId {
+                class_descriptor: "Landroid/view/ViewStub;".to_owned(),
+                type_descriptor: "I".to_owned(),
+                name: name.to_owned(),
+            };
+            let read = |name: &str| match self.read_stored_instance_field(stub, &field(name)) {
+                Some(DexValue::Int(value)) => value,
+                _ if name == "mInflatedId" => -1,
+                _ => 0,
+            };
+            let int_argument = || match invocation.arguments.get(1) {
+                Some(DexValue::Int(value)) => Some(*value),
+                _ => None,
+            };
+            match (method.name.as_str(), method.proto.descriptor().as_str()) {
+                ("<init>", "(Landroid/content/Context;)V" | "(Landroid/content/Context;I)V") => {
+                    let layout = if invocation.arguments.len() == 3 {
+                        match invocation.arguments[2] {
+                            DexValue::Int(layout) => layout,
+                            _ => return None,
+                        }
+                    } else {
+                        0
+                    };
+                    self.write_stored_instance_field(
+                        stub,
+                        &view_visibility_field(),
+                        DexValue::Int(8),
+                    );
+                    self.write_stored_instance_field(
+                        stub,
+                        &field("mLayoutResource"),
+                        DexValue::Int(layout),
+                    );
+                    self.write_stored_instance_field(
+                        stub,
+                        &field("mInflatedId"),
+                        DexValue::Int(-1),
+                    );
+                    return Some(DexExecutionResult::Void);
+                }
+                ("setLayoutResource" | "setInflatedId", "(I)V") => {
+                    let name = if method.name == "setLayoutResource" {
+                        "mLayoutResource"
+                    } else {
+                        "mInflatedId"
+                    };
+                    self.write_stored_instance_field(
+                        stub,
+                        &field(name),
+                        DexValue::Int(int_argument()?),
+                    );
+                    return Some(DexExecutionResult::Void);
+                }
+                ("getLayoutResource", "()I") => {
+                    return Some(DexExecutionResult::Int(read("mLayoutResource")));
+                }
+                ("getInflatedId", "()I") => {
+                    return Some(DexExecutionResult::Int(read("mInflatedId")))
+                }
+                _ => {}
+            }
         }
 
         if method.class_descriptor == "Landroid/widget/OverScroller;"

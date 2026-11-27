@@ -338,6 +338,21 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         "Landroid/app/Activity;" => Some("Landroid/view/ContextThemeWrapper;"),
         "Landroid/app/Application;" => Some("Landroid/content/ContextWrapper;"),
         "Landroid/content/ContextWrapper;" => Some("Landroid/content/Context;"),
+        // cite: frameworks-base ViewGroup.java#LayoutParams, MarginLayoutParams
+        "Landroid/view/ViewGroup$LayoutParams;" => Some("Ljava/lang/Object;"),
+        "Landroid/view/ViewGroup$MarginLayoutParams;" => {
+            Some("Landroid/view/ViewGroup$LayoutParams;")
+        }
+        // cite: frameworks-base FrameLayout.java#LayoutParams
+        // cite: frameworks-base LinearLayout.java#LayoutParams
+        // cite: frameworks-base RelativeLayout.java#LayoutParams
+        "Landroid/widget/FrameLayout$LayoutParams;"
+        | "Landroid/widget/LinearLayout$LayoutParams;"
+        | "Landroid/widget/RelativeLayout$LayoutParams;" => {
+            Some("Landroid/view/ViewGroup$MarginLayoutParams;")
+        }
+        // cite: frameworks-base Scroller.java#Scroller
+        "Landroid/widget/Scroller;" => Some("Ljava/lang/Object;"),
         // cite: frameworks-base LayoutInflater.java#FactoryMerger
         "Landroid/view/LayoutInflater$FactoryMerger;" => Some("Ljava/lang/Object;"),
         // cite: frameworks-base MutableContextWrapper.java#MutableContextWrapper
@@ -381,6 +396,8 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
             Some("Landroid/widget/TextView;")
         }
         "Landroid/widget/ImageView;" | "Landroid/widget/Space;" => Some("Landroid/view/View;"),
+        // cite: frameworks-base ViewStub.java#ViewStub
+        "Landroid/view/ViewStub;" => Some("Landroid/view/View;"),
         "Landroid/widget/ImageButton;" => Some("Landroid/widget/ImageView;"),
         "Ljava/util/ArrayList;" | "Ljava/util/Arrays$ArrayList;" => {
             Some("Ljava/util/AbstractList;")

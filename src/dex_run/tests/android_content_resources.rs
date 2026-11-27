@@ -3878,12 +3878,21 @@ fn builtin_locale_list_to_language_tags_returns_bootstrap_tag() {
 }
 
 fn minimal_test_resource_table(type_name: &str, key_name: &str, value: &str) -> Vec<u8> {
+    minimal_typed_resource_table(type_name, key_name, value, 0x03, 0)
+}
+
+fn minimal_typed_resource_table(
+    type_name: &str,
+    key_name: &str,
+    value: &str,
+    value_type: u8,
+    data: u32,
+) -> Vec<u8> {
     const RES_STRING_POOL_TYPE: u16 = 0x0001;
     const RES_TABLE_TYPE: u16 = 0x0002;
     const RES_TABLE_PACKAGE_TYPE: u16 = 0x0200;
     const RES_TABLE_TYPE_TYPE: u16 = 0x0201;
     const UTF8_FLAG: u32 = 0x0000_0100;
-    const VALUE_TYPE_STRING: u8 = 0x03;
 
     fn push_u16(data: &mut Vec<u8>, value: u16) {
         data.extend(value.to_le_bytes());
@@ -3952,8 +3961,8 @@ fn minimal_test_resource_table(type_name: &str, key_name: &str, value: &str) -> 
     push_u32(&mut type_chunk, 0);
     push_u16(&mut type_chunk, 8);
     type_chunk.push(0);
-    type_chunk.push(VALUE_TYPE_STRING);
-    push_u32(&mut type_chunk, 0);
+    type_chunk.push(value_type);
+    push_u32(&mut type_chunk, data);
 
     let type_strings_offset = 288u32;
     let key_strings_offset = type_strings_offset + type_strings.len() as u32;
@@ -4919,4 +4928,66 @@ fn builtin_mutable_context_wrapper_set_base_context_null_clears_the_base() {
         program.read_stored_instance_field(&wrapper, &base_field),
         None
     );
+}
+
+// cite: frameworks-base Resources.java#getInteger
+#[test]
+fn builtin_resources_get_integer_reads_int_values_and_rejects_strings() {
+    let get_integer = builtin_method("Landroid/content/res/Resources;", "getInteger", "I", &["I"]);
+    let resources = DexValue::Reference(std::rc::Rc::from(
+        "Landroid/content/res/Resources;.bootstrap",
+    ));
+    let program_with = |value_type: u8, data: u32| {
+        DexProgram::with_resource_context(
+            Vec::new(),
+            None,
+            None,
+            None,
+            None,
+            Some(minimal_typed_resource_table(
+                "integer",
+                "max_items",
+                "unused",
+                value_type,
+                data,
+            )),
+        )
+    };
+    let call = |program: &DexProgram| {
+        program.invoke_builtin_method(
+            &get_integer,
+            Some(&test_invocation(vec![
+                resources.clone(),
+                DexValue::Int(0x7f01_0000),
+            ])),
+        )
+    };
+
+    assert_eq!(
+        call(&program_with(0x10, 42)),
+        Some(DexExecutionResult::Int(42))
+    );
+    let strings = program_with(0x03, 0);
+    let Some(DexExecutionResult::Throw(error)) = call(&strings) else {
+        panic!("a string resource should not read as an integer");
+    };
+    assert!(strings.value_matches_type(&error, "Landroid/content/res/Resources$NotFoundException;"));
+}
+
+// cite: frameworks-base ResourceTypes.cpp#getResource
+#[test]
+fn resource_value_cache_forgets_a_buffer_so_reused_bytes_resolve_fresh() {
+    let mut table = minimal_typed_resource_table("integer", "max_items", "unused", 0x10, 7);
+    let config = crate::resource_table::ResourceResolutionConfig::default();
+    let read = |table: &[u8]| {
+        crate::resource_table::resolve_resource_value_for_config(table, 0x7f01_0000, config)
+            .expect("resource should resolve")
+    };
+    let first = read(&table);
+    let data_offset = table.len() - 4;
+    table[data_offset..].copy_from_slice(&9u32.to_le_bytes());
+
+    assert_eq!(read(&table), first);
+    crate::resource_table::forget_table_caches(&table);
+    assert_ne!(read(&table), first);
 }

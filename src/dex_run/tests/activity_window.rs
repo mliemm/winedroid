@@ -2424,7 +2424,7 @@ fn builtin_activity_get_referrer_prefers_uri_extra_then_name_then_launcher() {
         )))
     };
 
-    assert_eq!(referrer(), expected("android-app://com.android.launcher3"));
+    assert_eq!(referrer(), expected("android-app://com.android.shell"));
     program.invoke_builtin_method(
         &set_intent,
         Some(&test_invocation(vec![activity.clone(), intent.clone()])),
@@ -2439,4 +2439,20 @@ fn builtin_activity_get_referrer_prefers_uri_extra_then_name_then_launcher() {
         parse("https://example.com/"),
     );
     assert_eq!(referrer(), expected("https://example.com/"));
+}
+
+// cite: frameworks-base Activity.java#isInMultiWindowMode, isInPictureInPictureMode
+#[test]
+fn builtin_activity_reports_a_single_fullscreen_window() {
+    let program = DexProgram::new(Vec::new());
+    let activity = program.allocate_object("Lcom/example/MainActivity;".to_owned());
+    for name in ["isInMultiWindowMode", "isInPictureInPictureMode"] {
+        assert_eq!(
+            program.invoke_builtin_method(
+                &builtin_method("Landroid/app/Activity;", name, "Z", &[]),
+                Some(&test_invocation(vec![activity.clone()]))
+            ),
+            Some(DexExecutionResult::Int(0))
+        );
+    }
 }

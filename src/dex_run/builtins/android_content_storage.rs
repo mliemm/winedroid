@@ -61,6 +61,14 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        if method.class_descriptor == "Landroid/content/Intent;"
+            && !self.guest_overrides(method, invocation)
+        {
+            if let Some(result) = self.intent_typed_extra(method, invocation?) {
+                return Some(result);
+            }
+        }
+
         if method.matches_builtin_signature(
             "Landroid/content/Intent;",
             "<init>",
@@ -1331,11 +1339,111 @@ impl DexProgram {
             .map(|((_, name), value)| (name.clone(), value.clone()))
             .collect();
         for (name, value) in extras {
+            if let Some(type_descriptor) = runtime
+                .intent_extra_types
+                .get(&(source_key.clone(), name.clone()))
+                .cloned()
+            {
+                runtime
+                    .intent_extra_types
+                    .insert((intent_key.clone(), name.clone()), type_descriptor);
+            }
             runtime
                 .intent_extras
                 .insert((intent_key.clone(), name), value);
         }
 
         Some(())
+    }
+}
+
+const INTENT_EXTRA_TYPES: &[&str] = &["Ljava/lang/String;", "I", "J", "Z"];
+
+impl DexProgram {
+    // cite: frameworks-base Intent.java#putExtra, getStringExtra, getIntExtra, getLongExtra, getBooleanExtra, hasExtra
+    // cite: frameworks-base BaseBundle.java#getString, getInt, getLong, getBoolean, containsKey
+    fn intent_typed_extra(
+        &self,
+        method: &DexMethodId,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        let arguments = invocation.arguments.as_slice();
+        let intent = arguments.first()?;
+        if !dex_value_is_object_like(intent) {
+            return None;
+        }
+        let DexValue::String(name) = arguments.get(1)? else {
+            return None;
+        };
+        let key = (map_identity_key(intent), name.to_string());
+        let parameters = &method.proto.parameters;
+
+        if method.name == "putExtra"
+            && method.proto.return_type == "Landroid/content/Intent;"
+            && parameters.len() == 2
+            && INTENT_EXTRA_TYPES.contains(&parameters[1].as_str())
+        {
+            let mut runtime = self.runtime.borrow_mut();
+            runtime
+                .intent_extras
+                .insert(key.clone(), arguments.get(2)?.clone());
+            runtime
+                .intent_extra_types
+                .insert(key, parameters[1].clone());
+            return Some(DexExecutionResult::Value(intent.clone()));
+        }
+
+        let runtime = self.runtime.borrow();
+        let stored = runtime.intent_extras.get(&key);
+        let typed = |type_descriptor: &str| {
+            stored.filter(|_| {
+                runtime
+                    .intent_extra_types
+                    .get(&key)
+                    .is_none_or(|stored_type| stored_type == type_descriptor)
+            })
+        };
+        Some(
+            match (method.name.as_str(), method.proto.descriptor().as_str()) {
+                ("hasExtra", "(Ljava/lang/String;)Z") => {
+                    DexExecutionResult::Int(i32::from(stored.is_some()))
+                }
+                ("getStringExtra", "(Ljava/lang/String;)Ljava/lang/String;") => {
+                    DexExecutionResult::Value(
+                        typed("Ljava/lang/String;")
+                            .filter(|value| matches!(value, DexValue::String(_)))
+                            .cloned()
+                            .unwrap_or(DexValue::Null),
+                    )
+                }
+                ("getIntExtra", "(Ljava/lang/String;I)I")
+                | ("getBooleanExtra", "(Ljava/lang/String;Z)Z") => {
+                    let type_descriptor = if method.name == "getIntExtra" {
+                        "I"
+                    } else {
+                        "Z"
+                    };
+                    match typed(type_descriptor) {
+                        Some(DexValue::Int(value)) => DexExecutionResult::Int(*value),
+                        _ => match arguments.get(2)? {
+                            DexValue::Int(default) => DexExecutionResult::Int(*default),
+                            _ => return None,
+                        },
+                    }
+                }
+                ("getLongExtra", "(Ljava/lang/String;J)J") => match typed("J") {
+                    Some(DexValue::Long(value)) => {
+                        DexExecutionResult::Value(DexValue::Long(*value))
+                    }
+                    _ => match arguments.get(2)? {
+                        DexValue::Long(default) => {
+                            DexExecutionResult::Value(DexValue::Long(*default))
+                        }
+                        _ => return None,
+                    },
+                },
+                _ => return None,
+            },
+        )
     }
 }

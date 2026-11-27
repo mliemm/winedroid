@@ -10,5 +10,6 @@ pub(in crate::dex_run) mod handler_thread;
 pub(in crate::dex_run) mod lru_cache;
 pub(in crate::dex_run) mod os;
 pub(in crate::dex_run) mod preferences;
+pub(in crate::dex_run) mod scroller;
 pub(in crate::dex_run) mod uri_builder;
 pub(in crate::dex_run) mod uri_matcher;
