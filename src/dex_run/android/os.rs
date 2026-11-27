@@ -1419,6 +1419,36 @@ impl DexProgram {
         Some(DexExecutionResult::Value(task))
     }
 
+    // cite: libcore AbstractExecutorService.java#submit, newTaskFor
+    pub(in crate::dex_run) fn thread_pool_executor_submit_callable(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexExecutionResult> {
+        let [executor, callable] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        if !self.is_thread_pool_executor(executor) {
+            return None;
+        }
+        if is_android_null_value(callable) {
+            return Some(DexExecutionResult::Throw(
+                self.allocate_object("Ljava/lang/NullPointerException;".to_owned()),
+            ));
+        }
+        if !dex_value_is_object_like(callable) {
+            return None;
+        }
+        let task = self.allocate_object("Ljava/util/concurrent/FutureTask;".to_owned());
+        self.write_stored_instance_field(&task, &future_task_callable_field(), callable.clone());
+        let post = DexInvocation {
+            arguments: smallvec::smallvec![executor.clone(), task.clone()],
+            ..invocation.clone()
+        };
+        self.post_handler_runnable(&post)?;
+
+        Some(DexExecutionResult::Value(task))
+    }
+
     pub(in crate::dex_run) fn is_thread_pool_executor(&self, value: &DexValue) -> bool {
         matches!(value, DexValue::Object(_))
             && self.value_matches_type(value, "Ljava/util/concurrent/ThreadPoolExecutor;")

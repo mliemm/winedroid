@@ -2978,6 +2978,37 @@ fn libcore_scheduled_thread_pool_executor_submit_schedules_runnable_immediately(
     }
 }
 
+// cite: libcore AbstractExecutorService.java#submit, newTaskFor
+#[test]
+fn libcore_thread_pool_executor_submit_callable_returns_future_task() {
+    let program = DexProgram::new(Vec::new());
+    let executor = program.allocate_object("Ljava/util/concurrent/ThreadPoolExecutor;".to_owned());
+    let callable = program.allocate_object("Lcom/example/Callable;".to_owned());
+    let method = builtin_method(
+        "Ljava/util/concurrent/ThreadPoolExecutor;",
+        "submit",
+        "Ljava/util/concurrent/Future;",
+        &["Ljava/util/concurrent/Callable;"],
+    );
+    let result = program.invoke_builtin_method(
+        &method,
+        Some(&test_invocation(vec![executor, callable.clone()])),
+    );
+    let Some(DexExecutionResult::Value(task)) = result else {
+        panic!("submit should return a future");
+    };
+    assert_eq!(
+        program.read_stored_instance_field(&task, &future_task_callable_field()),
+        Some(callable)
+    );
+    assert!(program
+        .runtime
+        .borrow()
+        .handler_posts
+        .iter()
+        .any(|post| post.runnable == task && post.delay_millis == 0));
+}
+
 #[test]
 fn libcore_scheduled_thread_pool_executor_schedule_posts_a_delayed_future_task() {
     // cite: libcore ScheduledThreadPoolExecutor.java#schedule, triggerTime

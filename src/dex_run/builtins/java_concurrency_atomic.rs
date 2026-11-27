@@ -63,6 +63,17 @@ impl DexProgram {
         }
 
         if method.matches_builtin_signature(
+            "Ljava/util/concurrent/ThreadPoolExecutor;",
+            "submit",
+            "(Ljava/util/concurrent/Callable;)Ljava/util/concurrent/Future;",
+        ) {
+            // cite: libcore AbstractExecutorService.java#submit
+            let invocation = invocation?;
+
+            return self.thread_pool_executor_submit_callable(invocation);
+        }
+
+        if method.matches_builtin_signature(
             "Ljava/util/concurrent/ScheduledThreadPoolExecutor;",
             "submit",
             "(Ljava/lang/Runnable;)Ljava/util/concurrent/Future;",
