@@ -22,6 +22,68 @@ fn graphics_method(
 }
 
 #[test]
+fn cts_font_variation_axis_construction_and_getters() {
+    // cite: cts FontVariationAxisTest.java#testConstruction, testGetterTest, testInvalidTagConstructionTest
+    let program = DexProgram::new(Vec::new());
+    let class = "Landroid/graphics/fonts/FontVariationAxis;";
+    let constructor = graphics_method(class, "<init>", "V", &["Ljava/lang/String;", "F"]);
+    let get_tag = graphics_method(class, "getTag", "Ljava/lang/String;", &[]);
+    let get_style = graphics_method(class, "getStyleValue", "F", &[]);
+    let get_tag_value = graphics_method(class, "getOpenTypeTagValue", "I", &[]);
+    let axis = program.allocate_object(class.to_owned());
+    let tag = DexValue::String(std::rc::Rc::from("wght"));
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![
+                axis.clone(),
+                tag.clone(),
+                DexValue::Float(1.0)
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&get_tag, Some(&test_invocation(vec![axis.clone()]))),
+        Some(DexExecutionResult::Value(tag))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&get_style, Some(&test_invocation(vec![axis.clone()]))),
+        Some(DexExecutionResult::Value(DexValue::Float(1.0)))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&get_tag_value, Some(&test_invocation(vec![axis.clone()]))),
+        Some(DexExecutionResult::Int(0x77676874))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![
+                axis.clone(),
+                DexValue::String(std::rc::Rc::from("PRIV")),
+                DexValue::Int((-1.0f32).to_bits() as i32)
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&get_style, Some(&test_invocation(vec![axis.clone()]))),
+        Some(DexExecutionResult::Value(DexValue::Float(-1.0)))
+    );
+    for tag in [
+        DexValue::Null,
+        DexValue::String(std::rc::Rc::from("")),
+        DexValue::String(std::rc::Rc::from("abcde")),
+        DexValue::String(std::rc::Rc::from("\n\n\n\n")),
+        DexValue::String(std::rc::Rc::from("あbcd")),
+    ] {
+        assert!(
+            matches!(program.invoke_builtin_method(&constructor, Some(&test_invocation(vec![axis.clone(), tag, DexValue::Float(0.0)]))), Some(DexExecutionResult::Throw(DexValue::Object(exception))) if exception.class_descriptor.as_ref() == "Ljava/lang/IllegalArgumentException;")
+        );
+    }
+}
+
+#[test]
 fn builtin_android_color_argb_packs_channels() {
     let program = DexProgram::new(Vec::new());
     let method = DexMethodId {

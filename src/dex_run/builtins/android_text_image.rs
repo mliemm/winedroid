@@ -1,11 +1,95 @@
 use super::super::*;
 
+fn font_variation_axis_field(name: &str, type_descriptor: &str) -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Landroid/graphics/fonts/FontVariationAxis;".to_owned(),
+        type_descriptor: type_descriptor.to_owned(),
+        name: name.to_owned(),
+    }
+}
+
 impl DexProgram {
     pub(super) fn invoke_android_text_image_builtin(
         &self,
         method: &DexMethodId,
         invocation: Option<&DexInvocation>,
     ) -> Option<DexExecutionResult> {
+        // cite: frameworks-base FontVariationAxis.java#FontVariationAxis, isValidTag, makeTag, getTag, getStyleValue, getOpenTypeTagValue
+        if method.class_descriptor == "Landroid/graphics/fonts/FontVariationAxis;" {
+            let invocation = invocation?;
+            if method.name == "<init>" && method.proto.descriptor_is("(Ljava/lang/String;F)V") {
+                if invocation.arguments.len() != 3
+                    || !dex_value_is_object_like(&invocation.arguments[0])
+                {
+                    return None;
+                }
+                let tag = match &invocation.arguments[1] {
+                    DexValue::String(tag) => Some(tag.as_ref()),
+                    DexValue::Null => None,
+                    _ => return None,
+                };
+                let style = match invocation.arguments[2] {
+                    DexValue::Float(value) => value,
+                    DexValue::Int(bits) => f32::from_bits(bits as u32),
+                    _ => return None,
+                };
+                let Some(tag) = tag.filter(|tag| {
+                    tag.len() == 4 && tag.bytes().all(|b| (0x20..=0x7e).contains(&b))
+                }) else {
+                    let exception =
+                        self.allocate_object("Ljava/lang/IllegalArgumentException;".to_owned());
+                    let message = format!("Illegal tag pattern: {}", tag.unwrap_or("null"));
+                    self.write_stored_instance_field(
+                        &exception,
+                        &DexFieldId {
+                            class_descriptor: "Ljava/lang/Throwable;".to_owned(),
+                            type_descriptor: "Ljava/lang/String;".to_owned(),
+                            name: "detailMessage".to_owned(),
+                        },
+                        DexValue::String(std::rc::Rc::from(message)),
+                    );
+                    return Some(DexExecutionResult::Throw(exception));
+                };
+                let bytes = tag.as_bytes();
+                let tag_value = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as i32;
+                for (name, ty, value) in [
+                    ("mTag", "I", DexValue::Int(tag_value)),
+                    (
+                        "mTagString",
+                        "Ljava/lang/String;",
+                        DexValue::String(std::rc::Rc::from(tag)),
+                    ),
+                    ("mStyleValue", "F", DexValue::Float(style)),
+                ] {
+                    if !self.write_stored_instance_field(
+                        &invocation.arguments[0],
+                        &font_variation_axis_field(name, ty),
+                        value,
+                    ) {
+                        return None;
+                    }
+                }
+                return Some(DexExecutionResult::Void);
+            }
+            let (name, ty) = match (method.name.as_str(), method.proto.descriptor().as_str()) {
+                ("getTag", "()Ljava/lang/String;") => ("mTagString", "Ljava/lang/String;"),
+                ("getStyleValue", "()F") => ("mStyleValue", "F"),
+                ("getOpenTypeTagValue", "()I") => ("mTag", "I"),
+                _ => return None,
+            };
+            if invocation.arguments.len() != 1 {
+                return None;
+            }
+            let value = self.read_stored_instance_field(
+                &invocation.arguments[0],
+                &font_variation_axis_field(name, ty),
+            )?;
+            return Some(match value {
+                DexValue::Int(value) => DexExecutionResult::Int(value),
+                other => DexExecutionResult::Value(other),
+            });
+        }
+
         // cite: frameworks-base ImageView.java#setAdjustViewBounds
         if method.class_descriptor == "Landroid/widget/ImageView;"
             && method.name == "setAdjustViewBounds"

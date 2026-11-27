@@ -153,6 +153,71 @@ fn builtin_json_object_constructor_returns_void() {
 }
 
 #[test]
+fn libcore_json_object_put_boolean_boxes_and_replaces_value() {
+    // cite: libcore JSONObject.java#put, opt, checkName
+    let program = DexProgram::new(Vec::new());
+    let put = builtin_method(
+        "Lorg/json/JSONObject;",
+        "put",
+        "Lorg/json/JSONObject;",
+        &["Ljava/lang/String;", "Z"],
+    );
+    let opt = builtin_method(
+        "Lorg/json/JSONObject;",
+        "opt",
+        "Ljava/lang/Object;",
+        &["Ljava/lang/String;"],
+    );
+    let to_string = builtin_method(
+        "Lorg/json/JSONObject;",
+        "toString",
+        "Ljava/lang/String;",
+        &[],
+    );
+    let object = program.allocate_object("Lorg/json/JSONObject;".to_owned());
+    let key = DexValue::String(std::rc::Rc::from("enabled"));
+    for (input, expected) in [(1, "true"), (0, "false")] {
+        assert_eq!(
+            program.invoke_builtin_method(
+                &put,
+                Some(&test_invocation(vec![
+                    object.clone(),
+                    key.clone(),
+                    DexValue::Int(input)
+                ]))
+            ),
+            Some(DexExecutionResult::Value(object.clone()))
+        );
+        assert_eq!(
+            program.invoke_builtin_method(
+                &opt,
+                Some(&test_invocation(vec![object.clone(), key.clone()]))
+            ),
+            Some(DexExecutionResult::Value(DexValue::Reference(
+                std::rc::Rc::from(format!("Ljava/lang/Boolean;:{expected}"))
+            )))
+        );
+        assert_eq!(
+            program.invoke_builtin_method(&to_string, Some(&test_invocation(vec![object.clone()]))),
+            Some(DexExecutionResult::Value(DexValue::String(
+                std::rc::Rc::from(format!("{{\"enabled\":{expected}}}"))
+            )))
+        );
+    }
+    assert!(matches!(
+        program.invoke_builtin_method(
+            &put,
+            Some(&test_invocation(vec![
+                object,
+                DexValue::Null,
+                DexValue::Int(1)
+            ]))
+        ),
+        Some(DexExecutionResult::Throw(_))
+    ));
+}
+
+#[test]
 fn builtin_json_object_put_int_stores_value_and_returns_object() {
     let program = DexProgram::new(Vec::new());
     let put_int = DexMethodId {

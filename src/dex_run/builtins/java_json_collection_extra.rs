@@ -68,6 +68,31 @@ impl DexProgram {
             return self.init_json_object_from_map(invocation);
         }
 
+        // cite: libcore JSONObject.java#put, checkName
+        if method.class_descriptor == "Lorg/json/JSONObject;"
+            && method.name == "put"
+            && method
+                .proto
+                .descriptor_is("(Ljava/lang/String;Z)Lorg/json/JSONObject;")
+        {
+            let invocation = invocation?;
+            if matches!(invocation.arguments.get(1), Some(DexValue::Null)) {
+                return Some(DexExecutionResult::Throw(
+                    self.json_exception("Names must be non-null"),
+                ));
+            }
+            let DexValue::Int(value) = invocation.arguments.get(2)? else {
+                return None;
+            };
+            let mut boxed = invocation.clone();
+            boxed.arguments[2] = DexValue::Reference(std::rc::Rc::from(format!(
+                "Ljava/lang/Boolean;:{}",
+                *value != 0
+            )));
+            let object = self.write_json_object_value(&boxed)?;
+            return Some(DexExecutionResult::Value(object));
+        }
+
         if method.class_descriptor == "Lorg/json/JSONObject;"
             && method.name == "put"
             && method
