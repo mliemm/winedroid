@@ -2292,3 +2292,71 @@ fn android_base64_decode_matches_the_platform_decoder_state_machine() {
         assert!(program.value_matches_type(&exception, "Ljava/lang/IllegalArgumentException;"));
     }
 }
+
+// cite: frameworks-base Base64.java#decode
+#[test]
+fn android_base64_decode_accepts_byte_array_input() {
+    let program = DexProgram::new(Vec::new());
+    let decode = builtin_method("Landroid/util/Base64;", "decode", "[B", &["[B", "I"]);
+    let input = program.allocate_filled_array(
+        "[B".to_owned(),
+        b"aGk="
+            .iter()
+            .map(|byte| DexValue::Int(i32::from(*byte as i8)))
+            .collect(),
+    );
+    let Some(DexExecutionResult::Value(output)) = program.invoke_builtin_method(
+        &decode,
+        Some(&test_invocation(vec![input, DexValue::Int(0)])),
+    ) else {
+        panic!("decode should return bytes");
+    };
+    assert_eq!(
+        program.runtime.borrow().array_entries[&map_identity_key(&output)],
+        [
+            DexValue::Int(i32::from(b'h')),
+            DexValue::Int(i32::from(b'i'))
+        ]
+    );
+}
+
+// cite: frameworks-base FileObserver.java#FileObserver, stopWatching, mMask
+#[test]
+fn file_observer_constructor_keeps_path_and_mask_and_unwatched_stop_is_a_no_op() {
+    let program = DexProgram::new(Vec::new());
+    let constructor = builtin_method(
+        "Landroid/os/FileObserver;",
+        "<init>",
+        "V",
+        &["Ljava/lang/String;", "I"],
+    );
+    let stop = builtin_method("Landroid/os/FileObserver;", "stopWatching", "V", &[]);
+    let observer = program.allocate_object("Landroid/os/FileObserver;".to_owned());
+
+    assert_eq!(
+        program.invoke_builtin_method(
+            &constructor,
+            Some(&test_invocation(vec![
+                observer.clone(),
+                DexValue::String("/data/user/0/com.example/files".into()),
+                DexValue::Int(0x200),
+            ]))
+        ),
+        Some(DexExecutionResult::Void)
+    );
+    assert_eq!(
+        program.read_stored_instance_field(
+            &observer,
+            &DexFieldId {
+                class_descriptor: "Landroid/os/FileObserver;".to_owned(),
+                type_descriptor: "I".to_owned(),
+                name: "mMask".to_owned(),
+            }
+        ),
+        Some(DexValue::Int(0x200))
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&stop, Some(&test_invocation(vec![observer]))),
+        Some(DexExecutionResult::Void)
+    );
+}

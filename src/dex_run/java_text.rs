@@ -3222,6 +3222,27 @@ impl DexProgram {
         Some(builder)
     }
 
+    // cite: libcore AbstractStringBuilder.java#append
+    // cite: libcore Double.java#toString
+    pub(super) fn append_string_builder_double(
+        &self,
+        invocation: &DexInvocation,
+    ) -> Option<DexValue> {
+        let [builder, DexValue::Long(bits), DexValue::Long(_)] = invocation.arguments.as_slice()
+        else {
+            return None;
+        };
+        let value = java_double_to_string(f64::from_bits(*bits as u64))?;
+        self.runtime
+            .borrow_mut()
+            .string_builder_values
+            .entry(map_identity_key(builder))
+            .or_default()
+            .push_str(&value);
+
+        Some(builder.clone())
+    }
+
     pub(super) fn insert_string_builder_char(
         &self,
         invocation: &DexInvocation,

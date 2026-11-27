@@ -1120,3 +1120,38 @@ fn libcore_double_parse_double_accepts_only_java_number_syntax() {
         assert!(program.value_matches_type(&exception, "Ljava/lang/NumberFormatException;"));
     }
 }
+
+// cite: libcore Double.java#toString
+// cite: libcore Float.java#toString
+#[test]
+fn libcore_floating_to_string_switches_to_scientific_outside_the_plain_range() {
+    for (value, expected) in [
+        (0.5f64, "0.5"),
+        (100.0, "100.0"),
+        (1234567.0, "1234567.0"),
+        (1.0e7, "1.0E7"),
+        (12345678.9, "1.23456789E7"),
+        (0.001, "0.001"),
+        (0.0001, "1.0E-4"),
+        (-0.0, "-0.0"),
+        (-2.5e-10, "-2.5E-10"),
+        (0.1 + 0.2, "0.30000000000000004"),
+    ] {
+        assert_eq!(
+            crate::dex_run::java_big_decimal::java_double_to_string(value).as_deref(),
+            Some(expected),
+            "{value}"
+        );
+    }
+    for (value, expected) in [
+        (1.0e10f32, "1.0E10"),
+        (3.25f32, "3.25"),
+        (1.0e-5f32, "1.0E-5"),
+    ] {
+        assert_eq!(
+            java_float_to_string(value).as_deref(),
+            Some(expected),
+            "{value}"
+        );
+    }
+}

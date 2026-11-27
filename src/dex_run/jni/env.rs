@@ -997,17 +997,16 @@ fn get_string_utf_chars(context: &mut CallContext) {
     // cite: art jni_internal.cc#GetStringUTFChars
     with_env(context, |frame, context| {
         let handle = context.arg_ptr(1);
-        let DexValue::String(value) = frame.value(handle)? else {
-            return Err(WinedroidError::new("JNI reference is not a string"));
+        let reference = frame.value(handle)?;
+        let value = match &reference {
+            DexValue::String(value) => value.to_string(),
+            _ if value_class_descriptor(&reference) == Some("Ljava/lang/String;") => frame
+                .program
+                .string_text(&reference)
+                .ok_or_else(|| WinedroidError::new("JNI string object has no text"))?,
+            _ => return Err(WinedroidError::new("JNI reference is not a string")),
         };
-        let mut bytes = Vec::with_capacity(value.len() + 1);
-        for byte in value.bytes() {
-            if byte == 0 {
-                bytes.extend([0xc0, 0x80]);
-            } else {
-                bytes.push(byte);
-            }
-        }
+        let mut bytes = super::super::java_serialization::modified_utf8(&value);
         bytes.push(0);
         let address = bytes.as_ptr() as usize;
         frame.strings.borrow_mut().insert(address, (handle, bytes));

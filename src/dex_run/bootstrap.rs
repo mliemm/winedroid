@@ -220,6 +220,10 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         "Ljava/io/OutputStream;" => Some("Ljava/lang/Object;"),
         // cite: libcore StringWriter.java#StringWriter
         "Ljava/io/StringWriter;" => Some("Ljava/io/Writer;"),
+        // cite: libcore ObjectOutputStream.java#ObjectOutputStream
+        "Ljava/io/ObjectOutputStream;" => Some("Ljava/io/OutputStream;"),
+        // cite: libcore ObjectInputStream.java#ObjectInputStream
+        "Ljava/io/ObjectInputStream;" => Some("Ljava/io/InputStream;"),
         // cite: libcore ByteArrayInputStream.java#ByteArrayInputStream
         "Ljava/io/ByteArrayInputStream;" => Some("Ljava/io/InputStream;"),
         // cite: libcore PrintWriter.java#PrintWriter

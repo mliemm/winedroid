@@ -816,17 +816,17 @@ pub(super) fn exact_f64_decimal_string(value: f64) -> Option<String> {
     strip_trailing_fraction_zeros(value)
 }
 
+// cite: libcore Double.java#toString
 pub(super) fn java_double_to_string(value: f64) -> Option<String> {
     if !value.is_finite() {
         return None;
     }
 
-    let mut value = value.to_string();
-    if !value.contains('.') && !value.contains('e') && !value.contains('E') {
-        value.push_str(".0");
-    }
-
-    Some(value)
+    Some(java_floating_text(
+        &format!("{value:e}"),
+        value.abs() >= 1.0e-3 && value.abs() < 1.0e7,
+        value == 0.0,
+    ))
 }
 
 pub(super) fn decimal_digits_from_u64(value: u64) -> Option<Vec<u8>> {

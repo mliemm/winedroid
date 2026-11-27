@@ -15,6 +15,8 @@ public class Native {
 
     public static native void incrementInPlace(byte[] data);
 
+    public static native int stringLength(String text);
+
     public static int recorded;
 
     public static void record(int value) {

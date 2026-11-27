@@ -1306,12 +1306,41 @@ pub(in crate::dex_run) fn java_float_to_string(value: f32) -> Option<String> {
         return Some("-Infinity".to_owned());
     }
 
-    let mut value = value.to_string();
-    if !value.contains('.') && !value.contains('e') && !value.contains('E') {
-        value.push_str(".0");
-    }
+    Some(java_floating_text(
+        &format!("{value:e}"),
+        value.abs() >= 1.0e-3 && value.abs() < 1.0e7,
+        value == 0.0,
+    ))
+}
 
-    Some(value)
+// cite: libcore FloatingDecimal.java#toJavaFormatString, dtoa
+pub(in crate::dex_run) fn java_floating_text(scientific: &str, plain: bool, zero: bool) -> String {
+    let (sign, unsigned) = match scientific.strip_prefix('-') {
+        Some(rest) => ("-", rest),
+        None => ("", scientific),
+    };
+    if zero {
+        return format!("{sign}0.0");
+    }
+    let (mantissa, exponent) = unsigned.split_once('e').unwrap_or((unsigned, "0"));
+    let exponent: i32 = exponent.parse().unwrap_or(0);
+    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
+    if !plain {
+        let (first, rest) = digits.split_at(1);
+        let rest = if rest.is_empty() { "0" } else { rest };
+        return format!("{sign}{first}.{rest}E{exponent}");
+    }
+    let point = exponent + 1;
+    if point <= 0 {
+        let zeros = "0".repeat(point.unsigned_abs() as usize);
+        return format!("{sign}0.{zeros}{digits}");
+    }
+    let point = point as usize;
+    if point >= digits.len() {
+        let zeros = "0".repeat(point - digits.len());
+        return format!("{sign}{digits}{zeros}.0");
+    }
+    format!("{sign}{}.{}", &digits[..point], &digits[point..])
 }
 
 pub(in crate::dex_run) fn java_float_to_int_bits(value: f32) -> i32 {

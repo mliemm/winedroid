@@ -2711,3 +2711,28 @@ fn libcore_string_value_of_boolean_spells_true_and_false() {
         );
     }
 }
+
+// cite: libcore AbstractStringBuilder.java#append
+// cite: libcore Double.java#toString
+#[test]
+fn libcore_string_builder_append_double_uses_java_double_text() {
+    let program = DexProgram::new(Vec::new());
+    let append = builtin_method(
+        "Ljava/lang/StringBuilder;",
+        "append",
+        "Ljava/lang/StringBuilder;",
+        &["D"],
+    );
+    let builder = program.allocate_object("Ljava/lang/StringBuilder;".to_owned());
+    for value in [0.5f64, 1.0e10, -0.0] {
+        let bits = DexValue::Long(value.to_bits() as i64);
+        program.invoke_builtin_method(
+            &append,
+            Some(&test_invocation(vec![builder.clone(), bits.clone(), bits])),
+        );
+    }
+    assert_eq!(
+        program.runtime.borrow().string_builder_values[&map_identity_key(&builder)],
+        "0.51.0E10-0.0"
+    );
+}

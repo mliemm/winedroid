@@ -35,6 +35,7 @@ C_LIKE_LANGUAGES = {
 BINARY_SUFFIXES = {
     ".dex",
     ".png",
+    ".ser",
     ".so",
     ".ttf",
 }

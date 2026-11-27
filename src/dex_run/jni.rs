@@ -722,6 +722,50 @@ mod tests {
         assert_eq!(contents(&short), [DexValue::Int(0), DexValue::Int(0)]);
     }
 
+    #[test]
+    fn art_jni_get_string_utf_chars_encodes_string_objects_as_modified_utf8() {
+        // cite: art jni_internal.cc#GetStringUTFChars, ReleaseStringUTFChars
+        let dex = dex::parse_dex_file(
+            "jni_static_long.dex",
+            include_bytes!("tests/fixtures/jni_static_long.dex").to_vec(),
+        )
+        .unwrap();
+        let program = DexProgram::new(vec![dex]);
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/native_fixtures/bin/16k");
+        let runtime = NativeRuntime::initialize(vec![dir.clone()]).unwrap();
+        program
+            .load_native_image(runtime.loader(), &dir.join("libfx_jni.so"))
+            .unwrap();
+        let method = program
+            .resolve_named_method("Lfx/Native;", "stringLength")
+            .unwrap();
+        let string_object = |text: &str| {
+            let value = program.allocate_object("Ljava/lang/String;".to_owned());
+            program
+                .runtime
+                .borrow_mut()
+                .string_values
+                .insert(map_identity_key(&value), text.to_owned());
+            value
+        };
+
+        for (text, length) in [("h\u{e9}llo", 6), ("\u{1f600}", 6), ("", 0)] {
+            assert_eq!(
+                program
+                    .execute_method(None, &method, Some(&[string_object(text)]), 0)
+                    .unwrap(),
+                DexExecutionResult::Value(DexValue::Int(length)),
+                "{text:?}"
+            );
+        }
+        assert_eq!(
+            program
+                .execute_method(None, &method, Some(&[DexValue::String("abc".into())]), 0)
+                .unwrap(),
+            DexExecutionResult::Value(DexValue::Int(3))
+        );
+    }
+
     fn fixture_dex() -> Vec<u8> {
         let strings = ["I", "III", "Lfx/Native;", "registeredAdd"];
         let strings_off = 112;

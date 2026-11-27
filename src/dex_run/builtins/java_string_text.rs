@@ -690,6 +690,16 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(value));
         }
 
+        if method.matches_builtin_signature(
+            "Ljava/lang/StringBuilder;",
+            "append",
+            "(D)Ljava/lang/StringBuilder;",
+        ) {
+            let value = self.append_string_builder_double(invocation?)?;
+
+            return Some(DexExecutionResult::Value(value));
+        }
+
         // cite: libcore AbstractStringBuilder.java#append
         if method.class_descriptor == "Ljava/lang/StringBuilder;"
             && method.name == "append"

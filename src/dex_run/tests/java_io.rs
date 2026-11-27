@@ -3675,3 +3675,152 @@ fn libcore_byte_array_input_stream_reads_its_live_buffer_within_bounds() {
     );
     assert_eq!(read_all(&window), [21, 30, 255]);
 }
+
+fn serial_contract_program() -> DexProgram {
+    let dex_file = crate::dex::parse_dex_file(
+        "serial_contract.dex",
+        include_bytes!("fixtures/serial_contract.dex").to_vec(),
+    )
+    .expect("serialization contract DEX should parse");
+    DexProgram::new(vec![dex_file])
+}
+
+fn serial_contract_call(
+    program: &DexProgram,
+    name: &str,
+    return_type: &str,
+    parameters: &[&str],
+    arguments: &[DexValue],
+) -> DexExecutionResult {
+    let method = DexMethodId {
+        class_descriptor: "Lwinedroid/tests/SerialContract;".to_owned(),
+        name: name.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "L".repeat(1 + parameters.len()),
+            return_type: return_type.to_owned(),
+            parameters: parameters
+                .iter()
+                .map(|parameter| (*parameter).to_owned())
+                .collect(),
+        },
+    };
+    let resolved = program.resolve_exact_method(&method).unwrap().unwrap();
+    program
+        .execute_method(None, &resolved, Some(arguments), 0)
+        .unwrap()
+}
+
+#[test]
+fn libcore_object_output_stream_matches_the_openjdk_wire_bytes() {
+    // cite: libcore ObjectOutputStream.java#writeStreamHeader, writeObject0, writeOrdinaryObject, writeNonProxyDesc, writeString, defaultWriteFields
+    // cite: libcore ObjectStreamClass.java#writeNonProxy, getDefaultSerialFields
+    let program = serial_contract_program();
+    let DexExecutionResult::Value(bytes) =
+        serial_contract_call(&program, "writeGraph", "[B", &[], &[])
+    else {
+        panic!("writeGraph should return a byte[]");
+    };
+    let written: Vec<u8> = program.runtime.borrow().array_entries[&map_identity_key(&bytes)]
+        .iter()
+        .map(|value| match value {
+            DexValue::Int(byte) => *byte as u8,
+            other => panic!("byte entry {other}"),
+        })
+        .collect();
+
+    assert_eq!(
+        written,
+        include_bytes!("fixtures/serial_contract.openjdk.ser").to_vec()
+    );
+}
+
+#[test]
+fn libcore_object_input_stream_reads_the_openjdk_wire_bytes() {
+    // cite: libcore ObjectInputStream.java#readStreamHeader, readObject0, readOrdinaryObject, readNonProxyDesc, defaultReadFields
+    // cite: libcore ObjectStreamClass.java#newInstance, getSerializableConstructor
+    let program = serial_contract_program();
+    let oracle = include_bytes!("fixtures/serial_contract.openjdk.ser");
+    let data = program.allocate_filled_array(
+        "[B".to_owned(),
+        oracle
+            .iter()
+            .map(|byte| DexValue::Int(i32::from(*byte as i8)))
+            .collect(),
+    );
+
+    assert_eq!(
+        serial_contract_call(
+            &program,
+            "readGraph",
+            "Ljava/lang/String;",
+            &["[B"],
+            &[data]
+        ),
+        DexExecutionResult::Value(DexValue::String(
+            "41,true,Z,0.5,-3,0,shared,shared,1234567890123,caf\u{e9},true,null,null".into()
+        ))
+    );
+}
+
+#[test]
+fn file_observer_watch_on_a_missing_path_gets_a_failed_descriptor() {
+    // cite: frameworks-base FileObserver.java#startWatching, stopWatching
+    // cite: frameworks-base android_util_FileObserver.cpp#android_os_fileobserver_startWatching
+    let fixture = GuestIoFixture::new("file_observer");
+    let program = fixture.program();
+    fs::create_dir_all(fixture.private.join("files/present")).expect("present directory");
+    let constructor = java_io_method(
+        "Landroid/os/FileObserver;",
+        "<init>",
+        "V",
+        &["Ljava/lang/String;", "I"],
+    );
+    let start = java_io_method("Landroid/os/FileObserver;", "startWatching", "V", &[]);
+    let stop = java_io_method("Landroid/os/FileObserver;", "stopWatching", "V", &[]);
+    let observer_for = |path: &str| {
+        let observer = program.allocate_object("Landroid/os/FileObserver;".to_owned());
+        invoke_value(
+            &program,
+            &constructor,
+            vec![
+                observer.clone(),
+                DexValue::String(std::rc::Rc::from(path)),
+                DexValue::Int(0x108),
+            ],
+        );
+        observer
+    };
+    let descriptors_field = DexFieldId {
+        class_descriptor: "Landroid/os/FileObserver;".to_owned(),
+        type_descriptor: "[I".to_owned(),
+        name: "mDescriptors".to_owned(),
+    };
+
+    let missing = observer_for("/data/user/0/com.example/files/npth/anr/anr_info");
+    assert_eq!(
+        invoke_value(&program, &start, vec![missing.clone()]),
+        DexExecutionResult::Void
+    );
+    let descriptors = program
+        .read_stored_instance_field(&missing, &descriptors_field)
+        .expect("startWatching should record descriptors");
+    assert_eq!(
+        program.runtime.borrow().array_entries[&map_identity_key(&descriptors)],
+        [DexValue::Int(-1)]
+    );
+    assert_eq!(
+        invoke_value(&program, &stop, vec![missing.clone()]),
+        DexExecutionResult::Void
+    );
+    assert_eq!(
+        program.read_stored_instance_field(&missing, &descriptors_field),
+        Some(DexValue::Null)
+    );
+
+    let present = observer_for("/data/user/0/com.example/files/present");
+    let start_method = java_io_method("Landroid/os/FileObserver;", "startWatching", "V", &[]);
+    assert_eq!(
+        program.invoke_builtin_method(&start_method, Some(&test_invocation(vec![present]))),
+        None
+    );
+}

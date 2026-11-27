@@ -438,6 +438,13 @@ impl DexRunInvocationHandler<'_> {
             return Ok(invocation_result_from_execution(result));
         }
 
+        if let Some(result) =
+            self.program
+                .object_stream_intrinsic(&method, &invocation, self.depth)?
+        {
+            return Ok(invocation_result_from_execution(result));
+        }
+
         if method.class_descriptor == "Ljava/lang/System;"
             && proto_descriptor == "(Ljava/lang/String;)V"
             && matches!(method.name.as_str(), "load" | "loadLibrary")

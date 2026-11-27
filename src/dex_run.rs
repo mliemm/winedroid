@@ -50,6 +50,7 @@ mod java_big_decimal;
 mod java_format;
 mod java_primitives;
 mod java_regex_engine;
+mod java_serialization;
 mod java_text;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 mod jni;

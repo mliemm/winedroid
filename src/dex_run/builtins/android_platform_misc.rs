@@ -133,22 +133,108 @@ impl DexProgram {
                 return Some(self.null_pointer_exception_result());
             }
             let text = self.string_text(input)?;
-            let Some(bytes) = android_base64_decode(text.as_bytes(), flags & 8 != 0) else {
-                return Some(DexExecutionResult::Throw(
-                    self.allocate_generated_exception(DexGeneratedException {
-                        class_descriptor: "Ljava/lang/IllegalArgumentException;".to_owned(),
-                        detail_message: Some("bad base-64".to_owned()),
-                    }),
-                ));
-            };
-            let values = bytes
-                .into_iter()
-                .map(|byte| DexValue::Int(i32::from(byte as i8)))
-                .collect();
+            return Some(self.android_base64_decode_result(text.as_bytes(), *flags));
+        }
 
-            return Some(DexExecutionResult::Value(
-                self.allocate_filled_array("[B".to_owned(), values),
-            ));
+        // cite: frameworks-base Base64.java#decode, URL_SAFE
+        if method.matches_builtin_signature("Landroid/util/Base64;", "decode", "([BI)[B") {
+            let invocation = invocation?;
+            let [input, DexValue::Int(flags)] = invocation.arguments.as_slice() else {
+                return None;
+            };
+            if matches!(input, DexValue::Null | DexValue::Int(0)) {
+                return Some(self.null_pointer_exception_result());
+            }
+            let bytes = self.byte_array_contents(input)?;
+            return Some(self.android_base64_decode_result(&bytes, *flags));
+        }
+
+        // cite: frameworks-base FileObserver.java#FileObserver, mFiles, mMask
+        if method.matches_builtin_signature(
+            "Landroid/os/FileObserver;",
+            "<init>",
+            "(Ljava/lang/String;I)V",
+        ) {
+            let invocation = invocation?;
+            let [observer, path, DexValue::Int(mask)] = invocation.arguments.as_slice() else {
+                return None;
+            };
+            if !dex_value_is_object_like(observer) {
+                return None;
+            }
+            let path = self.string_text(path)?;
+            self.write_stored_instance_field(
+                observer,
+                &file_observer_field("Ljava/lang/String;", "winedroidPath"),
+                DexValue::String(std::rc::Rc::from(path)),
+            );
+            self.write_stored_instance_field(
+                observer,
+                &file_observer_field("I", "mMask"),
+                DexValue::Int(*mask),
+            );
+            return Some(DexExecutionResult::Void);
+        }
+
+        // cite: frameworks-base FileObserver.java#startWatching, mDescriptors
+        // cite: frameworks-base android_util_FileObserver.cpp#android_os_fileobserver_startWatching
+        if method.matches_builtin_signature("Landroid/os/FileObserver;", "startWatching", "()V")
+            && !self.guest_overrides(method, invocation)
+        {
+            let observer = invocation?.arguments.first()?;
+            if self.file_observer_descriptors(observer).is_some() {
+                return Some(DexExecutionResult::Void);
+            }
+            let Some(DexValue::String(path)) = self.read_stored_instance_field(
+                observer,
+                &file_observer_field("Ljava/lang/String;", "winedroidPath"),
+            ) else {
+                return None;
+            };
+            let exists = self.guest_filesystem.as_ref().is_some_and(|filesystem| {
+                filesystem
+                    .resolve(
+                        &path,
+                        crate::external_storage::ExternalStorageAccess::Read,
+                        &self.external_storage_policy,
+                    )
+                    .is_ok_and(|resolved| resolved.metadata().is_ok())
+            });
+            if exists {
+                return None;
+            }
+            let descriptors = self.allocate_filled_array("[I".to_owned(), vec![DexValue::Int(-1)]);
+            self.write_stored_instance_field(
+                observer,
+                &file_observer_field("[I", "mDescriptors"),
+                descriptors,
+            );
+            return Some(DexExecutionResult::Void);
+        }
+
+        // cite: frameworks-base FileObserver.java#stopWatching, mDescriptors
+        // cite: frameworks-base android_util_FileObserver.cpp#android_os_fileobserver_stopWatching
+        if method.matches_builtin_signature("Landroid/os/FileObserver;", "stopWatching", "()V")
+            && !self.guest_overrides(method, invocation)
+        {
+            let observer = invocation?.arguments.first()?;
+            if let Some(descriptors) = self.file_observer_descriptors(observer) {
+                let active = self
+                    .runtime
+                    .borrow()
+                    .array_entries
+                    .get(&map_identity_key(&descriptors))
+                    .is_some_and(|entries| entries.iter().any(|entry| *entry != DexValue::Int(-1)));
+                if active {
+                    return None;
+                }
+                self.write_stored_instance_field(
+                    observer,
+                    &file_observer_field("[I", "mDescriptors"),
+                    DexValue::Null,
+                );
+            }
+            return Some(DexExecutionResult::Void);
         }
 
         // cite: frameworks-base Environment.java#isExternalStorageEmulated, getExternalDirs
@@ -4147,6 +4233,25 @@ fn audio_stream_volume_limits(stream: i32) -> Option<(i32, i32)> {
     Some((max, default))
 }
 
+impl DexProgram {
+    // cite: frameworks-base Base64.java#decode
+    fn android_base64_decode_result(&self, input: &[u8], flags: i32) -> DexExecutionResult {
+        let Some(bytes) = android_base64_decode(input, flags & 8 != 0) else {
+            return DexExecutionResult::Throw(self.allocate_generated_exception(
+                DexGeneratedException {
+                    class_descriptor: "Ljava/lang/IllegalArgumentException;".to_owned(),
+                    detail_message: Some("bad base-64".to_owned()),
+                },
+            ));
+        };
+        let values = bytes
+            .into_iter()
+            .map(|byte| DexValue::Int(i32::from(byte as i8)))
+            .collect();
+        DexExecutionResult::Value(self.allocate_filled_array("[B".to_owned(), values))
+    }
+}
+
 // cite: frameworks-base Base64.java#process, DECODE, DECODE_WEBSAFE, SKIP, EQUALS
 fn android_base64_decode(input: &[u8], url_safe: bool) -> Option<Vec<u8>> {
     const SKIP: i32 = -1;
@@ -4204,4 +4309,19 @@ fn android_base64_decode(input: &[u8], url_safe: bool) -> Option<Vec<u8>> {
         _ => return None,
     }
     Some(output)
+}
+
+impl DexProgram {
+    fn file_observer_descriptors(&self, observer: &DexValue) -> Option<DexValue> {
+        self.read_stored_instance_field(observer, &file_observer_field("[I", "mDescriptors"))
+            .filter(dex_value_is_object_like)
+    }
+}
+
+fn file_observer_field(type_descriptor: &str, name: &str) -> DexFieldId {
+    DexFieldId {
+        class_descriptor: "Landroid/os/FileObserver;".to_owned(),
+        type_descriptor: type_descriptor.to_owned(),
+        name: name.to_owned(),
+    }
 }

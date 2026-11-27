@@ -1285,7 +1285,7 @@ impl DexProgram {
         Some(Ok(bytes))
     }
 
-    fn stream_read_into(
+    pub(in crate::dex_run) fn stream_read_into(
         &self,
         stream: &DexValue,
         array: &DexValue,
@@ -1500,7 +1500,7 @@ impl DexProgram {
         )))
     }
 
-    fn builtin_stream_close(
+    pub(in crate::dex_run) fn builtin_stream_close(
         &self,
         stream: &DexValue,
         depth: usize,
