@@ -185,7 +185,8 @@ pub(crate) fn start_activity_on_create_runtime_with_app_data_and_config(
             config,
         )?
     };
-    let class_descriptor = normalize_class_name(activity_name);
+    let class_descriptor =
+        normalize_class_name(&program.launcher_under_component_states(activity_name)?);
     let started = {
         let _span = trace::span("runtime", "run Activity.onCreate lifecycle");
         program.start_activity_on_create(&class_descriptor, 0)?
@@ -438,6 +439,9 @@ struct DexProgram {
     application_theme: Option<u32>,
     activity_labels: HashMap<String, u32>,
     manifest_providers: Vec<manifest::Provider>,
+    manifest_activities: Vec<manifest::Activity>,
+    manifest_component_classes: Vec<String>,
+    component_states: RefCell<crate::package_restrictions::ComponentStates>,
     manifest_version_code: Option<String>,
     manifest_version_name: Option<String>,
     application_label: Option<u32>,
@@ -634,6 +638,7 @@ impl DexProgram {
             shared_storage_dir,
         )?);
         program.load_persisted_shared_preferences()?;
+        program.load_component_states()?;
 
         Ok(program)
     }
@@ -693,6 +698,9 @@ impl DexProgram {
             application_theme: None,
             activity_labels: HashMap::new(),
             manifest_providers: Vec::new(),
+            manifest_activities: Vec::new(),
+            manifest_component_classes: Vec::new(),
+            component_states: RefCell::default(),
             manifest_version_code: None,
             manifest_version_name: None,
             application_label: None,
@@ -1653,6 +1661,7 @@ impl DexProgram {
             let _span = trace::span("runtime", "load persisted shared preferences");
             program.load_persisted_shared_preferences()?;
         }
+        program.load_component_states()?;
 
         Ok(program)
     }
@@ -1664,6 +1673,8 @@ impl DexProgram {
         self.application_theme = context.application_theme;
         self.activity_labels = context.activity_labels;
         self.manifest_providers = context.manifest_providers;
+        self.manifest_activities = context.manifest_activities;
+        self.manifest_component_classes = context.manifest_component_classes;
         self.manifest_version_code = context.manifest_version_code;
         self.manifest_version_name = context.manifest_version_name;
         self.application_label = context.application_label;
@@ -18327,6 +18338,8 @@ struct ApkManifestContext {
     application_theme: Option<u32>,
     activity_labels: HashMap<String, u32>,
     manifest_providers: Vec<manifest::Provider>,
+    manifest_activities: Vec<manifest::Activity>,
+    manifest_component_classes: Vec<String>,
     manifest_version_code: Option<String>,
     manifest_version_name: Option<String>,
     application_label: Option<u32>,
@@ -18378,6 +18391,14 @@ impl ApkManifestContext {
             application_theme: manifest.application_theme,
             activity_labels,
             manifest_providers: manifest.providers,
+            manifest_activities: manifest.activities,
+            manifest_component_classes: manifest
+                .receivers
+                .into_iter()
+                .chain(manifest.services)
+                .chain(manifest.instrumentations)
+                .chain(manifest.backup_agent)
+                .collect(),
             manifest_version_code: manifest.version_code,
             manifest_version_name: manifest.version_name,
             application_label: manifest.application_label,

@@ -22,6 +22,10 @@ pub struct AndroidManifest {
     pub permissions: Vec<UsesPermission>,
     pub activities: Vec<Activity>,
     pub providers: Vec<Provider>,
+    pub services: Vec<String>,
+    pub receivers: Vec<String>,
+    pub instrumentations: Vec<String>,
+    pub backup_agent: Option<String>,
     pub application_label: Option<u32>,
     pub request_legacy_external_storage: Option<bool>,
     pub default_to_device_protected_storage: Option<bool>,
@@ -319,6 +323,14 @@ fn handle_start_element(
         {
             read_provider(manifest, element)?;
         }
+        "service" | "receiver"
+            if *application_is_primary && path_is(element_stack, &["manifest", "application"]) =>
+        {
+            read_named_component(manifest, element)?;
+        }
+        "instrumentation" if path_is(element_stack, &["manifest"]) => {
+            read_named_component(manifest, element)?;
+        }
         "intent-filter"
             if current_activity.is_some()
                 && (path_is(element_stack, &["manifest", "application", "activity"])
@@ -358,6 +370,11 @@ fn read_application(manifest: &mut AndroidManifest, element: &XmlStartElement) -
     manifest.default_to_device_protected_storage =
         strict_bool_attribute(element, "defaultToDeviceProtectedStorage")?;
     manifest.direct_boot_aware = strict_bool_attribute(element, "directBootAware")?;
+    // cite: frameworks-base PackageParser.java#parseBaseApplication, AndroidManifestApplication_allowBackup, AndroidManifestApplication_backupAgent, buildClassName
+    if strict_bool_attribute(element, "allowBackup")?.unwrap_or(true) {
+        manifest.backup_agent = text_attribute(element, "backupAgent")
+            .map(|agent| resolve_component_name(manifest.package_name.as_deref(), &agent));
+    }
 
     let Some(name) = text_attribute(element, "name") else {
         return Ok(());
@@ -475,6 +492,24 @@ fn read_provider(manifest: &mut AndroidManifest, element: &XmlStartElement) -> R
         exported: strict_bool_attribute(element, "exported")?,
         enabled: strict_bool_attribute(element, "enabled")?,
     });
+
+    Ok(())
+}
+
+fn read_named_component(manifest: &mut AndroidManifest, element: &XmlStartElement) -> Result<()> {
+    // cite: frameworks-base PackageParser.java#parseBaseApplication, parseService, parseActivity, parseInstrumentation
+    let Some(name) = text_attribute(element, "name") else {
+        return Err(WinedroidError::new(format!(
+            "manifest <{}> does not include a name attribute",
+            element.name
+        )));
+    };
+    let name = resolve_component_name(manifest.package_name.as_deref(), &name);
+    match element.name.as_str() {
+        "service" => manifest.services.push(name),
+        "receiver" => manifest.receivers.push(name),
+        _ => manifest.instrumentations.push(name),
+    }
 
     Ok(())
 }
@@ -1251,6 +1286,85 @@ mod tests {
         );
         assert!(manifest.providers[0].is_enabled());
         assert!(!manifest.providers[1].is_enabled());
+    }
+
+    #[test]
+    fn package_parser_reads_application_services_and_receivers_per_parse_base_application() {
+        // cite: frameworks-base PackageParser.java#parseBaseApplication, parseService, parseActivity
+        let events = vec![
+            start(
+                "manifest",
+                vec![manifest_attr("package", "com.example.app")],
+            ),
+            start("application", Vec::new()),
+            start("service", vec![text_attr("name", ".Sync")]),
+            end("service"),
+            start(
+                "receiver",
+                vec![text_attr("name", "other.Boot"), bool_attr("enabled", false)],
+            ),
+            end("receiver"),
+            end("application"),
+            end("manifest"),
+        ];
+
+        let manifest = parse_events(&events).expect("manifest should parse");
+
+        assert_eq!(manifest.services, vec!["com.example.app.Sync".to_owned()]);
+        assert_eq!(manifest.receivers, vec!["other.Boot".to_owned()]);
+    }
+
+    #[test]
+    fn package_parser_reads_instrumentation_and_backup_agent_per_parse_base_apk_common() {
+        // cite: frameworks-base PackageParser.java#parseInstrumentation, AndroidManifestApplication_allowBackup, AndroidManifestApplication_backupAgent
+        let parse = |application: Vec<XmlAttribute>| {
+            parse_events(&[
+                start(
+                    "manifest",
+                    vec![manifest_attr("package", "com.example.app")],
+                ),
+                start("instrumentation", vec![text_attr("name", ".Runner")]),
+                end("instrumentation"),
+                start("application", application),
+                end("application"),
+                end("manifest"),
+            ])
+            .expect("manifest should parse")
+        };
+
+        let manifest = parse(vec![text_attr("backupAgent", ".Backup")]);
+        assert_eq!(
+            manifest.instrumentations,
+            vec!["com.example.app.Runner".to_owned()]
+        );
+        assert_eq!(
+            manifest.backup_agent.as_deref(),
+            Some("com.example.app.Backup")
+        );
+
+        let manifest = parse(vec![
+            text_attr("backupAgent", ".Backup"),
+            bool_attr("allowBackup", false),
+        ]);
+        assert_eq!(manifest.backup_agent, None);
+    }
+
+    #[test]
+    fn package_parser_rejects_receiver_without_name() {
+        // cite: frameworks-base PackageParser.java#parseActivity
+        let events = vec![
+            start(
+                "manifest",
+                vec![manifest_attr("package", "com.example.app")],
+            ),
+            start("application", Vec::new()),
+            start("receiver", Vec::new()),
+            end("receiver"),
+            end("application"),
+            end("manifest"),
+        ];
+
+        assert!(parse_events(&events).is_err());
     }
 
     #[test]

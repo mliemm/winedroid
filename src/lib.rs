@@ -48,6 +48,7 @@ mod missing;
 pub mod native;
 mod native_deps;
 mod native_runtime;
+mod package_restrictions;
 mod permissions;
 mod prefix;
 mod render_metrics;

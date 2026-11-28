@@ -265,6 +265,8 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         "Ljava/lang/NumberFormatException;" => Some("Ljava/lang/IllegalArgumentException;"),
         // cite: libcore SecurityException.java#SecurityException
         "Ljava/lang/SecurityException;" => Some("Ljava/lang/RuntimeException;"),
+        // cite: frameworks-base ActivityNotFoundException.java#ActivityNotFoundException
+        "Landroid/content/ActivityNotFoundException;" => Some("Ljava/lang/RuntimeException;"),
         // cite: libcore IndexOutOfBoundsException.java#IndexOutOfBoundsException
         "Ljava/lang/IndexOutOfBoundsException;" => Some("Ljava/lang/RuntimeException;"),
         // cite: libcore ArrayIndexOutOfBoundsException.java#ArrayIndexOutOfBoundsException

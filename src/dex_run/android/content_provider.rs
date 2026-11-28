@@ -236,7 +236,9 @@ impl DexProgram {
                 "ContentResolver has no provider table for authority {authority}\nnext missing primitive: ContentResolver provider lookup for a non manifest authority"
             )));
         };
-        if !manifest_provider.is_enabled() {
+        // cite: frameworks-base ComputerEngine.java#resolveContentProvider
+        // cite: frameworks-base PackageUserStateUtils.java#isEnabled
+        if !self.component_enabled(&manifest_provider.name, manifest_provider.is_enabled()) {
             return Ok(Ok(None));
         }
 

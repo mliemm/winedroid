@@ -736,6 +736,9 @@ impl DexProgram {
             && method.proto.descriptor()
                 == "(Landroid/content/ComponentName;I)Landroid/content/pm/ActivityInfo;"
         {
+            if let Some(exception) = self.unresolvable_activity_info(invocation?) {
+                return Some(exception);
+            }
             return Some(DexExecutionResult::Value(DexValue::Reference(
                 std::rc::Rc::from("Landroid/content/pm/ActivityInfo;.bootstrap"),
             )));
@@ -1071,6 +1074,28 @@ impl DexProgram {
         ))
     }
 
+    // cite: frameworks-base ApplicationPackageManager.java#getActivityInfo
+    // cite: frameworks-base ComputerEngine.java#getActivityInfoInternalBody
+    fn unresolvable_activity_info(&self, invocation: &DexInvocation) -> Option<DexExecutionResult> {
+        let [_receiver, component, DexValue::Int(flags)] = invocation.arguments.as_slice() else {
+            return None;
+        };
+        let (package, class) = self.component_name_parts(component)?;
+        if package != self.bootstrap_process_name()
+            || self.activity_resolvable(&class, *flags) == Some(true)
+        {
+            return None;
+        }
+
+        Some(DexExecutionResult::Throw(
+            self.allocate_generated_exception(DexGeneratedException {
+                class_descriptor: "Landroid/content/pm/PackageManager$NameNotFoundException;"
+                    .to_owned(),
+                detail_message: Some(format!("ComponentInfo{{{package}/{class}}}")),
+            }),
+        ))
+    }
+
     fn package_manager_get_package_info(
         &self,
         invocation: &DexInvocation,
@@ -1161,10 +1186,12 @@ impl DexProgram {
         application_info: &DexValue,
     ) -> Option<DexValue> {
         // cite: frameworks-base PackageParser.java#generatePackageInfo, generateProviderInfo, parseProvider
+        // cite: frameworks-base PackageInfoUtils.java#generate
+        // cite: frameworks-base PackageUserStateUtils.java#isEnabled
         let enabled = self
             .manifest_providers
             .iter()
-            .filter(|provider| provider.is_enabled())
+            .filter(|provider| self.component_enabled(&provider.name, provider.is_enabled()))
             .collect::<Vec<_>>();
         if enabled.is_empty() {
             return Some(DexValue::Null);
@@ -1212,7 +1239,10 @@ impl DexProgram {
                 info_field("exported", "Z"),
                 DexValue::Int(i32::from(provider.exported.unwrap_or(exported_default))),
             ),
-            (info_field("enabled", "Z"), DexValue::Int(1)),
+            (
+                info_field("enabled", "Z"),
+                DexValue::Int(i32::from(provider.is_enabled())),
+            ),
             (
                 info_field("applicationInfo", "Landroid/content/pm/ApplicationInfo;"),
                 application_info.clone(),
@@ -1550,6 +1580,20 @@ impl DexProgram {
         component
     }
 
+    // cite: frameworks-base ComponentName.java#getPackageName, getClassName
+    pub(in crate::dex_run) fn component_name_parts(
+        &self,
+        component: &DexValue,
+    ) -> Option<(String, String)> {
+        let read = |name: &str| match self
+            .read_stored_instance_field(component, &component_name_field(name))
+        {
+            Some(DexValue::String(value)) => Some(value.to_string()),
+            _ => None,
+        };
+        Some((read("mPackage")?, read("mClass")?))
+    }
+
     fn write_component_name(&self, component: &DexValue, package: &str, class: &str) {
         for (field, value) in [("mPackage", package), ("mClass", class)] {
             self.write_stored_instance_field(
@@ -1598,13 +1642,7 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
-        let read = |name: &str| match self
-            .read_stored_instance_field(component, &component_name_field(name))
-        {
-            Some(DexValue::String(value)) => Some(value.to_string()),
-            _ => None,
-        };
-        let (package, class) = (read("mPackage")?, read("mClass")?);
+        let (package, class) = self.component_name_parts(component)?;
         let text = match (method.name.as_str(), descriptor.as_str()) {
             ("getPackageName", "()Ljava/lang/String;") => package,
             ("getClassName", "()Ljava/lang/String;") => class,

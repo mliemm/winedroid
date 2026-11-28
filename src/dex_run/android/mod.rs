@@ -2,6 +2,7 @@ pub(in crate::dex_run) use super::*;
 
 pub(in crate::dex_run) mod activity_memory;
 pub(in crate::dex_run) mod app;
+pub(in crate::dex_run) mod component_enabled_state;
 pub(in crate::dex_run) mod content_provider;
 pub(in crate::dex_run) mod content_res;
 pub(in crate::dex_run) mod context_storage;

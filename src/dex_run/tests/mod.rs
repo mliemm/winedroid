@@ -22,6 +22,7 @@ mod androidx_lifecycle_work;
 mod androidx_runtime_widget;
 mod bootstrap_fields;
 mod class_new_instance_contract;
+mod component_enabled_state;
 mod content_storage_smoke;
 mod coroutine_contract;
 mod file_observer_contract;

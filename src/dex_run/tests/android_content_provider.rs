@@ -171,6 +171,67 @@ fn frameworks_content_resolver_query_returns_null_for_a_disabled_provider() {
 }
 
 #[test]
+fn frameworks_content_resolver_query_honours_the_stored_component_enabled_state() {
+    // cite: frameworks-base ComputerEngine.java#resolveContentProvider
+    // cite: frameworks-base PackageUserStateUtils.java#isEnabled
+    let disabled = program_with_provider(manifest_provider("com.example.one", None));
+    disabled.component_states.borrow_mut().set(
+        "com.example.SharedProvider",
+        crate::package_restrictions::COMPONENT_ENABLED_STATE_DISABLED,
+    );
+    let uri = parsed_uri(&disabled, "content://com.example.one/items");
+    assert_eq!(
+        query(&disabled, uri).unwrap(),
+        Some(DexExecutionResult::Value(DexValue::Null))
+    );
+    assert!(disabled.runtime.borrow().content_providers.is_empty());
+
+    let enabled = program_with_provider(manifest_provider("com.example.one", Some(false)));
+    enabled.component_states.borrow_mut().set(
+        "com.example.SharedProvider",
+        crate::package_restrictions::COMPONENT_ENABLED_STATE_ENABLED,
+    );
+    let uri = parsed_uri(&enabled, "content://com.example.one/items");
+    assert_eq!(
+        query(&enabled, uri).unwrap(),
+        Some(DexExecutionResult::Value(text("com.example.app"))),
+        "ENABLED overrides android:enabled=false"
+    );
+}
+
+#[test]
+fn frameworks_activity_manager_disabling_an_installed_provider_is_a_missing_cleanup() {
+    // cite: frameworks-base ActivityManagerService.java#cleanupDisabledPackageComponentsLocked
+    let program = program_with_provider(manifest_provider("com.example.one", None));
+    let uri = parsed_uri(&program, "content://com.example.one/items");
+    query(&program, uri).unwrap();
+    let method = builtin_method(
+        "Landroid/content/pm/PackageManager;",
+        "setComponentEnabledSetting",
+        "V",
+        &["Landroid/content/ComponentName;", "I", "I"],
+    );
+    let component = program.new_component_name("com.example.app", "com.example.SharedProvider");
+    let error = program
+        .package_manager_component_state_intrinsic(
+            &method,
+            &test_invocation(vec![
+                DexValue::Reference(std::rc::Rc::from(
+                    "Landroid/content/pm/PackageManager;.bootstrap",
+                )),
+                component,
+                DexValue::Int(crate::package_restrictions::COMPONENT_ENABLED_STATE_DISABLED),
+                DexValue::Int(1),
+            ]),
+        )
+        .unwrap_err();
+    assert_eq!(
+        error.missing_primitive(),
+        Some("ActivityManagerService cleanupDisabledPackageComponentsLocked")
+    );
+}
+
+#[test]
 fn frameworks_content_resolver_query_rejects_a_null_uri_like_requirenonnull() {
     // cite: frameworks-base ContentResolver.java#query
     let program = program_with_provider(manifest_provider("com.example.one", None));

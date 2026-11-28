@@ -301,6 +301,21 @@ impl GuestFilesystem {
         })
     }
 
+    // cite: frameworks-base Settings.java#getUserPackagesStateFile, readPackageRestrictionsLPr
+    pub fn read_package_restrictions(&self) -> io::Result<Option<Vec<u8>>> {
+        match self.app_root.read(&[package_restrictions_leaf()]) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    // cite: frameworks-base Settings.java#getUserPackagesStateFile, writePackageRestrictionsLPr
+    pub fn replace_package_restrictions(&self, bytes: &[u8]) -> io::Result<()> {
+        self.app_root
+            .atomic_replace(&[package_restrictions_leaf()], bytes)
+    }
+
     pub fn private_guest_path(&self, storage: PrivateStorageKind, child: &str) -> String {
         let root = match storage {
             PrivateStorageKind::CredentialProtected => &self.credential_protected_guest_root,
@@ -741,6 +756,10 @@ fn require_exact_child_name(parent: &Path, expected: &str) -> Result<()> {
         "package directory `{expected}` is missing from `{}`",
         parent.display()
     )))
+}
+
+fn package_restrictions_leaf() -> CString {
+    CString::new("package-restrictions").expect("literal has no NUL")
 }
 
 fn open_capability_child(parent: &Directory, name: &str, label: &str) -> Result<Directory> {

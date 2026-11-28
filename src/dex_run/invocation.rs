@@ -295,6 +295,10 @@ impl DexRunInvocationHandler<'_> {
             return Ok(DexInvocationResult::Void);
         }
 
+        if let Some(exception) = self.disabled_start_activity_target(&method, &invocation) {
+            return Ok(DexInvocationResult::Throw(exception));
+        }
+
         if method.name == "startActivity"
             && matches!(
                 proto_descriptor,
@@ -401,6 +405,13 @@ impl DexRunInvocationHandler<'_> {
                 .program
                 .reflect_constructor_new_instance(&invocation, self.depth)?;
             return Ok(DexInvocationResult::Value(value));
+        }
+
+        if let Some(result) = self
+            .program
+            .package_manager_component_state_intrinsic(&method, &invocation)?
+        {
+            return Ok(invocation_result_from_execution(result));
         }
 
         if let Some(result) = self
@@ -1358,5 +1369,33 @@ fn print_writer_field(type_descriptor: &str, name: &str) -> DexFieldId {
         class_descriptor: "Ljava/io/PrintWriter;".to_owned(),
         type_descriptor: type_descriptor.to_owned(),
         name: name.to_owned(),
+    }
+}
+
+impl DexRunInvocationHandler<'_> {
+    // cite: frameworks-base Instrumentation.java#execStartActivity, checkStartActivityResult
+    pub(super) fn disabled_start_activity_target(
+        &self,
+        method: &DexMethodId,
+        invocation: &DexInvocation,
+    ) -> Option<DexValue> {
+        let starts_activity = matches!(
+            (method.name.as_str(), method.proto.descriptor().as_str()),
+            ("startActivity", "(Landroid/content/Intent;)V")
+                | (
+                    "startActivity",
+                    "(Landroid/content/Intent;Landroid/os/Bundle;)V"
+                )
+                | ("startActivityForResult", "(Landroid/content/Intent;I)V")
+                | (
+                    "startActivityForResult",
+                    "(Landroid/content/Intent;ILandroid/os/Bundle;)V"
+                )
+        );
+        if !starts_activity {
+            return None;
+        }
+        let target = self.program.start_activity_target_class(invocation)?;
+        self.program.disabled_explicit_activity_exception(&target)
     }
 }
