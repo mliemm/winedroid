@@ -3847,7 +3847,7 @@ impl DexProgram {
     }
 
     pub(super) fn initialize_sparse_array(&self, invocation: &DexInvocation) -> Option<()> {
-        if invocation.arguments.len() != 1 {
+        if !matches!(invocation.arguments.len(), 1 | 2) {
             return None;
         }
 

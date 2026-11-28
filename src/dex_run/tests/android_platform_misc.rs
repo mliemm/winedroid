@@ -2360,3 +2360,62 @@ fn file_observer_constructor_keeps_path_and_mask_and_unwatched_stop_is_a_no_op()
         Some(DexExecutionResult::Void)
     );
 }
+
+// cite: frameworks-base SparseArray.java#SparseArray
+#[test]
+fn frameworks_base_sparse_array_capacity_constructor_starts_empty_and_rejects_negative_sizes() {
+    let program = DexProgram::new(Vec::new());
+    let method = |name: &str, return_type: &str, parameters: &[&str]| DexMethodId {
+        class_descriptor: "Landroid/util/SparseArray;".to_owned(),
+        name: name.to_owned(),
+        proto: crate::dex::DexProto {
+            shorty: "V".repeat(1 + parameters.len()),
+            return_type: return_type.to_owned(),
+            parameters: parameters.iter().map(|p| (*p).to_owned()).collect(),
+        },
+    };
+    let array = DexValue::Reference(std::rc::Rc::from("sized-sparse-array"));
+    let construct = |capacity: i32| {
+        program.invoke_builtin_method(
+            &method("<init>", "V", &["I"]),
+            Some(&test_invocation(vec![
+                array.clone(),
+                DexValue::Int(capacity),
+            ])),
+        )
+    };
+
+    for capacity in [0, 16] {
+        assert_eq!(construct(capacity), Some(DexExecutionResult::Void));
+        assert_eq!(
+            program.invoke_builtin_method(
+                &method("size", "I", &[]),
+                Some(&test_invocation(vec![array.clone()]))
+            ),
+            Some(DexExecutionResult::Int(0)),
+            "SparseArray(int) sets mSize = 0 whatever the capacity"
+        );
+    }
+    assert!(
+        matches!(construct(-1), Some(DexExecutionResult::Throw(_))),
+        "newUnpaddedObjectArray(-1) throws NegativeArraySizeException"
+    );
+    let long_init = DexMethodId {
+        class_descriptor: "Landroid/util/SparseLongArray;".to_owned(),
+        ..method("<init>", "V", &["I"])
+    };
+    let long_construct = |capacity: i32| {
+        program.invoke_builtin_method(
+            &long_init,
+            Some(&test_invocation(vec![
+                array.clone(),
+                DexValue::Int(capacity),
+            ])),
+        )
+    };
+    assert_eq!(long_construct(4), Some(DexExecutionResult::Void));
+    assert!(
+        matches!(long_construct(-1), Some(DexExecutionResult::Throw(_))),
+        "SparseLongArray(-1) allocates new long[-1] and throws NegativeArraySizeException"
+    );
+}

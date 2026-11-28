@@ -505,7 +505,11 @@ impl DexProgram {
         ))
     }
 
-    fn zip_throw(&self, class_descriptor: &str, message: Option<&str>) -> DexExecutionResult {
+    pub(in crate::dex_run) fn zip_throw(
+        &self,
+        class_descriptor: &str,
+        message: Option<&str>,
+    ) -> DexExecutionResult {
         DexExecutionResult::Throw(self.allocate_generated_exception(DexGeneratedException {
             class_descriptor: class_descriptor.to_owned(),
             detail_message: message.map(str::to_owned),

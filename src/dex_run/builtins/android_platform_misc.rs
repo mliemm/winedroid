@@ -662,11 +662,23 @@ impl DexProgram {
             return Some(DexExecutionResult::Value(value));
         }
 
-        if method.class_descriptor == "Landroid/util/SparseArray;"
-            && method.name == "<init>"
-            && method.proto.descriptor_is("()V")
+        // cite: frameworks-base SparseArray.java#SparseArray
+        // cite: frameworks-base SparseLongArray.java#SparseLongArray
+        if matches!(
+            method.class_descriptor.as_str(),
+            "Landroid/util/SparseArray;" | "Landroid/util/SparseLongArray;"
+        ) && method.name == "<init>"
+            && matches!(method.proto.descriptor().as_str(), "()V" | "(I)V")
         {
             let invocation = invocation?;
+            if let Some(DexValue::Int(capacity)) = invocation.arguments.get(1) {
+                if *capacity < 0 {
+                    return Some(self.zip_throw(
+                        "Ljava/lang/NegativeArraySizeException;",
+                        Some(&capacity.to_string()),
+                    ));
+                }
+            }
             self.initialize_sparse_array(invocation)?;
 
             return Some(DexExecutionResult::Void);
@@ -763,16 +775,6 @@ impl DexProgram {
             let value = self.sparse_array_key_at(invocation)?;
 
             return Some(DexExecutionResult::Int(value));
-        }
-
-        if method.class_descriptor == "Landroid/util/SparseLongArray;"
-            && method.name == "<init>"
-            && matches!(method.proto.descriptor().as_str(), "()V" | "(I)V")
-        {
-            let invocation = invocation?;
-            self.initialize_sparse_array(invocation)?;
-
-            return Some(DexExecutionResult::Void);
         }
 
         if method.class_descriptor == "Landroid/util/SparseLongArray;"
