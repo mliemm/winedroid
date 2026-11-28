@@ -5027,3 +5027,56 @@ fn builtin_context_theme_wrapper_with_theme_returns_that_theme() {
         Some(DexExecutionResult::Value(theme))
     );
 }
+
+#[test]
+fn frameworks_base_theme_hash_code_folds_each_first_appended_style_like_theme_key_append() {
+    // cite: frameworks-base Resources.java#hashCode, append, findValue, moveToLast
+    let program = DexProgram::new(Vec::new());
+    let style_method =
+        |name: &str, shorty: &str, parameters: &[&str], return_type: &str| DexMethodId {
+            class_descriptor: "Landroid/content/res/Resources$Theme;".to_owned(),
+            name: name.to_owned(),
+            proto: crate::dex::DexProto {
+                shorty: shorty.to_owned(),
+                return_type: return_type.to_owned(),
+                parameters: parameters.iter().map(|value| (*value).to_owned()).collect(),
+            },
+        };
+    let apply_style = style_method("applyStyle", "VIZ", &["I", "Z"], "V");
+    let hash_code = style_method("hashCode", "I", &[], "I");
+    let theme = |name: &str| {
+        DexValue::Reference(std::rc::Rc::from(format!(
+            "Landroid/content/res/Resources$Theme;:{name}"
+        )))
+    };
+    let applied = theme("applied");
+    for (resource_id, force) in [(0x7f02_0001, 0), (0x7f02_0002, 1), (0x7f02_0001, 0)] {
+        assert_eq!(
+            program.invoke_builtin_method(
+                &apply_style,
+                Some(&test_invocation(vec![
+                    applied.clone(),
+                    DexValue::Int(resource_id),
+                    DexValue::Int(force),
+                ])),
+            ),
+            Some(DexExecutionResult::Void)
+        );
+    }
+    let mut expected = 0i32;
+    for (resource_id, force) in [(0x7f02_0001, 0), (0x7f02_0002, 1)] {
+        expected = 31i32
+            .wrapping_mul(31i32.wrapping_mul(expected).wrapping_add(resource_id))
+            .wrapping_add(force);
+    }
+    assert_eq!(
+        program.invoke_builtin_method(&hash_code, Some(&test_invocation(vec![applied]))),
+        Some(DexExecutionResult::Int(expected)),
+        "ThemeKey.append adds 31 * (31 * mHashCode + resId) + force once per new pair; a repeated pair only moves to last"
+    );
+    assert_eq!(
+        program.invoke_builtin_method(&hash_code, Some(&test_invocation(vec![theme("unknown")]))),
+        None,
+        "a Theme whose ThemeKey was never modeled has no hash"
+    );
+}

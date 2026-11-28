@@ -1234,6 +1234,16 @@ impl DexProgram {
             return Some(DexExecutionResult::Void);
         }
 
+        if method.class_descriptor == "Landroid/content/res/Resources$Theme;"
+            && method.name == "hashCode"
+            && method.proto.descriptor_is("()I")
+        {
+            let invocation = invocation?;
+            let value = self.theme_hash_code(invocation.arguments.first()?)?;
+
+            return Some(DexExecutionResult::Int(value));
+        }
+
         if method.class_descriptor == "Landroid/util/TypedValue;"
             && method.name == "<init>"
             && method.proto.descriptor_is("()V")

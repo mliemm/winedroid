@@ -48,6 +48,7 @@ mod host_actions;
 mod invocation;
 mod java_big_decimal;
 mod java_format;
+mod java_hash_map;
 mod java_primitives;
 mod java_regex_engine;
 mod java_serialization;

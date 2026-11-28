@@ -4303,6 +4303,24 @@ impl DexProgram {
         )
     }
 
+    // cite: frameworks-base Resources.java#hashCode, append, findValue, setTo
+    pub(in crate::dex_run) fn theme_hash_code(&self, theme: &DexValue) -> Option<i32> {
+        let runtime = self.runtime.borrow();
+        let state = runtime.themes.get(&map_identity_key(theme))?;
+        let mut appended = HashSet::new();
+        let mut hash_code = 0i32;
+        for style in &state.styles {
+            if appended.insert((style.resource_id, style.force)) {
+                hash_code = hash_code
+                    .wrapping_mul(31)
+                    .wrapping_add(style.resource_id as i32)
+                    .wrapping_mul(31)
+                    .wrapping_add(i32::from(style.force));
+            }
+        }
+        Some(hash_code)
+    }
+
     pub(in crate::dex_run) fn context_theme_style_snapshot(
         &self,
         context: &DexValue,

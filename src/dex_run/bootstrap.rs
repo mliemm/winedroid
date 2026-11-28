@@ -318,6 +318,19 @@ pub(super) fn bootstrap_superclass_descriptor(class_descriptor: &str) -> Option<
         // cite: libcore ZipException.java#ZipException
         // cite: libcore EOFException.java#EOFException
         "Ljava/util/zip/ZipException;" | "Ljava/io/EOFException;" => Some("Ljava/io/IOException;"),
+        // cite: libcore ObjectStreamException.java#ObjectStreamException
+        // cite: libcore UTFDataFormatException.java#UTFDataFormatException
+        "Ljava/io/ObjectStreamException;" | "Ljava/io/UTFDataFormatException;" => {
+            Some("Ljava/io/IOException;")
+        }
+        // cite: libcore StreamCorruptedException.java#StreamCorruptedException
+        // cite: libcore InvalidClassException.java#InvalidClassException
+        // cite: libcore InvalidObjectException.java#InvalidObjectException
+        // cite: libcore NotSerializableException.java#NotSerializableException
+        "Ljava/io/StreamCorruptedException;"
+        | "Ljava/io/InvalidClassException;"
+        | "Ljava/io/InvalidObjectException;"
+        | "Ljava/io/NotSerializableException;" => Some("Ljava/io/ObjectStreamException;"),
         // cite: libcore NoSuchElementException.java#NoSuchElementException
         "Ljava/util/NoSuchElementException;" => Some("Ljava/lang/RuntimeException;"),
         // cite: libcore ZipFile.java#ZipFile, ZipEntryIterator

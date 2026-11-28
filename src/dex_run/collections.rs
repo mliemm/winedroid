@@ -30,18 +30,27 @@ impl DexProgram {
         let entry_key = self.map_storage_entry_key(&invocation.arguments[1]);
         let value = invocation.arguments[2].clone();
 
-        let mut runtime = self.runtime.borrow_mut();
-        runtime.map_entry_keys.insert(
-            (map_key.clone(), entry_key.clone()),
-            invocation.arguments[1].clone(),
-        );
-
-        Some(
+        let previous = {
+            let mut runtime = self.runtime.borrow_mut();
+            runtime.map_entry_keys.insert(
+                (map_key.clone(), entry_key.clone()),
+                invocation.arguments[1].clone(),
+            );
             runtime
                 .map_entries
-                .insert((map_key, entry_key), value)
-                .unwrap_or(DexValue::Null),
-        )
+                .insert((map_key, entry_key.clone()), value)
+        };
+        if previous.is_none() {
+            let hash = self.hash_map_key_hash(&invocation.arguments[1]);
+            self.hash_map_record_insert(
+                &invocation.arguments[0],
+                &entry_key,
+                &invocation.arguments[1],
+                hash,
+            );
+        }
+
+        Some(previous.unwrap_or(DexValue::Null))
     }
 
     pub(super) fn remove_hash_map_value(&self, invocation: &DexInvocation) -> Option<DexValue> {
@@ -51,17 +60,18 @@ impl DexProgram {
 
         let map_key = map_identity_key(&invocation.arguments[0]);
         let entry_key = self.map_storage_entry_key(&invocation.arguments[1]);
-        let mut runtime = self.runtime.borrow_mut();
-        runtime
-            .map_entry_keys
-            .remove(&(map_key.clone(), entry_key.clone()));
-
-        Some(
+        let removed = {
+            let mut runtime = self.runtime.borrow_mut();
             runtime
-                .map_entries
-                .remove(&(map_key, entry_key))
-                .unwrap_or(DexValue::Null),
-        )
+                .map_entry_keys
+                .remove(&(map_key.clone(), entry_key.clone()));
+            runtime.map_entries.remove(&(map_key, entry_key.clone()))
+        };
+        if removed.is_some() {
+            self.hash_map_record_remove(&invocation.arguments[0], &entry_key);
+        }
+
+        Some(removed.unwrap_or(DexValue::Null))
     }
 
     pub(super) fn java_read_hash_map_value(
@@ -88,11 +98,12 @@ impl DexProgram {
         Ok(value)
     }
 
+    // cite: libcore HashMap.java#put, hash
     pub(super) fn java_write_hash_map_value(
         &self,
         invocation: &DexInvocation,
         depth: usize,
-    ) -> Result<DexValue> {
+    ) -> Result<std::result::Result<DexValue, DexValue>> {
         if invocation.arguments.len() != 3 {
             return Err(WinedroidError::new(format!(
                 "Map.put(Object,Object) expected 3 arguments, got {}",
@@ -115,20 +126,32 @@ impl DexProgram {
                 .insert((map_key, entry_key), value)
                 .unwrap_or(DexValue::Null);
 
-            return Ok(previous);
+            return Ok(Ok(previous));
         }
 
+        let hash = if self.hash_map_tracks(map) {
+            match self.hash_map_key_hash_dispatch(&key, depth + 1)? {
+                Ok(hash) => hash,
+                Err(exception) => return Ok(Err(exception)),
+            }
+        } else {
+            None
+        };
         let entry_key = self.map_storage_entry_key(&key);
-        let mut runtime = self.runtime.borrow_mut();
-        runtime
-            .map_entry_keys
-            .insert((map_key.clone(), entry_key.clone()), key);
-        let previous = runtime
-            .map_entries
-            .insert((map_key, entry_key), value)
-            .unwrap_or(DexValue::Null);
+        let previous = {
+            let mut runtime = self.runtime.borrow_mut();
+            runtime
+                .map_entry_keys
+                .insert((map_key.clone(), entry_key.clone()), key.clone());
+            runtime
+                .map_entries
+                .insert((map_key, entry_key.clone()), value)
+        };
+        if previous.is_none() && self.hash_map_tracks(map) {
+            self.hash_map_record_insert(map, &entry_key, &key, hash);
+        }
 
-        Ok(previous)
+        Ok(Ok(previous.unwrap_or(DexValue::Null)))
     }
 
     pub(super) fn java_remove_hash_map_value(
@@ -152,16 +175,18 @@ impl DexProgram {
             return Ok(DexValue::Null);
         };
 
-        let mut runtime = self.runtime.borrow_mut();
-        runtime
-            .map_entry_keys
-            .remove(&(map_key.clone(), entry_key.clone()));
-        let removed = runtime
-            .map_entries
-            .remove(&(map_key, entry_key))
-            .unwrap_or(DexValue::Null);
+        let removed = {
+            let mut runtime = self.runtime.borrow_mut();
+            runtime
+                .map_entry_keys
+                .remove(&(map_key.clone(), entry_key.clone()));
+            runtime.map_entries.remove(&(map_key, entry_key.clone()))
+        };
+        if removed.is_some() {
+            self.hash_map_record_remove(map, &entry_key);
+        }
 
-        Ok(removed)
+        Ok(removed.unwrap_or(DexValue::Null))
     }
 
     pub(super) fn clear_hash_map(&self, invocation: &DexInvocation) -> Option<()> {
@@ -170,13 +195,16 @@ impl DexProgram {
         }
 
         let map_key = map_identity_key(&invocation.arguments[0]);
-        let mut runtime = self.runtime.borrow_mut();
-        runtime
-            .map_entries
-            .retain(|(entry_map_key, _), _| entry_map_key != &map_key);
-        runtime
-            .map_entry_keys
-            .retain(|(entry_map_key, _), _| entry_map_key != &map_key);
+        {
+            let mut runtime = self.runtime.borrow_mut();
+            runtime
+                .map_entries
+                .retain(|(entry_map_key, _), _| entry_map_key != &map_key);
+            runtime
+                .map_entry_keys
+                .retain(|(entry_map_key, _), _| entry_map_key != &map_key);
+        }
+        self.hash_map_record_clear(&invocation.arguments[0]);
 
         Some(())
     }
@@ -383,33 +411,51 @@ impl DexProgram {
             return None;
         }
 
-        let destination_key = map_identity_key(&invocation.arguments[0]);
+        let destination = &invocation.arguments[0];
+        let destination_key = map_identity_key(destination);
         let source_key = map_identity_key(&invocation.arguments[1]);
-        let mut copied_entries = Vec::new();
-
+        let source_entry_count = self.hash_map_entry_count(&source_key);
+        let (copied_entries, source_order) = match self.map_entries_in_iteration_order(&source_key)
         {
-            let runtime = self.runtime.borrow();
-            for ((map_key, entry_key), value) in &runtime.map_entries {
-                if map_key != &source_key {
-                    continue;
-                }
-
-                let key = runtime
-                    .map_entry_keys
-                    .get(&(map_key.clone(), entry_key.clone()))?
-                    .clone();
-                copied_entries.push((entry_key.clone(), key, value.clone()));
+            Ok(entries) if entries.len() <= 1 || self.map_has_hash_table(&source_key) => {
+                (entries, Ok(()))
             }
+            Ok(entries) => {
+                let reason = format!(
+                    "HashMap fill order from a {} without a modeled iteration order",
+                    value_class_descriptor(&invocation.arguments[1]).unwrap_or("map")
+                );
+                (entries, Err(reason))
+            }
+            Err(reason) => (self.stored_map_entries(&source_key), Err(reason)),
+        };
+        if copied_entries.len() != source_entry_count {
+            return None;
         }
 
-        let mut runtime = self.runtime.borrow_mut();
+        // cite: libcore HashMap.java#putMapEntries
+        self.hash_map_record_presize(destination, copied_entries.len());
+        let mut inserted = Vec::new();
         for (entry_key, key, value) in copied_entries {
-            runtime
-                .map_entry_keys
-                .insert((destination_key.clone(), entry_key.clone()), key);
-            runtime
-                .map_entries
-                .insert((destination_key.clone(), entry_key), value);
+            let previous = {
+                let mut runtime = self.runtime.borrow_mut();
+                runtime
+                    .map_entry_keys
+                    .insert((destination_key.clone(), entry_key.clone()), key.clone());
+                runtime
+                    .map_entries
+                    .insert((destination_key.clone(), entry_key.clone()), value)
+            };
+            if previous.is_none() {
+                let hash = self
+                    .hash_map_stored_hash(&source_key, &entry_key)
+                    .or_else(|| self.hash_map_key_hash(&key));
+                self.hash_map_record_insert(destination, &entry_key, &key, hash);
+                inserted.push(entry_key);
+            }
+        }
+        if let Err(reason) = source_order {
+            self.hash_map_record_fill_order(destination, &inserted, reason);
         }
 
         Some(())
@@ -456,12 +502,10 @@ impl DexProgram {
 
         let map_key = map_identity_key(&invocation.arguments[0]);
         let values = self
-            .runtime
-            .borrow()
-            .map_entries
-            .iter()
-            .filter(|((entry_map_key, _), _)| entry_map_key == &map_key)
-            .map(|(_, value)| value.clone())
+            .map_entries_in_iteration_order(&map_key)
+            .ok()?
+            .into_iter()
+            .map(|(_, _, value)| value)
             .collect::<Vec<_>>();
         let collection = self.allocate_object("Ljava/util/Collection;".to_owned());
 
@@ -501,25 +545,12 @@ impl DexProgram {
         }
 
         let map_key = map_identity_key(&invocation.arguments[0]);
-        let keys = {
-            let runtime = self.runtime.borrow();
-            let mut keys = Vec::new();
-
-            for (entry_map_key, entry_key) in runtime.map_entries.keys() {
-                if entry_map_key != &map_key {
-                    continue;
-                }
-
-                if let Some(key) = runtime
-                    .map_entry_keys
-                    .get(&(entry_map_key.clone(), entry_key.clone()))
-                {
-                    keys.push(key.clone());
-                }
-            }
-
-            keys
-        };
+        let keys = self
+            .map_entries_in_iteration_order(&map_key)
+            .ok()?
+            .into_iter()
+            .map(|(_, key, _)| key)
+            .collect::<Vec<_>>();
         let set = self.allocate_object("Ljava/util/Set;".to_owned());
 
         self.runtime
@@ -2940,24 +2971,12 @@ impl DexProgram {
     }
 
     pub(super) fn create_map_entry_iterator(&self, source_map_key: &str) -> Option<DexValue> {
-        let mut entries = Vec::new();
-
+        if self.stored_map_entries(source_map_key).len()
+            != self.hash_map_entry_count(source_map_key)
         {
-            let runtime = self.runtime.borrow();
-            for ((map_key, entry_key), value) in &runtime.map_entries {
-                if map_key != source_map_key {
-                    continue;
-                }
-
-                let key = runtime
-                    .map_entry_keys
-                    .get(&(map_key.clone(), entry_key.clone()))?
-                    .clone();
-                entries.push((entry_key.clone(), key, value.clone()));
-            }
+            return None;
         }
-
-        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        let entries = self.map_entries_in_iteration_order(source_map_key).ok()?;
 
         let mut runtime = self.runtime.borrow_mut();
         let iterator_key = format!("iterator:{}", runtime.next_object_id);
@@ -6528,6 +6547,7 @@ impl DexProgram {
         invocation: &DexInvocation,
         depth: usize,
     ) -> Result<Option<DexExecutionResult>> {
+        self.hash_map_view_guard(method, invocation)?;
         let uses_key_eq = self.map_invocation_uses_java_key_equality(method, invocation);
         if uses_key_eq
             && method.name == "get"
@@ -6580,8 +6600,12 @@ impl DexProgram {
             && method.proto.descriptor()
                 == "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;"
         {
-            let previous = self.java_write_hash_map_value(invocation, depth + 1)?;
-            return Ok(Some(DexExecutionResult::Value(previous)));
+            return Ok(Some(
+                match self.java_write_hash_map_value(invocation, depth + 1)? {
+                    Ok(previous) => DexExecutionResult::Value(previous),
+                    Err(exception) => DexExecutionResult::Throw(exception),
+                },
+            ));
         }
 
         if uses_key_eq

@@ -1,6 +1,7 @@
+use super::java_hash_map::HASH_MAP;
 use super::*;
 
-// cite: libcore ObjectStreamConstants.java#STREAM_MAGIC, STREAM_VERSION, TC_NULL, TC_REFERENCE, TC_CLASSDESC, TC_OBJECT, TC_STRING, TC_BLOCKDATA, TC_ENDBLOCKDATA, TC_BLOCKDATALONG, TC_LONGSTRING, baseWireHandle, SC_WRITE_METHOD, SC_SERIALIZABLE
+// cite: libcore ObjectStreamConstants.java#STREAM_MAGIC, STREAM_VERSION, TC_NULL, TC_REFERENCE, TC_CLASSDESC, TC_OBJECT, TC_STRING, TC_BLOCKDATA, TC_ENDBLOCKDATA, TC_BLOCKDATALONG, TC_LONGSTRING, TC_RESET, TC_BASE, TC_MAX, baseWireHandle, SC_WRITE_METHOD, SC_SERIALIZABLE
 const STREAM_MAGIC: u16 = 0xaced;
 const STREAM_VERSION: u16 = 5;
 const TC_NULL: u8 = 0x70;
@@ -12,6 +13,9 @@ const TC_BLOCKDATA: u8 = 0x77;
 const TC_ENDBLOCKDATA: u8 = 0x78;
 const TC_BLOCKDATALONG: u8 = 0x7a;
 const TC_LONGSTRING: u8 = 0x7c;
+const TC_RESET: u8 = 0x79;
+const TC_BASE: u8 = 0x70;
+const TC_MAX: u8 = 0x7e;
 const BASE_WIRE_HANDLE: i32 = 0x7e0000;
 const SC_WRITE_METHOD: u8 = 0x01;
 const SC_SERIALIZABLE: u8 = 0x02;
@@ -43,15 +47,19 @@ pub(super) enum InputHandle {
     Failed(String),
 }
 
+#[derive(Default)]
 pub(super) struct ReadState {
     handles: Vec<InputHandle>,
     class_not_found: Option<String>,
+    depth: usize,
+    peeked: Option<u8>,
 }
 
 struct LocalClass {
     descriptor: String,
     name: String,
     suid: i64,
+    flags: u8,
     fields: Vec<LocalField>,
 }
 
@@ -165,6 +173,25 @@ fn is_framework_descriptor(descriptor: &str) -> bool {
 
 fn missing(detail: String) -> WinedroidError {
     WinedroidError::new(format!("next missing primitive: {detail}"))
+}
+
+// cite: libcore HashMap.java#serialVersionUID, loadFactor, threshold, writeObject
+fn hash_map_stream_class() -> LocalClass {
+    let field = |name: &str, type_descriptor: &str| LocalField {
+        field: DexFieldId {
+            class_descriptor: HASH_MAP.to_owned(),
+            type_descriptor: type_descriptor.to_owned(),
+            name: name.to_owned(),
+        },
+        type_code: type_code(type_descriptor),
+    };
+    LocalClass {
+        descriptor: HASH_MAP.to_owned(),
+        name: java_class_name(HASH_MAP),
+        suid: 362498820763181265,
+        flags: SC_WRITE_METHOD | SC_SERIALIZABLE,
+        fields: vec![field("loadFactor", "F"), field("threshold", "I")],
+    }
 }
 
 impl DexProgram {
@@ -330,7 +357,7 @@ impl DexProgram {
         }
     }
 
-    fn first_framework_class(&self, value: &DexValue) -> Option<String> {
+    pub(super) fn first_framework_class(&self, value: &DexValue) -> Option<String> {
         let mut class = value_class_descriptor(value).map(str::to_owned);
         while let Some(descriptor) = class.as_deref() {
             if self.load_class(descriptor).is_none() {
@@ -460,6 +487,9 @@ impl DexProgram {
                 "ObjectOutputStream.writeObject of {value}"
             )));
         };
+        if class_descriptor == HASH_MAP {
+            return self.write_hash_map(bytes, handles, value, key, depth);
+        }
         if self.load_class(&class_descriptor).is_none() {
             return Err(missing(format!(
                 "serialization of framework class {}",
@@ -487,6 +517,39 @@ impl DexProgram {
         Ok(Ok(()))
     }
 
+    // cite: libcore HashMap.java#writeObject, internalWriteEntries
+    // cite: libcore ObjectOutputStream.java#writeOrdinaryObject, writeSerialData, defaultWriteObject, writeInt
+    fn write_hash_map(
+        &self,
+        bytes: &mut Vec<u8>,
+        handles: &mut Vec<String>,
+        map: &DexValue,
+        key: String,
+        depth: usize,
+    ) -> Result<Thrown<()>> {
+        let (load_factor, threshold, buckets, entries) = self
+            .hash_map_serial_state(map)
+            .map_err(|reason| missing(format!("serialization of java.util.HashMap: {reason}")))?;
+        bytes.push(TC_OBJECT);
+        self.write_class_desc(bytes, handles, &[hash_map_stream_class()]);
+        handles.push(key);
+        bytes.extend(load_factor.to_bits().to_be_bytes());
+        bytes.extend(threshold.to_be_bytes());
+        bytes.push(TC_BLOCKDATA);
+        bytes.push(8);
+        bytes.extend(buckets.to_be_bytes());
+        bytes.extend((entries.len() as i32).to_be_bytes());
+        for (entry_key, entry_value) in &entries {
+            for item in [entry_key, entry_value] {
+                if let Err(exception) = self.write_object0(bytes, handles, item, depth)? {
+                    return Ok(Err(exception));
+                }
+            }
+        }
+        bytes.push(TC_ENDBLOCKDATA);
+        Ok(Ok(()))
+    }
+
     // cite: libcore ObjectOutputStream.java#writeClassDesc, writeNonProxyDesc, writeTypeString
     // cite: libcore ObjectStreamClass.java#writeNonProxy
     fn write_class_desc(
@@ -509,7 +572,7 @@ impl DexProgram {
         handles.push(key);
         write_utf(bytes, &class.name);
         bytes.extend(class.suid.to_be_bytes());
-        bytes.push(SC_SERIALIZABLE);
+        bytes.push(class.flags);
         bytes.extend((class.fields.len() as u16).to_be_bytes());
         for field in &class.fields {
             bytes.push(field.type_code);
@@ -685,6 +748,7 @@ impl DexProgram {
             descriptor: descriptor.to_owned(),
             name,
             suid,
+            flags: SC_SERIALIZABLE,
             fields,
         }))
     }
@@ -699,13 +763,10 @@ impl DexProgram {
             return Ok(self.null_pointer_exception_result());
         };
         self.write_stored_instance_field(stream, &self.object_stream_field(false), input.clone());
-        self.runtime.borrow_mut().object_input_handles.insert(
-            map_identity_key(stream),
-            ReadState {
-                handles: Vec::new(),
-                class_not_found: None,
-            },
-        );
+        self.runtime
+            .borrow_mut()
+            .object_input_handles
+            .insert(map_identity_key(stream), ReadState::default());
         // cite: libcore ObjectInputStream.java#readStreamHeader
         let header = match self.input_stream_read_exact(input, 4, depth)? {
             Ok(header) => header,
@@ -737,11 +798,9 @@ impl DexProgram {
             .borrow_mut()
             .object_input_handles
             .remove(&stream_key)
-            .unwrap_or(ReadState {
-                handles: Vec::new(),
-                class_not_found: None,
-            });
+            .unwrap_or_default();
         state.class_not_found = None;
+        state.depth = 0;
         let result = self.read_object0(&input, &mut state, depth);
         let class_not_found = state.class_not_found.take();
         self.runtime
@@ -758,6 +817,47 @@ impl DexProgram {
         })
     }
 
+    // cite: libcore ObjectInputStream.java#PeekInputStream, read
+    fn input_stream_read(
+        &self,
+        input: &DexValue,
+        count: usize,
+        depth: usize,
+    ) -> Result<Thrown<Option<Vec<u8>>>> {
+        let count = count.min(READ_CHUNK);
+        let array = self.allocate_filled_array("[B".to_owned(), vec![DexValue::Int(0); count]);
+        let read = self.stream_read_into(
+            input,
+            &array,
+            0,
+            i32::try_from(count).unwrap_or(i32::MAX),
+            depth,
+        )?;
+        match read {
+            Some(DexExecutionResult::Int(-1)) => Ok(Ok(None)),
+            Some(DexExecutionResult::Int(read)) if read > 0 => {
+                let chunk = self.byte_array_contents(&array).ok_or_else(|| {
+                    WinedroidError::new("ObjectInputStream read buffer is not a byte[]")
+                })?;
+                Ok(Ok(Some(chunk[..read as usize].to_vec())))
+            }
+            Some(DexExecutionResult::Throw(exception)) => Ok(Err(exception)),
+            Some(DexExecutionResult::Parked(execution)) => {
+                self.discard_parked_execution(&execution);
+                Err(missing(
+                    "ObjectInputStream read from a stream that parks".to_owned(),
+                ))
+            }
+            Some(other) => Err(WinedroidError::new(format!(
+                "InputStream.read returned {other} under an ObjectInputStream"
+            ))),
+            None => Err(missing(format!(
+                "ObjectInputStream read from {}",
+                value_class_descriptor(input).unwrap_or("unknown class")
+            ))),
+        }
+    }
+
     // cite: libcore ObjectInputStream.java#PeekInputStream, readFully
     fn input_stream_read_exact(
         &self,
@@ -767,44 +867,10 @@ impl DexProgram {
     ) -> Result<Thrown<Vec<u8>>> {
         let mut bytes = Vec::with_capacity(count.min(READ_CHUNK));
         while bytes.len() < count {
-            let remaining = (count - bytes.len()).min(READ_CHUNK);
-            let array =
-                self.allocate_filled_array("[B".to_owned(), vec![DexValue::Int(0); remaining]);
-            let read = self.stream_read_into(
-                input,
-                &array,
-                0,
-                i32::try_from(remaining).unwrap_or(i32::MAX),
-                depth,
-            )?;
-            match read {
-                Some(DexExecutionResult::Int(-1)) => {
-                    return Ok(Err(self.serial_exception("Ljava/io/EOFException;", None)));
-                }
-                Some(DexExecutionResult::Int(read)) if read > 0 => {
-                    let chunk = self.byte_array_contents(&array).ok_or_else(|| {
-                        WinedroidError::new("ObjectInputStream read buffer is not a byte[]")
-                    })?;
-                    bytes.extend(&chunk[..read as usize]);
-                }
-                Some(DexExecutionResult::Throw(exception)) => return Ok(Err(exception)),
-                Some(DexExecutionResult::Parked(execution)) => {
-                    self.discard_parked_execution(&execution);
-                    return Err(missing(
-                        "ObjectInputStream read from a stream that parks".to_owned(),
-                    ));
-                }
-                Some(other) => {
-                    return Err(WinedroidError::new(format!(
-                        "InputStream.read returned {other} under an ObjectInputStream"
-                    )));
-                }
-                None => {
-                    return Err(missing(format!(
-                        "ObjectInputStream read from {}",
-                        value_class_descriptor(input).unwrap_or("unknown class")
-                    )));
-                }
+            match self.input_stream_read(input, count - bytes.len(), depth)? {
+                Ok(Some(chunk)) => bytes.extend(chunk),
+                Ok(None) => return Ok(Err(self.serial_exception("Ljava/io/EOFException;", None))),
+                Err(exception) => return Ok(Err(exception)),
             }
         }
         Ok(Ok(bytes))
@@ -882,14 +948,56 @@ impl DexProgram {
         state: &mut ReadState,
         depth: usize,
     ) -> Result<Thrown<DexValue>> {
-        let tc = match self.read_u8(input, depth)? {
-            Ok(tc) => tc,
-            Err(exception) => return Ok(Err(exception)),
+        let tc = match state.peeked.take() {
+            Some(tc) => tc,
+            None => match self.read_u8(input, depth)? {
+                Ok(tc) => tc,
+                Err(exception) => return Ok(Err(exception)),
+            },
         };
         self.read_object_with_type_code(input, state, tc, depth)
     }
 
+    // cite: libcore ObjectInputStream.java#handleReset, clear
+    fn handle_reset(&self, state: &mut ReadState) -> Thrown<()> {
+        if state.depth > 0 {
+            return Err(self.serial_exception(
+                "Ljava/io/StreamCorruptedException;",
+                Some(format!(
+                    "unexpected reset; recursion depth: {}",
+                    state.depth
+                )),
+            ));
+        }
+        state.handles.clear();
+        Ok(())
+    }
+
+    // cite: libcore ObjectInputStream.java#readObject0
     fn read_object_with_type_code(
+        &self,
+        input: &DexValue,
+        state: &mut ReadState,
+        tc: u8,
+        depth: usize,
+    ) -> Result<Thrown<DexValue>> {
+        let mut tc = tc;
+        while tc == TC_RESET {
+            if let Err(exception) = self.handle_reset(state) {
+                return Ok(Err(exception));
+            }
+            tc = match self.read_u8(input, depth)? {
+                Ok(tc) => tc,
+                Err(exception) => return Ok(Err(exception)),
+            };
+        }
+        state.depth += 1;
+        let result = self.read_object_by_type_code(input, state, tc, depth);
+        state.depth -= 1;
+        result
+    }
+
+    fn read_object_by_type_code(
         &self,
         input: &DexValue,
         state: &mut ReadState,
@@ -925,7 +1033,7 @@ impl DexProgram {
                 Ok(Ok(value))
             }
             TC_OBJECT => self.read_ordinary_object(input, state, depth),
-            0x72 | 0x75..=0x77 | 0x79..=0x7b | 0x7d | 0x7e | TC_ENDBLOCKDATA => {
+            0x72 | 0x75..=0x77 | 0x7a | 0x7b | 0x7d | 0x7e | TC_ENDBLOCKDATA => {
                 Err(missing(format!("ObjectInputStream type code {tc:02X}")))
             }
             _ => Ok(Err(self.serial_exception(
@@ -1059,6 +1167,9 @@ impl DexProgram {
             )));
         };
         let descriptor = format!("L{};", desc.name.replace('.', "/"));
+        if descriptor == HASH_MAP && self.load_class(&descriptor).is_none() {
+            return self.read_hash_map(input, state, &desc, depth);
+        }
         if self.load_class(&descriptor).is_none() && is_framework_descriptor(&descriptor) {
             return Err(missing(format!(
                 "deserialization of framework class {}",
@@ -1135,7 +1246,225 @@ impl DexProgram {
         Ok(Ok(object.unwrap_or(DexValue::Null)))
     }
 
-    // cite: libcore ObjectInputStream.java#skipCustomData
+    // cite: libcore HashMap.java#readObject, reinitialize, putVal
+    // cite: libcore ObjectInputStream.java#readOrdinaryObject, readSerialData, defaultReadFields, readInt
+    fn read_hash_map(
+        &self,
+        input: &DexValue,
+        state: &mut ReadState,
+        desc: &StreamClassDesc,
+        depth: usize,
+    ) -> Result<Thrown<DexValue>> {
+        macro_rules! read {
+            ($expression:expr) => {
+                match $expression? {
+                    Ok(value) => value,
+                    Err(exception) => return Ok(Err(exception)),
+                }
+            };
+        }
+        let local = hash_map_stream_class();
+        if desc.suid != local.suid {
+            return Ok(Err(self.serial_exception(
+                "Ljava/io/InvalidClassException;",
+                Some(format!(
+                    "{}; local class incompatible: stream classdesc serialVersionUID = {}, local class serialVersionUID = {}",
+                    local.name, desc.suid, local.suid
+                )),
+            )));
+        }
+        if desc.super_desc.is_some() || desc.flags & SC_WRITE_METHOD == 0 {
+            return Err(missing(format!(
+                "java.util.HashMap stream descriptor with flags {:02X} and a superclass descriptor: {}",
+                desc.flags,
+                desc.super_desc.is_some()
+            )));
+        }
+        let map = self.allocate_object(HASH_MAP.to_owned());
+        state.handles.push(InputHandle::Object(map.clone()));
+        for field in &desc.fields {
+            let local_field = local
+                .fields
+                .iter()
+                .find(|local| local.field.name == field.name);
+            if local_field.is_some_and(|local| local.type_code != field.type_code) {
+                return Ok(Err(self.serial_exception(
+                    "Ljava/io/InvalidClassException;",
+                    Some(format!(
+                        "{}; incompatible types for field {}",
+                        desc.name, field.name
+                    )),
+                )));
+            }
+        }
+        let mut load_factor = 0.0f32;
+        for field in &desc.fields {
+            let Some(width) = primitive_width(field.type_code) else {
+                continue;
+            };
+            let raw = read!(self.input_stream_read_exact(input, width, depth));
+            if field.name == "loadFactor" {
+                load_factor = f32::from_bits(u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]));
+            }
+        }
+        for field in &desc.fields {
+            if primitive_width(field.type_code).is_none() {
+                read!(self.read_object0(input, state, depth));
+            }
+        }
+        if load_factor <= 0.0 || load_factor.is_nan() {
+            return Ok(Err(self.serial_exception(
+                "Ljava/io/InvalidObjectException;",
+                Some(format!(
+                    "Illegal load factor: {}",
+                    java_float_to_string(load_factor).unwrap_or_default()
+                )),
+            )));
+        }
+        let mut block = 0usize;
+        read!(self.read_block_bytes(input, state, &mut block, 4, depth));
+        let mappings = read!(self.read_block_bytes(input, state, &mut block, 4, depth));
+        let mappings = i32::from_be_bytes([mappings[0], mappings[1], mappings[2], mappings[3]]);
+        if mappings < 0 {
+            return Ok(Err(self.serial_exception(
+                "Ljava/io/InvalidObjectException;",
+                Some(format!("Illegal mappings count: {mappings}")),
+            )));
+        }
+        self.hash_map_install_table(
+            &map,
+            super::java_hash_map::HashMapTable::for_read_object(load_factor, mappings),
+        );
+        for _ in 0..mappings {
+            if block > 0 {
+                return Err(missing(format!(
+                    "ObjectInputStream.readObject with {block} unread block data bytes (OptionalDataException)"
+                )));
+            }
+            let key = read!(self.read_object0(input, state, depth));
+            let value = read!(self.read_object0(input, state, depth));
+            let put = DexInvocation {
+                kind: DexInvokeKind::Virtual,
+                range: false,
+                method_index: 0,
+                argument_registers: Default::default(),
+                arguments: smallvec::smallvec![map.clone(), key, value],
+            };
+            read!(self.java_write_hash_map_value(&put, depth + 1));
+        }
+        let unread = block;
+        read!(self.read_block_bytes(input, state, &mut block, unread, depth));
+        read!(self.skip_custom_data(input, state, depth));
+        Ok(Ok(map))
+    }
+
+    // cite: libcore ObjectInputStream.java#BlockDataInputStream, refill, readBlockHeader
+    fn read_block_bytes(
+        &self,
+        input: &DexValue,
+        state: &mut ReadState,
+        remaining: &mut usize,
+        count: usize,
+        depth: usize,
+    ) -> Result<Thrown<Vec<u8>>> {
+        let mut bytes = Vec::with_capacity(count.min(READ_CHUNK));
+        while bytes.len() < count {
+            if *remaining == 0 {
+                let header = match self.read_block_header(input, state, depth)? {
+                    Ok(header) => header,
+                    Err(exception) => return Ok(Err(exception)),
+                };
+                let Some(length) = header else {
+                    return Ok(Err(self.serial_exception("Ljava/io/EOFException;", None)));
+                };
+                *remaining = length;
+                continue;
+            }
+            let take = (*remaining).min(count - bytes.len());
+            match self.input_stream_read(input, take, depth)? {
+                Ok(Some(chunk)) => {
+                    *remaining -= chunk.len();
+                    bytes.extend(chunk);
+                }
+                Ok(None) => {
+                    return Ok(Err(self.serial_exception(
+                        "Ljava/io/StreamCorruptedException;",
+                        Some("unexpected EOF in middle of data block".to_owned()),
+                    )));
+                }
+                Err(exception) => return Ok(Err(exception)),
+            }
+        }
+        Ok(Ok(bytes))
+    }
+
+    // cite: libcore ObjectInputStream.java#readBlockHeader, PeekInputStream, peek, readFully, handleReset
+    fn read_block_header(
+        &self,
+        input: &DexValue,
+        state: &mut ReadState,
+        depth: usize,
+    ) -> Result<Thrown<Option<usize>>> {
+        macro_rules! header_read {
+            ($expression:expr) => {
+                match $expression? {
+                    Ok(value) => value,
+                    Err(exception)
+                        if self.value_matches_type(&exception, "Ljava/io/EOFException;") =>
+                    {
+                        return Ok(Err(self.serial_exception(
+                            "Ljava/io/StreamCorruptedException;",
+                            Some("unexpected EOF while reading block data header".to_owned()),
+                        )));
+                    }
+                    Err(exception) => return Ok(Err(exception)),
+                }
+            };
+        }
+        loop {
+            let tc = match state.peeked.take() {
+                Some(tc) => tc,
+                None => match header_read!(self.input_stream_read(input, 1, depth)) {
+                    Some(bytes) => bytes[0],
+                    None => return Ok(Ok(None)),
+                },
+            };
+            match tc {
+                TC_BLOCKDATA => {
+                    let length = header_read!(self.read_u8(input, depth));
+                    return Ok(Ok(Some(usize::from(length))));
+                }
+                TC_BLOCKDATALONG => {
+                    let bytes = header_read!(self.read_be::<4>(input, depth));
+                    let length = i32::from_be_bytes(bytes);
+                    return Ok(match usize::try_from(length) {
+                        Ok(length) => Ok(Some(length)),
+                        Err(_) => Err(self.serial_exception(
+                            "Ljava/io/StreamCorruptedException;",
+                            Some(format!("illegal block data header length: {length}")),
+                        )),
+                    });
+                }
+                TC_RESET => {
+                    if let Err(exception) = self.handle_reset(state) {
+                        return Ok(Err(exception));
+                    }
+                }
+                tc if (TC_BASE..=TC_MAX).contains(&tc) => {
+                    state.peeked = Some(tc);
+                    return Ok(Ok(None));
+                }
+                tc => {
+                    return Ok(Err(self.serial_exception(
+                        "Ljava/io/StreamCorruptedException;",
+                        Some(format!("invalid type code: {tc:02X}")),
+                    )));
+                }
+            }
+        }
+    }
+
+    // cite: libcore ObjectInputStream.java#skipCustomData, skipBlockData, peekByte
     fn skip_custom_data(
         &self,
         input: &DexValue,
@@ -1143,41 +1472,30 @@ impl DexProgram {
         depth: usize,
     ) -> Result<Thrown<()>> {
         loop {
-            let tc = match self.read_u8(input, depth)? {
-                Ok(tc) => tc,
-                Err(exception) => return Ok(Err(exception)),
-            };
-            let length = match tc {
-                TC_ENDBLOCKDATA => return Ok(Ok(())),
-                TC_BLOCKDATA => match self.read_u8(input, depth)? {
-                    Ok(length) => usize::from(length),
+            loop {
+                let length = match self.read_block_header(input, state, depth)? {
+                    Ok(Some(length)) => length,
+                    Ok(None) => break,
                     Err(exception) => return Ok(Err(exception)),
-                },
-                TC_BLOCKDATALONG => match self.read_be::<4>(input, depth)? {
-                    Ok(bytes) => match usize::try_from(i32::from_be_bytes(bytes)) {
-                        Ok(length) => length,
-                        Err(_) => {
-                            return Ok(Err(self.serial_exception(
-                                "Ljava/io/StreamCorruptedException;",
-                                Some(format!(
-                                    "illegal block data header length: {}",
-                                    i32::from_be_bytes(bytes)
-                                )),
-                            )))
-                        }
-                    },
-                    Err(exception) => return Ok(Err(exception)),
-                },
-                tc => {
-                    if let Err(exception) =
-                        self.read_object_with_type_code(input, state, tc, depth)?
-                    {
-                        return Ok(Err(exception));
-                    }
-                    continue;
+                };
+                let mut remaining = length;
+                if let Err(exception) =
+                    self.read_block_bytes(input, state, &mut remaining, length, depth)?
+                {
+                    return Ok(Err(exception));
                 }
+            }
+            let tc = match state.peeked.take() {
+                Some(tc) => tc,
+                None => match self.read_u8(input, depth)? {
+                    Ok(tc) => tc,
+                    Err(exception) => return Ok(Err(exception)),
+                },
             };
-            if let Err(exception) = self.input_stream_read_exact(input, length, depth)? {
+            if tc == TC_ENDBLOCKDATA {
+                return Ok(Ok(()));
+            }
+            if let Err(exception) = self.read_object_with_type_code(input, state, tc, depth)? {
                 return Ok(Err(exception));
             }
         }

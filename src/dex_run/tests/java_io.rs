@@ -3909,8 +3909,27 @@ fn serial_contract_call(
     parameters: &[&str],
     arguments: &[DexValue],
 ) -> DexExecutionResult {
+    serial_fixture_call(
+        program,
+        "Lwinedroid/tests/SerialContract;",
+        name,
+        return_type,
+        parameters,
+        arguments,
+    )
+    .unwrap()
+}
+
+fn serial_fixture_call(
+    program: &DexProgram,
+    class_descriptor: &str,
+    name: &str,
+    return_type: &str,
+    parameters: &[&str],
+    arguments: &[DexValue],
+) -> crate::error::Result<DexExecutionResult> {
     let method = DexMethodId {
-        class_descriptor: "Lwinedroid/tests/SerialContract;".to_owned(),
+        class_descriptor: class_descriptor.to_owned(),
         name: name.to_owned(),
         proto: crate::dex::DexProto {
             shorty: "L".repeat(1 + parameters.len()),
@@ -3922,9 +3941,7 @@ fn serial_contract_call(
         },
     };
     let resolved = program.resolve_exact_method(&method).unwrap().unwrap();
-    program
-        .execute_method(None, &resolved, Some(arguments), 0)
-        .unwrap()
+    program.execute_method(None, &resolved, Some(arguments), 0)
 }
 
 #[test]
@@ -4092,28 +4109,517 @@ fn libcore_object_input_stream_defers_class_not_found_and_skips_custom_data() {
 }
 
 #[test]
-fn libcore_object_output_stream_reports_framework_fields_as_missing_support() {
+fn libcore_object_output_stream_writes_a_hash_map_field_and_refuses_other_framework_classes() {
     // cite: libcore ObjectOutputStream.java#writeObject0
+    // cite: libcore HashMap.java#writeObject
     let program = serial_contract_program();
-    let method = DexMethodId {
-        class_descriptor: "Lwinedroid/tests/SerialContract;".to_owned(),
-        name: "writeWithMap".to_owned(),
-        proto: crate::dex::DexProto {
-            shorty: "V".to_owned(),
-            return_type: "V".to_owned(),
-            parameters: Vec::new(),
-        },
-    };
-    let resolved = program.resolve_exact_method(&method).unwrap().unwrap();
-    let error = program
-        .execute_method(None, &resolved, None, 0)
-        .expect_err("a HashMap field is not serializable yet");
+    assert_eq!(
+        serial_contract_call(&program, "writeWithMap", "V", &[], &[]),
+        DexExecutionResult::Void
+    );
+    let error = serial_fixture_call(&program, SERIAL_MAPS, "writeList", "V", &[], &[])
+        .expect_err("ArrayList serialization is not modeled");
     assert!(
         error
             .to_string()
-            .contains("serialization of framework class java.util.HashMap"),
+            .contains("serialization of framework class java.util.ArrayList"),
         "{error}"
     );
+}
+
+const SERIAL_MAPS: &str = "Lwinedroid/tests/SerialMaps;";
+
+fn serial_maps_oracle_line(index: usize) -> &'static str {
+    include_str!("fixtures/serial_maps.openjdk.txt")
+        .lines()
+        .nth(index)
+        .expect("SerialMaps.main prints nine lines on OpenJDK")
+}
+
+fn guest_byte_array(program: &DexProgram, bytes: &[u8]) -> DexValue {
+    program.allocate_filled_array(
+        "[B".to_owned(),
+        bytes
+            .iter()
+            .map(|byte| DexValue::Int(i32::from(*byte as i8)))
+            .collect(),
+    )
+}
+
+fn guest_bytes(program: &DexProgram, result: DexExecutionResult) -> Vec<u8> {
+    let DexExecutionResult::Value(array) = result else {
+        panic!("expected a byte[] result, got {result:?}");
+    };
+    program.runtime.borrow().array_entries[&map_identity_key(&array)]
+        .iter()
+        .map(|value| match value {
+            DexValue::Int(byte) => *byte as u8,
+            other => panic!("byte entry {other}"),
+        })
+        .collect()
+}
+
+#[test]
+fn libcore_hash_map_iteration_order_matches_openjdk_for_resized_and_presized_tables() {
+    // cite: libcore HashMap.java#hash, putVal, resize, treeifyBin, putMapEntries, removeNode, clear, tableSizeFor, HashIterator
+    let program = serial_contract_program();
+    assert_eq!(
+        serial_fixture_call(
+            &program,
+            SERIAL_MAPS,
+            "describeMaps",
+            "Ljava/lang/String;",
+            &[],
+            &[]
+        )
+        .unwrap(),
+        DexExecutionResult::Value(DexValue::String(serial_maps_oracle_line(0).into())),
+        "line 1 of OpenJDK 21 SerialMaps.main: keySet, values and entrySet order of each map"
+    );
+}
+
+#[test]
+fn libcore_hash_map_object_output_matches_the_openjdk_wire_bytes() {
+    // cite: libcore HashMap.java#writeObject, capacity, internalWriteEntries
+    // cite: libcore ObjectOutputStream.java#writeOrdinaryObject, writeSerialData, writeHandle
+    let program = serial_contract_program();
+    let written = guest_bytes(
+        &program,
+        serial_fixture_call(&program, SERIAL_MAPS, "writeMaps", "[B", &[], &[]).unwrap(),
+    );
+    assert_eq!(
+        written,
+        include_bytes!("fixtures/serial_maps.openjdk.ser").to_vec(),
+        "OpenJDK 21 SerialMaps.writeMaps bytes"
+    );
+}
+
+#[test]
+fn libcore_hash_map_read_object_rebuilds_the_openjdk_maps() {
+    // cite: libcore HashMap.java#readObject, reinitialize, putVal
+    // cite: libcore ObjectInputStream.java#readOrdinaryObject, readSerialData, skipCustomData
+    let program = serial_contract_program();
+    let oracle = include_bytes!("fixtures/serial_maps.openjdk.ser");
+    let data = guest_byte_array(&program, oracle);
+    assert_eq!(
+        serial_fixture_call(
+            &program,
+            SERIAL_MAPS,
+            "readMaps",
+            "Ljava/lang/String;",
+            &["[B"],
+            &[data.clone()]
+        )
+        .unwrap(),
+        DexExecutionResult::Value(DexValue::String(serial_maps_oracle_line(1).into())),
+        "line 2 of OpenJDK 21 SerialMaps.main: iteration order after readObject"
+    );
+    let rewritten = guest_bytes(
+        &program,
+        serial_fixture_call(&program, SERIAL_MAPS, "rewriteMaps", "[B", &["[B"], &[data]).unwrap(),
+    );
+    assert_eq!(
+        rewritten,
+        include_bytes!("fixtures/serial_maps_rewrite.openjdk.ser").to_vec(),
+        "OpenJDK 21 SerialMaps.rewriteMaps bytes carry the readObject threshold and buckets"
+    );
+}
+
+#[test]
+fn libcore_hash_map_tree_bins_and_unhashed_keys_are_missing_support() {
+    // cite: libcore HashMap.java#treeifyBin, putTreeVal, hash
+    let program = serial_contract_program();
+    let oracle_tree_order = serial_maps_oracle_line(2);
+    assert!(
+        oracle_tree_order.starts_with("BBAaAaAa,AaAaAaAa,"),
+        "OpenJDK 21 reorders a treeified bin: {oracle_tree_order}"
+    );
+    for name in ["treeBinKeys", "writeTreeBin"] {
+        let return_type = if name == "treeBinKeys" {
+            "Ljava/lang/String;"
+        } else {
+            "V"
+        };
+        let error = serial_fixture_call(&program, SERIAL_MAPS, name, return_type, &[], &[])
+            .expect_err("a treeified bin has no modeled order");
+        assert!(
+            error
+                .to_string()
+                .contains("HashMap tree bin iteration order (11 colliding keys)"),
+            "{name}: {error}"
+        );
+    }
+    let error = serial_fixture_call(
+        &program,
+        SERIAL_MAPS,
+        "listKeys",
+        "Ljava/lang/String;",
+        &[],
+        &[],
+    )
+    .expect_err("an ArrayList key hash is not modeled");
+    assert!(
+        error
+            .to_string()
+            .contains("next missing primitive: HashMap bucket of a Ljava/util/ArrayList; key"),
+        "{error}"
+    );
+}
+
+#[test]
+fn libcore_hash_map_boxed_keys_iterate_in_openjdk_order() {
+    // cite: libcore Integer.java#hashCode
+    // cite: libcore Long.java#hashCode
+    // cite: libcore Boolean.java#hashCode
+    // cite: libcore Character.java#hashCode
+    // cite: libcore Float.java#hashCode
+    // cite: libcore Double.java#hashCode
+    let program = serial_contract_program();
+    assert_eq!(
+        serial_fixture_call(
+            &program,
+            SERIAL_MAPS,
+            "boxedKeys",
+            "Ljava/lang/String;",
+            &[],
+            &[]
+        )
+        .unwrap(),
+        DexExecutionResult::Value(DexValue::String(serial_maps_oracle_line(3).into())),
+        "line 4 of OpenJDK 21 SerialMaps.main: values order of a map with boxed keys"
+    );
+}
+
+fn assert_identity_bucket_order(method: &str) {
+    let program = serial_contract_program();
+    let DexExecutionResult::Value(DexValue::String(text)) = serial_fixture_call(
+        &program,
+        SERIAL_MAPS,
+        method,
+        "Ljava/lang/String;",
+        &[],
+        &[],
+    )
+    .unwrap() else {
+        panic!("{method} should return a String");
+    };
+    let (order, hashes) = text.split_once('#').expect("values#hashes");
+    let mut expected: Vec<(i32, usize, &str)> = hashes
+        .split(',')
+        .map(|hash| hash.parse::<i32>().expect("hashCode"))
+        .zip(["first", "second", "third"])
+        .enumerate()
+        .map(|(inserted, (hash, value))| {
+            (
+                super::super::java_hash_map::spread_hash(hash) & 15,
+                inserted,
+                value,
+            )
+        })
+        .collect();
+    expected.sort();
+    let expected: String = expected
+        .iter()
+        .map(|(_, _, value)| format!("{value},"))
+        .collect();
+    assert_eq!(
+        order, expected,
+        "{method}: libcore HashMap iterates bucket (hash ^ hash >>> 16) & 15, then insertion order"
+    );
+}
+
+#[test]
+fn libcore_hash_map_identity_keys_iterate_by_their_object_hash_code_bucket() {
+    // cite: libcore HashMap.java#hash, putVal, HashIterator
+    // cite: libcore Object.java#hashCode
+    assert_identity_bucket_order("identityKeys");
+}
+
+#[test]
+fn libcore_hash_map_class_keys_iterate_by_the_object_hash_code_class_inherits() {
+    // cite: libcore HashMap.java#hash, putVal, HashIterator
+    // cite: libcore Class.java#Class
+    // cite: libcore Object.java#hashCode
+    assert_identity_bucket_order("classKeys");
+}
+
+#[test]
+fn libcore_hash_map_copy_from_a_linked_hash_map_is_refused_only_when_copied_keys_share_a_bin() {
+    // cite: libcore HashMap.java#putMapEntries, putVal, resize, HashIterator
+    let program = serial_contract_program();
+    assert_eq!(
+        serial_fixture_call(
+            &program,
+            SERIAL_MAPS,
+            "linkedCopy",
+            "Ljava/lang/String;",
+            &[],
+            &[]
+        )
+        .unwrap(),
+        DexExecutionResult::Value(DexValue::String(serial_maps_oracle_line(4).into())),
+        "line 5 of OpenJDK 21 SerialMaps.main: HashMap(Map) and putAll of a LinkedHashMap"
+    );
+    assert!(
+        serial_maps_oracle_line(5).starts_with("BB,Aa,"),
+        "OpenJDK 21 keeps the LinkedHashMap order inside the shared bin"
+    );
+    let error = serial_fixture_call(
+        &program,
+        SERIAL_MAPS,
+        "linkedCollidingCopy",
+        "Ljava/lang/String;",
+        &[],
+        &[],
+    )
+    .expect_err("two copied keys in one bin need the LinkedHashMap entrySet order");
+    assert!(
+        error.to_string().contains(
+            "HashMap fill order from a Ljava/util/LinkedHashMap; without a modeled iteration order"
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn libcore_hash_map_clear_and_removing_every_entry_drop_the_tree_bin_order_and_keep_the_capacity() {
+    // cite: libcore HashMap.java#clear, removeNode, treeifyBin, HashIterator
+    let program = serial_contract_program();
+    assert_eq!(
+        serial_fixture_call(
+            &program,
+            SERIAL_MAPS,
+            "emptiedTreeBins",
+            "Ljava/lang/String;",
+            &[],
+            &[]
+        )
+        .unwrap(),
+        DexExecutionResult::Value(DexValue::String(serial_maps_oracle_line(6).into())),
+        "line 7 of OpenJDK 21 SerialMaps.main: 5 before 16 needs the 64 bucket table"
+    );
+}
+
+#[test]
+fn libcore_hash_map_put_throws_the_key_hash_code_exception_and_leaves_the_map_unchanged() {
+    // cite: libcore HashMap.java#put, hash
+    let program = serial_contract_program();
+    assert_eq!(
+        serial_fixture_call(
+            &program,
+            SERIAL_MAPS,
+            "throwingHashCode",
+            "Ljava/lang/String;",
+            &[],
+            &[]
+        )
+        .unwrap(),
+        DexExecutionResult::Value(DexValue::String(serial_maps_oracle_line(7).into())),
+        "line 8 of OpenJDK 21 SerialMaps.main"
+    );
+}
+
+#[test]
+fn libcore_object_input_stream_block_data_failures_match_openjdk() {
+    // cite: libcore ObjectInputStream.java#readBlockHeader, refill, peek, handleReset, readObject0, skipCustomData
+    let program = serial_contract_program();
+    let data = guest_byte_array(&program, include_bytes!("fixtures/serial_maps.openjdk.ser"));
+    assert_eq!(
+        serial_fixture_call(
+            &program,
+            SERIAL_MAPS,
+            "blockDataFailures",
+            "Ljava/lang/String;",
+            &["[B"],
+            &[data]
+        )
+        .unwrap(),
+        DexExecutionResult::Value(DexValue::String(serial_maps_oracle_line(8).into())),
+        "line 9 of OpenJDK 21 SerialMaps.main: patched, truncated and failing HashMap streams"
+    );
+}
+
+#[test]
+fn libcore_hash_map_read_object_with_a_huge_mappings_count_reads_entries_before_allocating_bins() {
+    // cite: libcore HashMap.java#readObject
+    let program = serial_contract_program();
+    let mut bytes = include_bytes!("fixtures/serial_maps.openjdk.ser")[..81].to_vec();
+    bytes[77..81].copy_from_slice(&[0x7f, 0xff, 0xff, 0xff]);
+    let data = guest_byte_array(&program, &bytes);
+    let started = std::time::Instant::now();
+    let DexExecutionResult::Throw(exception) = serial_fixture_call(
+        &program,
+        SERIAL_MAPS,
+        "readMaps",
+        "Ljava/lang/String;",
+        &["[B"],
+        &[data],
+    )
+    .unwrap() else {
+        panic!("a stream that ends after the mappings count should throw");
+    };
+    assert!(
+        program.value_matches_type(&exception, "Ljava/io/EOFException;"),
+        "ObjectInputStream.readObject of the first key hits the end of the stream: {exception:?}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "a 1 << 30 bucket table costs host memory only for the entries read: {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn libcore_hash_map_remove_reaches_the_bin_through_the_stored_hash() {
+    // cite: libcore HashMap.java#removeNode, putVal
+    use super::super::java_hash_map::{spread_hash, HashMapTable};
+    let count = 1 << 17;
+    let started = std::time::Instant::now();
+    let mut table = HashMapTable::new_default();
+    for index in 0..count {
+        table.insert_new(format!("key{index}"), spread_hash(index));
+    }
+    assert_eq!(
+        table.capacity(),
+        1 << 18,
+        "resize doubles past 0.75 of the capacity"
+    );
+    for index in (0..count).rev() {
+        table.remove(&format!("key{index}"));
+    }
+    assert_eq!(table.size(), 0);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "removeNode indexes tab[(n - 1) & hash] instead of scanning every bin: {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn libcore_hash_map_read_object_rejects_bad_load_factor_mappings_and_uid() {
+    // cite: libcore HashMap.java#readObject
+    // cite: libcore ObjectStreamClass.java#initNonProxy
+    let oracle = include_bytes!("fixtures/serial_maps.openjdk.ser");
+    assert_eq!(&oracle[8..25], b"java.util.HashMap");
+    assert_eq!(oracle[33], 0x03, "SC_WRITE_METHOD | SC_SERIALIZABLE");
+    assert_eq!(&oracle[61..63], &[0x78, 0x70]);
+    assert_eq!(&oracle[71..73], &[0x77, 0x08]);
+    let cases: [(usize, [u8; 4], &str, &str); 3] = [
+        (
+            63,
+            [0, 0, 0, 0],
+            "Ljava/io/InvalidObjectException;",
+            "Illegal load factor: 0.0",
+        ),
+        (
+            77,
+            [0xff, 0xff, 0xff, 0xff],
+            "Ljava/io/InvalidObjectException;",
+            "Illegal mappings count: -1",
+        ),
+        (
+            29,
+            [0, 0, 0, 0],
+            "Ljava/io/InvalidClassException;",
+            "local class incompatible",
+        ),
+    ];
+    for (offset, patch, exception_class, message) in cases {
+        let program = serial_contract_program();
+        let mut bytes = oracle.to_vec();
+        bytes[offset..offset + 4].copy_from_slice(&patch);
+        let data = guest_byte_array(&program, &bytes);
+        let DexExecutionResult::Throw(exception) = serial_fixture_call(
+            &program,
+            SERIAL_MAPS,
+            "readMaps",
+            "Ljava/lang/String;",
+            &["[B"],
+            &[data],
+        )
+        .unwrap() else {
+            panic!("patched offset {offset} should throw {exception_class}");
+        };
+        assert!(
+            program.value_matches_type(&exception, exception_class),
+            "{offset}: {exception:?}"
+        );
+        let detail = thrown_detail_message(&program, &exception).unwrap_or_default();
+        assert!(detail.contains(message), "{offset}: {detail}");
+    }
+}
+
+#[test]
+fn libcore_hash_map_constructor_rejects_negative_capacity_and_bad_load_factor() {
+    // cite: libcore HashMap.java#HashMap
+    let program = DexProgram::new(Vec::new());
+    let cases = [
+        (
+            vec![DexValue::Int(-1)],
+            "(I)V",
+            "Illegal initial capacity: -1",
+        ),
+        (
+            vec![DexValue::Int(4), DexValue::Float(0.0)],
+            "(IF)V",
+            "Illegal load factor: 0.0",
+        ),
+        (
+            vec![DexValue::Int(4), DexValue::Float(f32::NAN)],
+            "(IF)V",
+            "Illegal load factor: NaN",
+        ),
+    ];
+    for (arguments, descriptor, message) in cases {
+        let parameters: Vec<String> = descriptor[1..descriptor.len() - 2]
+            .chars()
+            .map(|code| code.to_string())
+            .collect();
+        let constructor = DexMethodId {
+            class_descriptor: "Ljava/util/HashMap;".to_owned(),
+            name: "<init>".to_owned(),
+            proto: crate::dex::DexProto {
+                shorty: format!("V{}", parameters.concat()),
+                return_type: "V".to_owned(),
+                parameters,
+            },
+        };
+        let map = program.allocate_object("Ljava/util/HashMap;".to_owned());
+        let mut invocation_arguments = vec![map];
+        invocation_arguments.extend(arguments);
+        let Some(DexExecutionResult::Throw(exception)) = program
+            .invoke_builtin_method(&constructor, Some(&test_invocation(invocation_arguments)))
+        else {
+            panic!("{descriptor} should throw IllegalArgumentException");
+        };
+        assert!(program.value_matches_type(&exception, "Ljava/lang/IllegalArgumentException;"));
+        assert_eq!(
+            thrown_detail_message(&program, &exception).as_deref(),
+            Some(message)
+        );
+    }
+}
+
+#[test]
+fn libcore_hash_map_table_size_for_matches_the_libcore_formula() {
+    // cite: libcore HashMap.java#tableSizeFor, MAXIMUM_CAPACITY
+    use super::super::java_hash_map::table_size_for;
+    for (capacity, expected) in [
+        (0, 1),
+        (1, 1),
+        (2, 2),
+        (3, 4),
+        (16, 16),
+        (17, 32),
+        ((1 << 30) - 1, 1 << 30),
+        (i32::MAX, 1 << 30),
+    ] {
+        assert_eq!(
+            table_size_for(capacity),
+            expected,
+            "tableSizeFor({capacity})"
+        );
+    }
 }
 
 #[test]

@@ -1157,9 +1157,12 @@ impl DexProgram {
 
         if method.class_descriptor == "Ljava/util/HashMap;"
             && method.name == "<init>"
-            && method.proto.descriptor_is("()V")
+            && matches!(method.proto.descriptor().as_str(), "()V" | "(I)V" | "(IF)V")
         {
-            return Some(DexExecutionResult::Void);
+            let Some(invocation) = invocation else {
+                return Some(DexExecutionResult::Void);
+            };
+            return self.hash_map_constructor(method, invocation);
         }
 
         if method.class_descriptor == "Ljava/util/AbstractMap;"
@@ -1224,6 +1227,13 @@ impl DexProgram {
             && method.proto.descriptor_is("(Ljava/util/Map;)V")
         {
             let invocation = invocation?;
+            if method.class_descriptor == "Ljava/util/HashMap;" {
+                // cite: libcore HashMap.java#HashMap
+                self.hash_map_install_table(
+                    invocation.arguments.first()?,
+                    super::java_hash_map::HashMapTable::new_default(),
+                );
+            }
             self.initialize_hash_map_from_map(invocation)?;
 
             return Some(DexExecutionResult::Void);
