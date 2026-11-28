@@ -262,6 +262,17 @@ impl DexProgram {
             return Some(DexExecutionResult::Int(i32::from(emulated)));
         }
 
+        // cite: frameworks-base Environment.java#getExternalStorageState, MEDIA_MOUNTED
+        if method.matches_builtin_signature(
+            "Landroid/os/Environment;",
+            "getExternalStorageState",
+            "()Ljava/lang/String;",
+        ) {
+            return Some(DexExecutionResult::Value(DexValue::String(
+                std::rc::Rc::from("mounted"),
+            )));
+        }
+
         // cite: frameworks-base Environment.java#getDataDirectory, DIR_ANDROID_DATA, DIR_ANDROID_DATA_PATH, getDirectoryPath
         if method.class_descriptor == "Landroid/os/Environment;"
             && method.name == "getDataDirectory"

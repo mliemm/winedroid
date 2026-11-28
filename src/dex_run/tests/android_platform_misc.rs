@@ -2252,6 +2252,26 @@ fn environment_reports_the_emulated_primary_volume_as_emulated() {
     );
 }
 
+// cite: frameworks-base Environment.java#getExternalStorageState, MEDIA_MOUNTED
+#[test]
+fn environment_reports_the_primary_volume_as_mounted() {
+    let program = DexProgram::new(Vec::new());
+    let method = builtin_method(
+        "Landroid/os/Environment;",
+        "getExternalStorageState",
+        "Ljava/lang/String;",
+        &[],
+    );
+
+    assert_eq!(
+        program.invoke_builtin_method(&method, None),
+        Some(DexExecutionResult::Value(DexValue::String(
+            "mounted".into()
+        ))),
+        "MEDIA_MOUNTED for the emulated primary volume"
+    );
+}
+
 // cite: frameworks-base Base64.java#decode, process, DEFAULT, URL_SAFE
 #[test]
 fn android_base64_decode_matches_the_platform_decoder_state_machine() {
