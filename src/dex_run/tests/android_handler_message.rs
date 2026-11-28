@@ -1160,3 +1160,27 @@ fn looper_my_queue_is_the_current_looper_queue_or_throws_without_one() {
     };
     assert!(program.value_matches_type(&exception, "Ljava/lang/NullPointerException;"));
 }
+
+// cite: frameworks-base Message.java#obtain
+#[test]
+fn message_obtain_returns_a_distinct_new_message_each_time() {
+    let program = DexProgram::new(Vec::new());
+    let obtain = builtin_method(
+        "Landroid/os/Message;",
+        "obtain",
+        "Landroid/os/Message;",
+        &[],
+    );
+    let call = || match program.invoke_builtin_method(&obtain, Some(&test_invocation(Vec::new()))) {
+        Some(DexExecutionResult::Value(message)) => message,
+        other => panic!("Message.obtain: {other:?}"),
+    };
+
+    let first = call();
+    let second = call();
+    assert_ne!(
+        map_identity_key(&first),
+        map_identity_key(&second),
+        "with an empty pool obtain() returns new Message()"
+    );
+}

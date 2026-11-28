@@ -2418,6 +2418,17 @@ impl DexProgram {
             return dex_value_is_object_like(message).then_some(DexExecutionResult::Void);
         }
 
+        if method.matches_builtin_signature(
+            "Landroid/os/Message;",
+            "obtain",
+            "()Landroid/os/Message;",
+        ) {
+            // cite: frameworks-base Message.java#obtain
+            return Some(DexExecutionResult::Value(
+                self.allocate_object("Landroid/os/Message;".to_owned()),
+            ));
+        }
+
         if method.class_descriptor == "Landroid/os/Message;"
             && method.name == "obtain"
             && method
